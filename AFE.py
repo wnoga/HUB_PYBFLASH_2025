@@ -7,6 +7,50 @@ import machine
 
 from my_utilities import AFECommand, AFECommandGPIO, AFECommandChannel, AFECommandSubdevice
 from my_utilities import millis, SensorChannel, SensorReading
+
+# class AFESendCommandQueue:
+#     def __init__(self,can_interface,device_id,verbose=0):
+#         self.can_interface = can_interface
+#         self.device_id = device_id
+#         self.to_send = []
+#         self.verbose = verbose
+#         self.is_sending = False
+#         self.tx_delay_ms = 0
+#         self.tx_send_old = 
+        
+#     def clear(self):
+#         self.to_send = []
+    
+#     def send_command(self, command, data=None, chunk=1, max_chunks=1,id_priority=0,timeout_ms=5000):
+#         if data is None:
+#             data = []
+#         elif isinstance(data, int):
+#             data = [data]
+#         elif not (isinstance(data, list) and all(isinstance(i, int) for i in data)):
+#             raise ValueError("Data must be an integer or a list of integers (bytes).")
+
+#         chunk_info = (max_chunks << 4) | chunk
+#         frame = bytearray([command, chunk_info] + data[:6])
+#         if(self.verbose >= 4):
+#             print("Transmitting {} bytes: 0x{:02X}: {}/{} : {} = {}".format(
+#                 len(frame), command, chunk, max_chunks, data, frame
+#             ))
+#         self.to_send.append({
+#             "frame":frame,
+#             "id":(self.device_id << 2) | (id_priority & 0x003),
+#             "timestamp_ms":millis(),
+#             "timeout_ms":timeout_ms})
+
+#     def manage(self):
+#         for c in self.to_send:
+#             if (c["timestamp_ms"] - millis()) < c["timeout_ms"]:
+#                 c.remove_first()
+#                 continue
+#             if self.is_sending:
+#                 continue
+#             self.is_sending = True
+#             self.can_interface.send(c["frame"], c["id"])
+
 # Device (AFE) Class
 class AFEDevice:
     def __init__(self, can_interface, device_id, unique_id, logger=None, config_path=None):
@@ -33,6 +77,8 @@ class AFEDevice:
         self.verbose = 2
         self.commands = AFECommand()
         self.blink_status = 0
+        
+        self.enabled_periodic_measurement_download = False
         
     def restart_device(self):
         self.current_command = None
@@ -147,6 +193,25 @@ class AFEDevice:
             if command == self.commands.setAveragingMultiplicator:
                 self.channels[chunk_payload[0]].multiplicator = self.bytes_to_float(chunk_payload[1:])
                 return
+            
+            if command == self.commands.setSensorDataSi_all_periodic_average:
+                print("0x{:02X}".format(chunk_payload[0]))
+                return
+            
+            if command == self.commands.getSensorDataSi_all_periodic_average:
+                channel = chunk_payload[0]
+                # print("xxxx {} {} {}".format(chunk_id, channel,value))
+                if chunk_id == 1:
+                    value = self.bytes_to_float(chunk_payload[1:])
+                    self.channels[channel].latest_reading.timestamp_ms = 0
+                    self.channels[channel].latest_reading.value = value
+                elif chunk_id == 2:
+                    value = self.bytes_to_u32(chunk_payload[1:])
+                    self.channels[channel].latest_reading.timestamp_ms = value
+                    print("{}: {}".format(channel, self.channels[channel].latest_reading))
+                return
+            
+            print("Unknow command: 0x{:02X}: {}".format(command,data_bytes))
 
             # if command == self.commands.e_can_function_getSensorDataSi and len(chunk_payload) == 5:
             #     channel = self.channels[chunk_payload[0]]
@@ -163,6 +228,18 @@ class AFEDevice:
                 if(self.verbose >= 3):
                     print("0x{:02X} END".format(command))
                 self.current_command = None
+    
+    def start_periodic_measurement_download(self,interval_ms=2500):
+        self.send_command(
+            self.commands.setSensorDataSi_all_periodic_average,
+            list(struct.pack('<I', interval_ms)))
+        self.enabled_periodic_measurement_download = True
+        
+    def stop_periodic_measurement_download(self):
+        self.send_command(
+            self.commands.setSensorDataSi_all_periodic_average,
+            list(struct.pack('<I', 0)))
+        self.enabled_periodic_measurement_download = False
     
     # AFE state management
     def manage_state(self):
@@ -204,9 +281,12 @@ class AFEDevice:
             
             # Stop initialization process
             self.is_configured = True
+            self.start_periodic_measurement_download(3000)
             if self.verbose >= 1:
                 self.display_info()
             return
+        
+        
         
         return
         # Here you can you can add something to execute post-init commands

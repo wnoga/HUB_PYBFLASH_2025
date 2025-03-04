@@ -115,6 +115,35 @@ class HUBDevice:
         # self.rx_processing_timer.deinit()
         print("STOP DISCOVERY")
         
+    def start_periodic_measurement_download(self, interval_ms=2500):
+        A = list(self.afe_devices)  # Directly use the list of devices
+        timestamp_old = millis()
+        
+        while A:  # Loop while A is not empty
+            for afe in A[:]:  # Iterate over a copy of A to allow safe removal
+                if (millis() - timestamp_old) > 5000:
+                    A.remove(afe)
+                elif afe.is_online and afe.current_command is None:
+                    if not afe.enabled_periodic_measurement_download:
+                        afe.start_periodic_measurement_download(interval_ms)
+                    else:
+                        A.remove(afe)
+
+                
+    def stop_periodic_measurement_download(self):
+        A = list(self.afe_devices)  # Directly use the list of devices
+        timestamp_old = millis()
+        
+        while A:  # Loop while A is not empty
+            for afe in A[:]:  # Iterate over a copy of A to allow safe removal
+                if (millis() - timestamp_old) > 5000:
+                    A.remove(afe)
+                elif afe.is_online and afe.current_command is None:
+                    if afe.enabled_periodic_measurement_download:
+                        afe.stop_periodic_measurement_download()
+                    else:
+                        A.remove(afe)
+        
     # def start_data_logging(self, interval=5):
     #     """ Start logging data at a specified interval in seconds. """
     #     self.data_logging_active = True

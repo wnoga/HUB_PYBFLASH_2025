@@ -1,6 +1,6 @@
 import pyb
 
-class AFECommand():
+class AFECommand:
     def __init__(self):
         self.getSerialNumber = 0x00
         self.getVersion = 0x01
@@ -10,8 +10,10 @@ class AFECommand():
         self.getSensorDataSi_average = 0x31
         self.getSensorDataSi_all_last = 0x32
         self.getSensorDataSi_all_average = 0x33
-
+        self.setSensorDataSi_all_periodic_average = 0x34
+        
         self.getSensorDataSiAndTimestamp_average = 0x3B
+        self.getSensorDataSi_all_periodic_average = 0x3F
 
         self.transmitSPIData = 0xA0
         self.writeGPIO = 0xA2
@@ -31,7 +33,7 @@ class AFECommand():
         self.setAveragingMultiplicator = 0xD5
         self.setAveragingSubdevice = 0xD6
 
-class AFECommandChannel():
+class AFECommandChannel:
     def __init__(self):
         self.Channel_0 = 0b00000001
         self.Channel_1 = 0b00000010
@@ -42,13 +44,13 @@ class AFECommandChannel():
         self.Channel_6 = 0b01000000
         self.Channel_7 = 0b10000000
 
-class AFECommandSubdevice():
+class AFECommandSubdevice:
     def __init__(self):
         self.master 	= 0b00000001
         self.slave 	= 0b00000010
         self.both 	= 0b00000011
 
-class AFECommandGPIO():
+class AFECommandGPIO:
     def __init__(self):
         self.port = {
             "A":0,"PORTA":0,
@@ -83,3 +85,6 @@ class SensorChannel:
         self.multiplicator = None
         self.averaging_mode = None
         self.latest_reading = SensorReading()
+        
+        #measurement download setttings
+        self.periodic_interval_ms = 0
