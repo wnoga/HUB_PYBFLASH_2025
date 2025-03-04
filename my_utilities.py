@@ -11,9 +11,14 @@ class AFECommand:
         self.getSensorDataSi_all_last = 0x32
         self.getSensorDataSi_all_average = 0x33
         self.setSensorDataSi_all_periodic_average = 0x34
-        
+
         self.getSensorDataSiAndTimestamp_average = 0x3B
         self.getSensorDataSi_all_periodic_average = 0x3F
+
+        self.setSensorDataSi_periodic_last = 0x40
+        self.setSensorDataSiAndTimestamp_periodic_last = 0x41
+        self.setSensorDataSi_periodic_average = 0x42
+        self.setSensorDataSiAndTimestamp_periodic_average = 0x43
 
         self.transmitSPIData = 0xA0
         self.writeGPIO = 0xA2

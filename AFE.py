@@ -151,6 +151,8 @@ class AFEDevice:
         try:
             data_bytes = list(bytes(received_data[3]))
             device_id = (received_data[0] >> 2) & 0xFF
+            print("{}".format(received_data))
+            pyb.delay(1000)
             if device_id != self.device_id:
                 return
 
@@ -236,10 +238,16 @@ class AFEDevice:
         self.enabled_periodic_measurement_download = True
         
     def stop_periodic_measurement_download(self):
+        print("STOP")
         self.send_command(
             self.commands.setSensorDataSi_all_periodic_average,
             list(struct.pack('<I', 0)))
         self.enabled_periodic_measurement_download = False
+        
+    def start_periodic_measurement_download_for_channel(self, channel, interval_ms=2500):
+        self.send_command(
+            self.commands.setSens
+        )
     
     # AFE state management
     def manage_state(self):
