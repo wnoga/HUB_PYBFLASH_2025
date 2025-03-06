@@ -1,59 +1,53 @@
 import pyb
 
 class AFECommand:
-    def __init__(self):
-        self.getSerialNumber = 0x00
-        self.getVersion = 0x01
-        self.resetAll = 0x03
+    getSerialNumber = 0x0
+    getVersion = 0x1
+    resetAll = 0x3
+    getSensorDataSi_last = 0x30
+    getSensorDataSi_average = 0x31
+    getSensorDataSi_all_last = 0x32
+    getSensorDataSi_all_average = 0x33
+    setSensorDataSi_all_periodic_average = 0x34
+    getSensorDataSiAndTimestamp_average = 0x3b
+    getSensorDataSi_all_periodic_average = 0x3f
+    setSensorDataSi_periodic_last = 0x40
+    setSensorDataSiAndTimestamp_periodic_last = 0x41
+    setSensorDataSi_periodic_average = 0x42
+    setSensorDataSiAndTimestamp_periodic_average = 0x43
+    transmitSPIData = 0xa0
+    writeGPIO = 0xa2
+    setTemperatureLoopForChannelState_bySubdevice = 0xc0
+    setTemperatureLoopForChannelState_byMask = 0xc1
+    setDACValueRaw_bySubdevice = 0xc2
+    setDACValueSi_bySubdevice = 0xc3
+    stopTemperatureLoopForAllChannels = 0xc4
+    setDAC_bySubdevice = 0xc5
+    setAveragingMode = 0xd0
+    setAveragingAlpha = 0xd1
+    setAveragingBufferSize = 0xd2
+    setChannel_dt_ms = 0xd3
+    setAveraging_max_dt_ms = 0xd4
+    setChannel_multiplicator = 0xd5
+    setAveragingSubdevice = 0xd6
+    debug_machine_control = 0xf1
 
-        self.getSensorDataSi_last = 0x30
-        self.getSensorDataSi_average = 0x31
-        self.getSensorDataSi_all_last = 0x32
-        self.getSensorDataSi_all_average = 0x33
-        self.setSensorDataSi_all_periodic_average = 0x34
-
-        self.getSensorDataSiAndTimestamp_average = 0x3B
-        self.getSensorDataSi_all_periodic_average = 0x3F
-
-        self.setSensorDataSi_periodic_last = 0x40
-        self.setSensorDataSiAndTimestamp_periodic_last = 0x41
-        self.setSensorDataSi_periodic_average = 0x42
-        self.setSensorDataSiAndTimestamp_periodic_average = 0x43
-
-        self.transmitSPIData = 0xA0
-        self.writeGPIO = 0xA2
-
-        self.setTemperatureLoopForChannelState_bySubdevice = 0xC0
-        self.setTemperatureLoopForChannelState_byMask = 0xC1
-        self.setDACValueRaw_bySubdevice = 0xC2
-        self.setDACValueSi_bySubdevice = 0xC3
-        self.stopTemperatureLoopForAllChannels = 0xC4
-        self.setDAC_bySubdevice = 0xC5
-
-        self.setAveragingMode = 0xD0
-        self.setAveragingAlpha = 0xD1
-        self.setAveragingBufferSize = 0xD2
-        self.setAveragingDt_ms = 0xD3
-        self.setAveragingMaxDt_ms = 0xD4
-        self.setAveragingMultiplicator = 0xD5
-        self.setAveragingSubdevice = 0xD6
 
 class AFECommandChannel:
-    def __init__(self):
-        self.Channel_0 = 0b00000001
-        self.Channel_1 = 0b00000010
-        self.Channel_2 = 0b00000100
-        self.Channel_3 = 0b00001000
-        self.Channel_4 = 0b00010000
-        self.Channel_5 = 0b00100000
-        self.Channel_6 = 0b01000000
-        self.Channel_7 = 0b10000000
+    AFECommandChannel_0 = 0x1
+    AFECommandChannel_1 = 0x2
+    AFECommandChannel_2 = 0x4
+    AFECommandChannel_3 = 0x8
+    AFECommandChannel_4 = 0x10
+    AFECommandChannel_5 = 0x20
+    AFECommandChannel_6 = 0x40
+    AFECommandChannel_7 = 0x80
 
 class AFECommandSubdevice:
-    def __init__(self):
-        self.master 	= 0b00000001
-        self.slave 	= 0b00000010
-        self.both 	= 0b00000011
+    AFECommandSubdevice_master = 0x1
+    AFECommandSubdevice_slave = 0x2
+    AFECommandSubdevice_both = 0x3
+
 
 class AFECommandGPIO:
     def __init__(self):
@@ -93,3 +87,5 @@ class SensorChannel:
         
         #measurement download setttings
         self.periodic_interval_ms = 0
+        self.periodic_sending_is_enabled = False
+        

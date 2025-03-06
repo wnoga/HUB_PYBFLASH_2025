@@ -73,12 +73,17 @@ class AFEDevice:
         self.is_configured = False
         self.current_command = 0x00
         self.last_command_time = millis()
-        self.command_timeout = 50000
+        self.command_timeout = 1000
         self.verbose = 2
         self.commands = AFECommand()
         self.blink_status = 0
         
-        self.enabled_periodic_measurement_download = False
+        self.periodic_measurement_download_is_enabled = False
+        self.blink_is_enabled = False
+        self.temperatureLoop_master_is_enabled = False
+        self.temperatureLoop_slave_is_enabled = False
+        
+        self.debug_machine_control_msg = [{},{}]
         
     def restart_device(self):
         self.current_command = None
@@ -151,8 +156,12 @@ class AFEDevice:
         try:
             data_bytes = list(bytes(received_data[3]))
             device_id = (received_data[0] >> 2) & 0xFF
-            print("{}".format(received_data))
-            pyb.delay(1000)
+            msg_from_slave = (received_data[0] >> 10) & 0x001
+            # print("{} {}".format(msg_from_slave,received_data))
+            # pyb.delay(1000)
+            if msg_from_slave != 1:
+                print("Not from slave")
+                return
             if device_id != self.device_id:
                 return
 
@@ -188,16 +197,18 @@ class AFEDevice:
                 self.channels[chunk_payload[0]].alpha = self.bytes_to_float(chunk_payload[1:])
                 return
             
-            if command == self.commands.setAveragingDt_ms:
+            if command == self.commands.setChannel_dt_ms:
                 self.channels[chunk_payload[0]].time_interval_ms = self.bytes_to_u32(chunk_payload[1:])
                 return
             
-            if command == self.commands.setAveragingMultiplicator:
+            if command == self.commands.setChannel_multiplicator:
                 self.channels[chunk_payload[0]].multiplicator = self.bytes_to_float(chunk_payload[1:])
                 return
             
             if command == self.commands.setSensorDataSi_all_periodic_average:
-                print("0x{:02X}".format(chunk_payload[0]))
+                flag = chunk_payload[0]
+                for i,b in enumerate([(flag >> x) & 0x01 for x in range(8)]):
+                    self.channels[i].periodic_sending_is_enabled = True if b else False
                 return
             
             if command == self.commands.getSensorDataSi_all_periodic_average:
@@ -211,6 +222,50 @@ class AFEDevice:
                     value = self.bytes_to_u32(chunk_payload[1:])
                     self.channels[channel].latest_reading.timestamp_ms = value
                     print("{}: {}".format(channel, self.channels[channel].latest_reading))
+                return
+            
+            if command == self.commands.writeGPIO:
+                self.blink_is_enabled = True
+                return
+            
+            if command == self.commands.setTemperatureLoopForChannelState_bySubdevice:
+                # print("Subdevice")
+                channel = chunk_payload[0]
+                status = chunk_payload[1]
+                channel_name = "?"
+                status_status = True if status == 1 else False
+                if channel == 1:
+                    self.temperatureLoop_master_is_enabled = status_status
+                    channel_name = "master"
+                elif channel == 2:
+                    self.temperatureLoop_slave_is_enabled = status_status
+                    channel_name = "slave"
+                elif channel == 3:
+                    self.temperatureLoop_master_is_enabled = status_status
+                    self.temperatureLoop_slave_is_enabled = status_status
+                    channel_name = "master+slave"
+                print("TemperatureLoop for {} is {}".format(
+                    channel_name, "enabled" if status == 1 else "disabled"
+                ))
+                return
+            
+            if command == self.commands.debug_machine_control:
+                channel = chunk_payload[0]
+                if chunk_id == 1:
+                    self.debug_machine_control_msg[channel] = {} # Clear msg
+                    self.debug_machine_control_msg[channel]["channel"] = "master" if channel == 0 else "slave"
+                    value = self.bytes_to_float(chunk_payload[1:])
+                    self.debug_machine_control_msg[channel]["voltage"] = value
+                if chunk_id == 2:
+                    value = self.bytes_to_float(chunk_payload[1:])
+                    self.debug_machine_control_msg[channel]["temperature_avg"] = value
+                if chunk_id == 3:
+                    value = self.bytes_to_float(chunk_payload[1:])
+                    self.debug_machine_control_msg[channel]["temperature_old"] = value
+                if chunk_id == 4:
+                    value = self.bytes_to_u32(chunk_payload[1:])
+                    self.debug_machine_control_msg[channel]["timestamp_ms"] = value
+                    print(self.debug_machine_control_msg[channel])
                 return
             
             print("Unknow command: 0x{:02X}: {}".format(command,data_bytes))
@@ -230,19 +285,20 @@ class AFEDevice:
                 if(self.verbose >= 3):
                     print("0x{:02X} END".format(command))
                 self.current_command = None
+            received_data = None
     
     def start_periodic_measurement_download(self,interval_ms=2500):
         self.send_command(
             self.commands.setSensorDataSi_all_periodic_average,
             list(struct.pack('<I', interval_ms)))
-        self.enabled_periodic_measurement_download = True
+        self.periodic_measurement_download_is_enabled = True
         
     def stop_periodic_measurement_download(self):
         print("STOP")
         self.send_command(
             self.commands.setSensorDataSi_all_periodic_average,
             list(struct.pack('<I', 0)))
-        self.enabled_periodic_measurement_download = False
+        self.periodic_measurement_download_is_enabled = False
         
     def start_periodic_measurement_download_for_channel(self, channel, interval_ms=2500):
         self.send_command(
@@ -251,17 +307,21 @@ class AFEDevice:
     
     # AFE state management
     def manage_state(self):
-        if self.current_command is not None and (millis() - self.last_command_time) > self.command_timeout:
-            if(self.verbose >= 2):
-                print("0x{:02X} TIMEOUT".format(self.current_command))
-            self.current_command = None
+        if self.current_command is not None:
+            # print("0x{:02X} : {} > {} ? {}".format(
+            #     self.current_command, 
+            #     millis() - self.last_command_time,self.command_timeout, 
+            #     (millis() - self.last_command_time) > self.command_timeout))
+            if (millis() - self.last_command_time) > self.command_timeout:
+                if(self.verbose >= 1):
+                    print("0x{:02X} TIMEOUT".format(self.current_command))
+                self.current_command = None
             return
         
         # Try send commands
         if self.use_tx_delay:
-            if self.current_command is not None:
-                if (millis() - self.last_command_time) < self.tx_timeout_ms:
-                    return
+            if (millis() - self.last_command_time) < self.tx_timeout_ms:
+                return
 
         if not self.is_configured:
             if self.version_checked != True:
@@ -283,13 +343,36 @@ class AFEDevice:
                     # if channel.multiplicator is None:
                     #     self.send_command(self.commands.setAveragingMultiplicator, [channel.channel_id] + list(struct.pack('<f', 1.0)))
                     #     return
-                    pass
                 except Exception as error:
                     print("set channel averaging_mode: {}".format(error))
+            if self.blink_is_enabled is False:
+                gpio = AFECommandGPIO()
+                self.send_command(
+                    self.commands.writeGPIO,
+                    [gpio.blink_Port,gpio.blink_Pin,1])
+                return
+
+            if self.temperatureLoop_master_is_enabled is False:
+                subdevice = AFECommandSubdevice()
+                self.send_command(
+                    self.commands.setTemperatureLoopForChannelState_bySubdevice,
+                    [subdevice.AFECommandSubdevice_master, 1])
+                return
+                
+            if self.temperatureLoop_slave_is_enabled is False:
+                subdevice = AFECommandSubdevice()
+                self.send_command(
+                    self.commands.setTemperatureLoopForChannelState_bySubdevice,
+                    [subdevice.AFECommandSubdevice_slave, 1])
+                return
+            
+
+            # if self.periodic_measurement_download_is_enabled is False:
+            #     self.start_periodic_measurement_download(10000)
+            #     return
             
             # Stop initialization process
             self.is_configured = True
-            self.start_periodic_measurement_download(3000)
             if self.verbose >= 1:
                 self.display_info()
             return

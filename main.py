@@ -8,6 +8,7 @@
 from HUB import HUBDevice, initialize_can_hub
 # can, hub = ci()
 # hub.start_discover(1)
+pyb.delay(500)
 can, hub = initialize_can_hub()
 # hub.start_discovery(interval=0.1)
 hub_process_enabled = True
@@ -18,7 +19,7 @@ hub.use_tx_delay = True
 import machine
 hubTask = machine.Timer()
 if True:
-    hubTask.init(period=int(0.01 * 1000), mode=machine.Timer.PERIODIC, callback=hub.main_process)
+    hubTask.init(period=int(0.001 * 1000), mode=machine.Timer.PERIODIC, callback=hub.main_process)
 else:
     while(hub_process_enabled is True):
         hub.main_process()
