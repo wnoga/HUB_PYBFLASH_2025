@@ -1,4 +1,6 @@
 import pyb
+import json
+import os
 
 class AFECommand:
     getSerialNumber = 0x0
@@ -16,6 +18,7 @@ class AFECommand:
     setSensorDataSi_periodic_average = 0x42
     setSensorDataSiAndTimestamp_periodic_average = 0x43
     transmitSPIData = 0xa0
+    setAD8402Value_byte = 0xa1
     writeGPIO = 0xa2
     setTemperatureLoopForChannelState_bySubdevice = 0xc0
     setTemperatureLoopForChannelState_byMask = 0xc1
@@ -23,6 +26,7 @@ class AFECommand:
     setDACValueSi_bySubdevice = 0xc3
     stopTemperatureLoopForAllChannels = 0xc4
     setDAC_bySubdevice = 0xc5
+    setDACRampOneBytePerMillisecond_ms = 0xc6
     setAveragingMode = 0xd0
     setAveragingAlpha = 0xd1
     setAveragingBufferSize = 0xd2
@@ -88,4 +92,111 @@ class SensorChannel:
         #measurement download setttings
         self.periodic_interval_ms = 0
         self.periodic_sending_is_enabled = False
+
+
+class CSVLogger:
+    def __init__(self, filename):
+        self.filename = filename
+        self.file = open(self.filename, "a")
+        self.headers = []
+        self._ensure_headers()
+    
+    def _ensure_headers(self):
+        if os.stat(self.filename)[0] == 0:
+            self.headers = ["log_timestamp", "measurement_timestamp", "level", "message"]
+            self._write_row(self.headers)
+    
+    def _write_row(self, row):
+        self.file.write(",".join(map(str, row)) + "\n")
+        self.file.flush()
+    
+    def update_headers(self, new_entry):
+        new_keys = [key for key in new_entry.keys() if key not in self.headers]
+        if new_keys:
+            self.headers.extend(new_keys)
+            temp_filename = self.filename + ".tmp"
+            with open(temp_filename, "w") as temp_file:
+                temp_file.write(",".join(self.headers) + "\n")
+                with open(self.filename, "r") as old_file:
+                    old_lines = old_file.readlines()[1:]
+                for line in old_lines:
+                    temp_file.write(line.strip() + "," + ",".join(["" for _ in new_keys]) + "\n")
+            os.rename(temp_filename, self.filename)
+            self.file = open(self.filename, "a")
+    
+    def log(self, entry):
+        self.update_headers(entry)
+        self._write_row([entry.get(header, "") for header in self.headers])
+    
+    def close(self):
+        self.file.close()
+
+class JSONLogger:
+    def __init__(self, filename="log.json", parent_dir="/sd/logs", verbosity_level="INFO", csv_filename="measurements.csv"):
+        self.parent_dir = parent_dir
+        self.verbosity_level = verbosity_level.upper()
+        self._ensure_directory()
+        self.filename = self._get_unique_filename("{}/{}".format(self.parent_dir, filename))
+        self.csv_logger = CSVLogger(self._get_unique_filename("{}/{}".format(self.parent_dir, csv_filename)))
+        self.file = open(self.filename, "a")  # Keep JSON log file open for appending
+        self.levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "MEASUREMENT"]
         
+    def _ensure_directory(self):
+        if not self._path_exists(self.parent_dir):
+            os.mkdir(self.parent_dir)
+    
+    def _get_unique_filename(self, filename):
+        base, ext = filename.rsplit(".", 1) if "." in filename else (filename, "")
+        counter = 1
+        while self._path_exists(filename):
+            filename = "{}_{}{}".format(base, counter, "." + ext if ext else "")
+            counter += 1
+        return filename
+    
+    def _path_exists(self, path):
+        try:
+            os.stat(path)
+            return True
+        except OSError:
+            return False
+    
+    def _should_log(self, level):
+        return self.levels.index(level.upper()) >= self.levels.index(self.verbosity_level)
+    
+    def log(self, level, message):
+        if self._should_log(level):
+            log_timestamp = millis()
+            log_entry = {"timestamp": log_timestamp, "level": level.upper(), "message": message}
+            self.file.write(json.dumps(log_entry) + "\n")  # Append log as a new line
+            self.file.flush()  # Ensure data is written immediately
+            print("LOG:",log_entry)
+            if self.levels.index(level.upper()) >= self.levels.index("MEASUREMENT"):
+                self.csv_logger.log(message)
+    
+    def sync(self):
+        self.file.flush()
+        os.sync()
+    
+    def close(self):
+        self.file.close()
+        self.csv_logger.close()
+    
+    def read_logs(self):
+        self.file.close()  # Close before reading
+        logs = []
+        try:
+            with open(self.filename, "r") as file:
+                for line in file:
+                    logs.append(json.loads(line))
+        except (OSError, ValueError):
+            pass
+        self.file = open(self.filename, "a")  # Reopen file for appending
+        return logs
+    
+    def clear_logs(self):
+        self.file.close()
+        self.csv_logger.close()
+        os.unlink(self.filename)  # Remove JSON file
+        os.unlink(self.csv_logger.filename)  # Remove CSV file
+        self.file = open(self.filename, "w")  # Reopen as empty file
+        self.csv_logger = CSVLogger(self.csv_logger.filename)

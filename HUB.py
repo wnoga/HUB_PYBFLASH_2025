@@ -6,13 +6,15 @@ import struct
 import random
 
 from AFE import AFEDevice, AFECommand, millis, SensorChannel, SensorReading
-# from machine import machine
+from my_utilities import JSONLogger
+OK = 0
+ERROR = 1
 
 class HUBDevice:
-    def __init__(self, can_bus):
+    def __init__(self, can_bus, logger = None):
         self.can_bus = can_bus
         self.afe_devices = []
-        self.afe_devices_max = 1
+        self.afe_devices_max = 2
         
         self.rx_buffer = bytearray(8)  # Pre-allocate memory
         self.rx_message = [0, 0, 0, memoryview(self.rx_buffer)]  # Use memoryview to reduce heap allocations
@@ -26,10 +28,12 @@ class HUBDevice:
         self.rx_process_active = False
         self.current_discovery_id = 7
         
-        self.tx_timeout_ms = 1000
+        self.tx_timeout_ms = 100
         self.last_tx_time = 0
         
         self.use_tx_delay = True
+        
+        self.logger = logger
         
     def reset_all(self):
         self.stop_discovery()
@@ -68,8 +72,9 @@ class HUBDevice:
             
             afe = self.find_afe_by_id(afe_id)
             if afe is None:
-                afe = AFEDevice(self.can_bus, afe_id, 0)
+                afe = AFEDevice(self.can_bus, afe_id, 0, logger=self.logger)
                 self.afe_devices.append(afe)
+                print("Dodano AFE {}".format(afe_id))
             # print("uuuu",pyb.millis(), len(self.message_queue))
             afe.process_received_data(message)
         # print("end", pyb.millis())
@@ -80,9 +85,11 @@ class HUBDevice:
             try:
                 return 0
             finally:
+                print("Skonczono wykrywanie")
                 self.stop_discovery()
         
-        if self.current_discovery_id > 8:
+        if self.current_discovery_id > 36:
+            # print("Wykrycie restart")
             self.current_discovery_id = 7
             return
         
@@ -128,7 +135,25 @@ class HUBDevice:
                         afe.start_periodic_measurement_download(interval_ms)
                     else:
                         A.remove(afe)
+             
+    def get_afe_by_id(self,afe_id):
+        if len(self.afe_devices) == 0:
+            return None
+        for afe in self.afe_devices:
+            if afe.device_id == afe_id:
+                return afe
+        return None
+    
+    def set_offset_for_afe(self, afe_id,offset_master=200,offset_slave=200):
+        afe = self.get_afe_by_id(afe_id)
+        afe.set_offset(offset_master,offset_slave)
 
+    def set_hv_on(self,afe_id):
+        pass
+    
+    def start_all(self):
+        self.set_offset_for_afe(1,200,210)
+        self.set_gv_on()
                 
     def stop_periodic_measurement_download(self):
         A = list(self.afe_devices)  # Directly use the list of devices
@@ -169,5 +194,7 @@ def initialize_can_hub():
     can_bus.setfilter(0, can_bus.MASK16, 0, (0, 0, 0, 0))
     
     print("CAN Bus Initialized")
-    hub = HUBDevice(can_bus)
+    logger = JSONLogger()
+    logger.log("INFO",{"test":"test"})
+    hub = HUBDevice(can_bus,logger=logger)
     return can_bus, hub

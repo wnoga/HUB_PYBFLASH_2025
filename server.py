@@ -5,6 +5,13 @@ import ujson
 import misc
 import afedrv
 
+import machine
+from HUB import HUBDevice, initialize_can_hub, OK, ERROR
+can = None
+hub = None
+hubTask = None
+
+
 BUFFER_SIZE = 1024
 DISCONNECTED_MESSAGE = '!disconnect'
 
@@ -39,10 +46,19 @@ def loop_for_afe_list_arg(func, obj1, obj2, obj3):
 
 
 def initialization(obj):
-    if isinstance(obj[1], list):
-        return loop_for_list_arg(misc.init, obj[1])
-    else:
-        return ('OK', misc.init(obj[1]))
+    can, hub = initialize_can_hub()
+    # hub.start_discovery(interval=0.1)
+    # hub_process_enabled = True
+    hub.discovery_active = True
+    hub.rx_process_active = True
+    # hub.tx_timeout_ms = 5000
+    hub.use_tx_delay = True
+    hubTask = machine.Timer()
+    return 'OK', hubTask.init(period=int(0.001 * 1000), mode=machine.Timer.PERIODIC, callback=hub.main_process)
+    # if isinstance(obj[1], list):
+    #     return loop_for_list_arg(misc.init, obj[1])
+    # else:
+    #     return ('OK', misc.init(obj[1]))
 
 
 def turn_on_hub(obj):

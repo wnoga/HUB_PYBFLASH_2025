@@ -61,7 +61,7 @@ class AFEDevice:
         self.config_path = config_path # Path to the config file
         
         self.use_tx_delay = True
-        self.tx_timeout_ms = 100
+        self.tx_timeout_ms = 10
         
         self.can_address = device_id << 2
         self.configuration = {}
@@ -116,6 +116,7 @@ class AFEDevice:
         response = self.can_interface.recv()
         if response and response[0] == self.device_id:
             self.is_online = True
+            self.logger.log("MEASUREMENT",'"timestamp":{},"msg":test'.format(millis()))
             return True
         self.is_online = False
         return False
@@ -182,6 +183,7 @@ class AFEDevice:
                 if chunk_id == max_chunks:
                     self.is_online = True
                     self.current_command = None
+                    print("Wykryto {}".format(device_id))
                 return
             
             if command == self.commands.getVersion:
@@ -304,6 +306,10 @@ class AFEDevice:
         self.send_command(
             self.commands.setSens
         )
+        
+    def set_offset(self,offset_master=200,offset_slave=200):
+        self.send_command(self.commands.setOffset,1,offset_master)
+        self.send_command(self.commands.setOffset,2,offset_slave)
     
     # AFE state management
     def manage_state(self):
