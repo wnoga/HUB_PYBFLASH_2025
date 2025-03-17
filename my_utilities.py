@@ -34,6 +34,8 @@ class AFECommand:
     setAveraging_max_dt_ms = 0xd4
     setChannel_multiplicator = 0xd5
     setAveragingSubdevice = 0xd6
+    setChannel_a = 0xd7
+    setChannel_b = 0xd8
     debug_machine_control = 0xf1
 
 
@@ -81,16 +83,20 @@ class SensorReading:
 
 # Channel structure
 class SensorChannel:
-    def __init__(self, channel_id):
+    def __init__(self, channel_id,**kwargs):
         self.channel_id = channel_id
-        self.time_interval_ms = None
-        self.alpha = None
-        self.multiplicator = None
-        self.averaging_mode = None
+        
+        # Use .get() to avoid KeyError if a key is missing
+        self.time_interval_ms = kwargs.get("time_interval_ms", 0)
+        self.alpha = kwargs.get("alpha", 0)
+        self.multiplicator = kwargs.get("multiplicator", 1)
+        self.a = kwargs.get("a", 0)
+        self.b = kwargs.get("b", 0)
+        self.averaging_mode = kwargs.get("averaging_mode", None)
         self.latest_reading = SensorReading()
         
-        #measurement download setttings
-        self.periodic_interval_ms = 0
+        # Measurement download settings
+        self.periodic_interval_ms = kwargs.get("periodic_interval_ms", 0)
         self.periodic_sending_is_enabled = False
 
 
@@ -130,7 +136,33 @@ class CSVLogger:
     
     def close(self):
         self.file.close()
-
+        
+    def print_lines(self):
+        try:
+            with open(self.filename, "r") as file:
+                for line in file:
+                    print(line.strip())  # Print each line
+        except OSError:
+            print("Error: Cannot read JSON log file.")
+            
+class EmptyLogger:
+    def __init__(self,**kwargs):
+        pass
+    def log(self,**kwargs):
+        pass
+    def log(self, level, message):
+        pass
+    def sync(self):
+        pass
+    def close(self):
+        pass
+    def read_logs(self):
+        pass
+    def clear_logs(self):
+        pass
+    def print_lines(self):
+        pass
+    
 class JSONLogger:
     def __init__(self, filename="log.json", parent_dir="/sd/logs", verbosity_level="INFO", csv_filename="measurements.csv"):
         self.parent_dir = parent_dir
@@ -200,3 +232,29 @@ class JSONLogger:
         os.unlink(self.csv_logger.filename)  # Remove CSV file
         self.file = open(self.filename, "w")  # Reopen as empty file
         self.csv_logger = CSVLogger(self.csv_logger.filename)
+        
+    def print_lines(self):
+        try:
+            with open(self.filename, "r") as file:
+                for line in file:
+                    print(line.strip())  # Print each line
+        except OSError:
+            print("Error: Cannot read JSON log file.")
+
+
+AFE_Config = [
+    {
+        "afe_id": 35,
+        "afe_uid": "",
+        "channel": [
+            SensorChannel(0, time_interval_ms=1000),
+            SensorChannel(1, time_interval_ms=1000),
+            SensorChannel(2, time_interval_ms=1000),
+            SensorChannel(3, time_interval_ms=1000),
+            SensorChannel(4, time_interval_ms=1000),
+            SensorChannel(5, time_interval_ms=1000),
+            SensorChannel(6, time_interval_ms=1000, a=0.08057, b=6, averaging_mode=1),
+            SensorChannel(7, time_interval_ms=1000, a=0.08057, b=6, averaging_mode=1),
+        ],
+    }
+]

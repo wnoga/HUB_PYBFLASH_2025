@@ -6,7 +6,11 @@ import misc
 import afedrv
 
 import machine
-from HUB import HUBDevice, initialize_can_hub, OK, ERROR
+from HUB import HUBDevice, initialize_can_hub
+
+OK = None
+ERROR = 1
+
 can = None
 hub = None
 hubTask = None
@@ -44,17 +48,19 @@ def loop_for_afe_list_arg(func, obj1, obj2, obj3):
             result[num] = 'ERR'
     return ('OK', result)
 
+can = None
+hub = HUBDevice() # this is only for the IDE autocomplete
+hub = None
+hubTask = None
 
 def initialization(obj):
     can, hub = initialize_can_hub()
     # hub.start_discovery(interval=0.1)
     # hub_process_enabled = True
-    hub.discovery_active = True
-    hub.rx_process_active = True
     # hub.tx_timeout_ms = 5000
     hub.use_tx_delay = True
     hubTask = machine.Timer()
-    return 'OK', hubTask.init(period=int(0.001 * 1000), mode=machine.Timer.PERIODIC, callback=hub.main_process)
+    return 'OK', OK
     # if isinstance(obj[1], list):
     #     return loop_for_list_arg(misc.init, obj[1])
     # else:
@@ -62,26 +68,39 @@ def initialization(obj):
 
 
 def turn_on_hub(obj):
-    return 'OK', misc.HUBon()
+    # return 'OK', misc.HUBon()
+    ###########
+    hub.discovery_active = True
+    hub.rx_process_active = True
+    hubTask.init(period=int(0.001 * 1000), mode=machine.Timer.PERIODIC, callback=hub.main_process)
+    return 'OK', OK
 
 
 def is_hub_on(obj):
-    return 'OK', misc.isHUBon()
+    # return 'OK', misc.isHUBon()
+    return 'OK', OK if hub is not None else ERROR
 
 
 def turn_off_hub(obj):
-    return 'OK', misc.HUBoff()
+    hub.discovery_active = False
+    hub.rx_process_active = False
+    hubTask.deinit()
+    return 'OK', OK
 
 
 def initId(obj):
+    raise "Not implemented"
     return ("init", obj[1]), misc.init(obj[1])
 
 def turn_on(obj):
+    raise "Not implemented"
     if isinstance(obj[1], list):
         return loop_for_list_arg(misc.HVon, obj[1])
     return ('OK', misc.HVon(obj[1]))
 
 def hvonId(obj):
+    hub.set_hv_on(obj[1])
+    raise "Not implemented"
     return ("hvon", obj[1]), misc.HVon(obj[1])
 
 def turn_off(obj):

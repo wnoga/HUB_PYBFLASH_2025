@@ -6,34 +6,45 @@ import struct
 import random
 
 from AFE import AFEDevice, AFECommand, millis, SensorChannel, SensorReading
-from my_utilities import JSONLogger
-OK = 0
-ERROR = 1
+from my_utilities import JSONLogger, EmptyLogger
+
+logger = EmptyLogger()
+logger = JSONLogger()
+# logger.log("INFO",{"test":"test"})
 
 class HUBDevice:
-    def __init__(self, can_bus, logger = None):
+    def __init__(self, can_bus, logger = EmptyLogger()):
         self.can_bus = can_bus
         self.afe_devices = []
-        self.afe_devices_max = 2
+        self.afe_devices_max = 8
+        
+        self.logger = logger
         
         self.rx_buffer = bytearray(8)  # Pre-allocate memory
         self.rx_message = [0, 0, 0, memoryview(self.rx_buffer)]  # Use memoryview to reduce heap allocations
-        self.can_bus.rxcallback(0, self.handle_can_rx)
+        self.can_bus.rxcallback(0, self.handle_can_rx) # Trigger every new CAN message
         
         self.message_queue = []
         
-        self.discovery_active = False
-        # self.discovery_timer = machine.Timer()
-        # self.rx_processing_timer = machine.Timer()
+        self.discovery_active = False # enable discovery subprocess
+        self.afe_manage_active = False # enable management of the AFEs
         self.rx_process_active = False
-        self.current_discovery_id = 7
+        
+        self.afe_id_min = 1
+        self.afe_id_max = 255
+        self.current_discovery_id = self.afe_id_min
         
         self.tx_timeout_ms = 100
         self.last_tx_time = 0
         
         self.use_tx_delay = True
         
-        self.logger = logger
+        self.curent_function = None
+        self.curent_function_timestamp_ms = 0
+        self.curent_function_timeout_ms = 2500
+        self.curent_function_afe_id = None
+        self.curent_function_retval = None
+        
         
     def reset_all(self):
         self.stop_discovery()
@@ -48,78 +59,62 @@ class HUBDevice:
                 self.can_bus.recv(0, self.rx_message)  # Read message from FIFO 0
                 if len(self.message_queue) >= 255:
                     self.message_queue.pop(0)
-                # print("R:",self.rx_message)
                 self.message_queue.append(self.rx_message)
+                self.process_received_messages()
         except Exception as e:
             print("handle_can_rx: HUB RX Error: {e}".format(e=e))
             
-    def find_afe_by_id(self, afe_id):
+    def get_afe_by_id(self, afe_id):
         """ Find an AFE by its short ID. """
         for afe in self.afe_devices:
             if (afe.device_id == afe_id):
                 return afe
         return None
-        # return next((afe for afe in self.afe_devices if afe.device_id == afe_id), None)
     
     def process_received_messages(self, timer=None):
         """ Process messages from the queue periodically. """
-        for afe in self.afe_devices:
-            if afe.is_online:
-                afe.manage_state()
-        while self.message_queue:
-            message = self.message_queue.pop(0)
-            afe_id = (message[0] >> 2) & 0xFF
-            
-            afe = self.find_afe_by_id(afe_id)
-            if afe is None:
-                afe = AFEDevice(self.can_bus, afe_id, 0, logger=self.logger)
+        if len(self.message_queue): # Process only if anythong is in the queue
+            message = self.message_queue.pop(0) # get from FIFO
+            afe_id = (message[0] >> 2) & 0xFF # unmask the AFE ID
+            afe = self.get_afe_by_id(afe_id)
+            if afe is None: # Add new discovered AFE
+                afe = AFEDevice(self.can_bus, afe_id, logger=self.logger)
                 self.afe_devices.append(afe)
-                print("Dodano AFE {}".format(afe_id))
-            # print("uuuu",pyb.millis(), len(self.message_queue))
             afe.process_received_data(message)
-        # print("end", pyb.millis())
     
     def discover_devices(self, timer=None):
         """ Periodically discover AFEs on the CAN bus. """
-        if len(self.afe_devices) == self.afe_devices_max:
-            try:
-                return 0
-            finally:
-                print("Skonczono wykrywanie")
-                self.stop_discovery()
         
-        if self.current_discovery_id > 36:
-            # print("Wykrycie restart")
-            self.current_discovery_id = 7
+        # Check if all devices are discovered
+        if len(self.afe_devices) == self.afe_devices_max:
+            self.stop_discovery()
             return
         
         if self.use_tx_delay:
-            if (pyb.millis() - self.last_tx_time) < self.tx_timeout_ms:
+            if (millis() - self.last_tx_time) < self.tx_timeout_ms:
                 return
-        # print("x")
         try:
-            if any(afe.is_online and afe.device_id == self.current_discovery_id for afe in self.afe_devices):
-                self.current_discovery_id += 1
-                return
-            # print("X",self.current_discovery_id)
-            self.can_bus.send(b"\x00\x11", self.current_discovery_id << 2)
-            self.last_tx_time = pyb.millis()
-            self.current_discovery_id += 1
+            # Check if AFE with current ID is already discovered
+            while True:
+                if self.current_discovery_id > self.afe_id_max:
+                    self.current_discovery_id = self.afe_id_min
+                if not any(afe.is_online and afe.device_id == self.current_discovery_id for afe in self.afe_devices):
+                    # Send get ID msg
+                    self.can_bus.send(b"\x00\x11", self.current_discovery_id << 2)
+                    self.last_tx_time = millis()
+                    break # Break ID increment loop
+                self.current_discovery_id += 1 # increment ID
+                
         except Exception as e:
             print("discover_devices: HUB Error sending: {e}".format(e=e))
     
     def start_discovery(self, interval=0.1):
         """ Start the device discovery process. """
-        raise "Not implemented"
         self.discovery_active = True
-        self.discovery_timer.init(period=int(interval * 1000), mode=machine.Timer.PERIODIC, callback=self.discover_devices)
-        self.rx_processing_timer.init(period=int(interval * 1000), mode=machine.Timer.PERIODIC, callback=self.process_received_messages)
 
     def stop_discovery(self):
         """ Stop the device discovery process. """
         self.discovery_active = False
-        # self.discovery_timer.deinit()
-        # self.rx_processing_timer.deinit()
         print("STOP DISCOVERY")
         
     def start_periodic_measurement_download(self, interval_ms=2500):
@@ -154,6 +149,19 @@ class HUBDevice:
     def start_all(self):
         self.set_offset_for_afe(1,200,210)
         self.set_gv_on()
+    
+    def abort_execution(self):
+        self.curent_function = None
+        self.curent_function_afe_id = None
+        self.curent_function_timestamp_ms = millis()
+        self.curent_function_retval = None
+    
+    def execute_for_id(self,afe_id,function,**kwargs):
+        self.curent_function = function
+        self.curent_function_afe_id = afe_id
+        self.curent_function_timestamp_ms = millis()
+        self.curent_function_retval = None
+        return
                 
     def stop_periodic_measurement_download(self):
         A = list(self.afe_devices)  # Directly use the list of devices
@@ -168,24 +176,21 @@ class HUBDevice:
                         afe.stop_periodic_measurement_download()
                     else:
                         A.remove(afe)
-        
-    # def start_data_logging(self, interval=5):
-    #     """ Start logging data at a specified interval in seconds. """
-    #     self.data_logging_active = True
-    #     self.data_logging_timer = machine.Timer()
-    #     self.data_logging_timer.init(period=interval * 1000, mode=machine.Timer.PERIODIC, callback=self.data_logger)
-
-    # def stop_data_logging(self):
-    #     """ Stop logging data. """
-    #     self.data_logging_active = False
-    #     self.data_logging_timer.deinit()
 
     def main_process(self,timer=None):
         if self.discovery_active:
             self.discover_devices()
+        if self.afe_manage_active:
+            for afe in self.afe_devices:
+                if afe.is_online:
+                    afe.manage_state()
         if self.rx_process_active:
             self.process_received_messages()
-        # print(millis(),"@", "HUB: main_process")
+        if self.curent_function is not None:
+            if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
+                self.curent_function = None
+                self.curent_function_retval = "timeout"
+            
 def initialize_can_hub():
     """ Initialize the CAN bus and HUB. """
     can_bus = pyb.CAN(1)
@@ -194,7 +199,5 @@ def initialize_can_hub():
     can_bus.setfilter(0, can_bus.MASK16, 0, (0, 0, 0, 0))
     
     print("CAN Bus Initialized")
-    logger = JSONLogger()
-    logger.log("INFO",{"test":"test"})
     hub = HUBDevice(can_bus,logger=logger)
     return can_bus, hub
