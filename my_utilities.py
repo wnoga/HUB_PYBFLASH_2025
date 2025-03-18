@@ -54,20 +54,34 @@ class AFECommandSubdevice:
     AFECommandSubdevice_slave = 0x2
     AFECommandSubdevice_both = 0x3
 
+class AFECommandAverage:
+    NONE = 0x00
+    STANDARD = 0x01
+    EXPONENTIAL = 0x02
+    MEDIAN = 0x03
+    RMS = 0x04
+    HARMONIC = 0x05
+    GEOMETRIC = 0x06
+    TRIMMED = 0x07
+    WEIGHTED_EXPONENTIAL = 0x08
+
 
 class AFECommandGPIO:
-    def __init__(self):
+    def __init__(self,pin=None,port=None):
         self.port = {
+            None:None,
             "A":0,"PORTA":0,
             "B":1,"PORTB":1,
             "C":2,"PORTC":2
         }
-        self.EN_HV0_Pin = 10
-        self.EN_HV0_Port = self.port["B"]
-        self.EN_HV1_Pin = 11
-        self.EN_HV1_Port = self.port["B"]
-        self.blink_Pin = 9
-        self.blink_Port = self.port["A"]
+        self.pin = pin
+        self.port = self.port[port]
+        # self.EN_HV0_Pin = 10
+        # self.EN_HV0_Port = self.port["B"]
+        # self.EN_HV1_Pin = 11
+        # self.EN_HV1_Port = self.port["B"]
+        # self.blink_Pin = 9
+        # self.blink_Port = self.port["A"]
 
 # Function to get current time in milliseconds
 def millis():

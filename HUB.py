@@ -6,11 +6,13 @@ import struct
 import random
 
 from AFE import AFEDevice, AFECommand, millis, SensorChannel, SensorReading
-from my_utilities import JSONLogger, EmptyLogger
+from my_utilities import JSONLogger, EmptyLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO
 
 logger = EmptyLogger()
 logger = JSONLogger()
 # logger.log("INFO",{"test":"test"})
+
+afe = AFEDevice() # only for autocomplete
 
 class HUBDevice:
     def __init__(self, can_bus, logger = EmptyLogger()):
@@ -108,7 +110,7 @@ class HUBDevice:
         except Exception as e:
             print("discover_devices: HUB Error sending: {e}".format(e=e))
     
-    def start_discovery(self, interval=0.1):
+    def start_discovery(self):
         """ Start the device discovery process. """
         self.discovery_active = True
 
@@ -142,9 +144,26 @@ class HUBDevice:
     def set_offset_for_afe(self, afe_id,offset_master=200,offset_slave=200):
         afe = self.get_afe_by_id(afe_id)
         afe.set_offset(offset_master,offset_slave)
+        subdevice = AFECommandSubdevice()
+        afe.enqueue_u32_for_channel(
+            afe.commands.setAD8402Value_byte, subdevice.AFECommandSubdevice_master, offset_master)
+        afe.enqueue_u32_for_channel(
+            afe.commands.setAD8402Value_byte, subdevice.AFECommandSubdevice_slave, offset_slave)
 
     def set_hv_on(self,afe_id):
-        pass
+        afe = self.get_afe_by_id(afe_id)
+        afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0,1)
+        afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV1,1)
+        
+    def set_hv_off(self,afe_id):
+        afe = self.get_afe_by_id(afe_id)
+        afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0,0)
+        afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV1,0)
+        
+    def test_start_measurement_record_in_ram(self,afe_id):
+        # afe.enqueue_gpio_set(afe.AFEGPIO_blink,0)
+        afe.enqueue_command(afe.commands.setAveragingMode,
+                            [6,3],outputRestart=True,startKeepOutput=True)
     
     def start_all(self):
         self.set_offset_for_afe(1,200,210)

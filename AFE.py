@@ -95,6 +95,10 @@ class AFEDevice:
         
         self.debug_machine_control_msg = [{},{}]
         
+        self.AFEGPIO_EN_HV0 = AFECommandGPIO("PORTB",10)
+        self.AFEGPIO_EN_HV1 = AFECommandGPIO("PORTB",11)
+        self.AFEGPIO_blink = AFECommandGPIO("PORTA",9)
+        
         self.afe_config = None
         for c in AFE_Config:
             if c["afe_id"] == self.device_id:
@@ -184,6 +188,18 @@ class AFEDevice:
         self.to_execute.append(
             self.prepare_command(command, data, chunk, max_chunks, timeout_ms, startKeepOutput, outputRestart)
         )
+
+    def enqueue_gpio_set(self,gpio,state):
+        self.enqueue_command(self.commands.writeGPIO,
+                             [gpio.port,gpio.pin,state])
+
+    def enqueue_float_for_channel(self, command, channel, value):
+        self.enqueue_command(
+            command, [channel] + list(struct.pack('<f', value)))
+
+    def enqueue_u32_for_channel(self, command, channel, value):
+        self.enqueue_command(
+            command, [channel] + list(struct.pack('<I', value)))
 
     # Execute commands from the buffer
     def execute(self,command,timeout_ms=5000,**kwargs):
