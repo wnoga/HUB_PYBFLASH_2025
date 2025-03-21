@@ -10,15 +10,18 @@ from HUB import HUBDevice, initialize_can_hub
 # hub.start_discover(1)
 can = None
 hub = None
+# can, hub = initialize_can_hub()
 # pyb.delay(500)
 if True:
     can, hub = initialize_can_hub()
     # hub.start_discovery(interval=0.1)
+    # pass
     hub_process_enabled = True
     hub.discovery_active = True
     hub.rx_process_active = True
     # hub.tx_timeout_ms = 5000
     hub.use_tx_delay = True
+    hub.afe_manage_active = True
     import machine
     hubTask = machine.Timer()
     if True:

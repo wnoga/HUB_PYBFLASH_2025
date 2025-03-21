@@ -6,13 +6,13 @@ import struct
 import random
 
 from AFE import AFEDevice, AFECommand, millis, SensorChannel, SensorReading
-from my_utilities import JSONLogger, EmptyLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO
+from my_utilities import JSONLogger, EmptyLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, AFE_Config
 
 logger = EmptyLogger()
-logger = JSONLogger()
+# logger = JSONLogger()
 # logger.log("INFO",{"test":"test"})
 
-afe = AFEDevice() # only for autocomplete
+# afe = AFEDevice() # only for autocomplete
 
 class HUBDevice:
     def __init__(self, can_bus, logger = EmptyLogger()):
@@ -32,7 +32,7 @@ class HUBDevice:
         self.afe_manage_active = False # enable management of the AFEs
         self.rx_process_active = False
         
-        self.afe_id_min = 1
+        self.afe_id_min = 35
         self.afe_id_max = 255
         self.current_discovery_id = self.afe_id_min
         
@@ -46,6 +46,8 @@ class HUBDevice:
         self.curent_function_timeout_ms = 2500
         self.curent_function_afe_id = None
         self.curent_function_retval = None
+        
+        self.afecmd = AFECommand()
         
         
     def reset_all(self):
@@ -62,7 +64,6 @@ class HUBDevice:
                 if len(self.message_queue) >= 255:
                     self.message_queue.pop(0)
                 self.message_queue.append(self.rx_message)
-                self.process_received_messages()
         except Exception as e:
             print("handle_can_rx: HUB RX Error: {e}".format(e=e))
             
@@ -104,8 +105,8 @@ class HUBDevice:
                     # Send get ID msg
                     self.can_bus.send(b"\x00\x11", self.current_discovery_id << 2)
                     self.last_tx_time = millis()
-                    break # Break ID increment loop
                 self.current_discovery_id += 1 # increment ID
+                break
                 
         except Exception as e:
             print("discover_devices: HUB Error sending: {e}".format(e=e))
@@ -143,7 +144,7 @@ class HUBDevice:
     
     def set_offset_for_afe(self, afe_id,offset_master=200,offset_slave=200):
         afe = self.get_afe_by_id(afe_id)
-        afe.set_offset(offset_master,offset_slave)
+        # afe.set_offset(offset_master,offset_slave)
         subdevice = AFECommandSubdevice()
         afe.enqueue_u32_for_channel(
             afe.commands.setAD8402Value_byte, subdevice.AFECommandSubdevice_master, offset_master)
@@ -195,6 +196,26 @@ class HUBDevice:
                         afe.stop_periodic_measurement_download()
                     else:
                         A.remove(afe)
+    def default_procedure(self, afe_id=35):
+        # afe = AFEDevice()
+        channels = AFECommandChannel()
+        averages = AFECommandAverage()
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        # afe.enqueue_command(afe.commands.getVersion)  # get Version
+        afeConfig = None
+        for a in AFE_Config:
+            if a["afe_id"] == afe_id:
+                afeConfig = a
+                break
+        # print(afeConfig["afe_id"])
+        for ch in afeConfig["channel"]:
+            afe.enqueue_command(afe.commands.setAveragingMode,[ch.channel_id,ch.averaging_mode])
+            afe.enqueue_float_for_channel(afe.commands.setChannel_a,ch.channel_id,ch.a)
+            afe.enqueue_float_for_channel(afe.commands.setChannel_b,ch.channel_id,ch.b)
+            afe.enqueue_u32_for_channel(afe.commands.setChannel_dt_ms,ch.channel_id,ch.time_interval_ms)
+            afe.enqueue_float_for_channel(afe.commands.setAveragingAlpha,ch.channel_id,ch.alpha)
 
     def main_process(self,timer=None):
         if self.discovery_active:

@@ -95,9 +95,9 @@ class AFEDevice:
         
         self.debug_machine_control_msg = [{},{}]
         
-        self.AFEGPIO_EN_HV0 = AFECommandGPIO("PORTB",10)
-        self.AFEGPIO_EN_HV1 = AFECommandGPIO("PORTB",11)
-        self.AFEGPIO_blink = AFECommandGPIO("PORTA",9)
+        self.AFEGPIO_EN_HV0 = AFECommandGPIO(port="PORTB",pin=10)
+        self.AFEGPIO_EN_HV1 = AFECommandGPIO(port="PORTB",pin=11)
+        self.AFEGPIO_blink = AFECommandGPIO(port="PORTA",pin=9)
         
         self.afe_config = None
         for c in AFE_Config:
@@ -165,7 +165,7 @@ class AFEDevice:
         elif isinstance(data, int):
             data = [data]
         elif not (isinstance(data, list) and all(isinstance(i, int) for i in data)):
-            raise ValueError("Data must be an integer or a list of integers (bytes).")
+            raise ValueError("Data must be an integer or a list of integers (bytes). {data}".format())
 
         chunk_info = (max_chunks << 4) | chunk
         frame = bytearray([command, chunk_info] + data[:6])
@@ -202,8 +202,10 @@ class AFEDevice:
             command, [channel] + list(struct.pack('<I', value)))
 
     # Execute commands from the buffer
-    def execute(self,command,timeout_ms=5000,**kwargs):
-        for command in self.to_execute:
+    def execute(self,timeout_ms=5000,**kwargs):
+        
+        if len(self.to_execute):
+            command = self.to_execute.pop(0)
             self.last_command_time = millis() if command["timestamp_ms"] is None else command["timestamp_ms"]
             self.current_command = command["command"]
             self.command_timeout = command["timeout_ms"]
@@ -212,7 +214,6 @@ class AFEDevice:
             if command["outputRestart"]:
                 self.output = {}
             self.can_interface.send(command["frame"], command["can_address"])
-            return
     
     # Receive and process data from AFE
     def process_received_data(self, received_data):
@@ -224,10 +225,8 @@ class AFEDevice:
             data_bytes = list(bytes(received_data[3]))
             device_id = (received_data[0] >> 2) & 0xFF
             msg_from_slave = (received_data[0] >> 10) & 0x001
-            # print("{} {}".format(msg_from_slave,received_data))
-            # pyb.delay(1000)
             if msg_from_slave != 1:
-                print("Not from slave")
+                self.logger.log("WARNING","Not from slave")
                 return
             if device_id != self.device_id:
                 return
@@ -236,9 +235,7 @@ class AFEDevice:
             chunk_id = data_bytes[1] & 0x0F
             max_chunks = (data_bytes[1] >> 4) & 0x0F
             chunk_payload = data_bytes[2:]
-            if(self.verbose >= 4):
-                print("R: ID:{}; Command: 0x{:02X}: {}".format(device_id, command, data_bytes))
-            # print(command, chunk_id,max_chunks, chunk_payload)
+            self.logger.log("DEBUG","R: ID:{}; Command: 0x{:02X}: {}".format(device_id, command, data_bytes))
             
             # New message arrived
             if chunk_id == 1:
@@ -268,7 +265,6 @@ class AFEDevice:
                 self.firmware_version = int("".join(map(str, chunk_payload)))
                 self.version_checked = True
                 self.update_last_msg("version",self.firmware_version)
-                self.ifKeepOutput("version",self.firmware_version)
    
             elif command == self.commands.setAveragingMode:
                 self.channels[chunk_payload[0]].averaging_mode = chunk_payload[1]
@@ -281,7 +277,6 @@ class AFEDevice:
             
             elif command == self.commands.setChannel_a:
                 self.channels[chunk_payload[0]].a = self.bytes_to_float(chunk_payload[1:])
-                print(self.channels[chunk_payload[0]].a)
             
             elif command == self.commands.setChannel_b:
                 self.channels[chunk_payload[0]].b = self.bytes_to_float(chunk_payload[1:])
@@ -378,16 +373,12 @@ class AFEDevice:
                 if(self.verbose >= 3):
                     print("0x{:02X} END".format(command))
                 self.current_command = None
-                
-                # Resolve external commands
-                if self.is_busy:
-                    self.external_command_done = True
             received_data = None
         except Exception as error:
             print("Error processing received AFE data: {}".format(error))
     
     def start_periodic_measurement_download(self,interval_ms=2500):
-        self.send_command(
+        self.enqueue_command(
             self.commands.setSensorDataSi_all_periodic_average,
             list(struct.pack('<I', interval_ms)))
         self.periodic_measurement_download_is_enabled = True
@@ -416,8 +407,8 @@ class AFEDevice:
             #     millis() - self.last_command_time,self.command_timeout, 
             #     (millis() - self.last_command_time) > self.command_timeout))
             if (millis() - self.last_command_time) > self.command_timeout:
-                if(self.verbose >= 1):
-                    print("0x{:02X} TIMEOUT".format(self.current_command))
+                # if(self.verbose >= 1):
+                self.logger.log("DEBUG","AFE:manage_state:0x{:02X} TIMEOUT".format(self.current_command))
                 self.current_command = None
             return
         
@@ -427,6 +418,8 @@ class AFEDevice:
                 return
 
         if not self.is_configured:
+            pass
+        else:
             if self.version_checked != True:
                 self.send_command(0x01)
                 return
@@ -488,7 +481,7 @@ class AFEDevice:
             if self.verbose >= 1:
                 self.display_info()
             return
-        
+
         self.execute()
         
         return

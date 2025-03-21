@@ -106,7 +106,8 @@ class SensorChannel:
         self.multiplicator = kwargs.get("multiplicator", 1)
         self.a = kwargs.get("a", 0)
         self.b = kwargs.get("b", 0)
-        self.averaging_mode = kwargs.get("averaging_mode", None)
+        averagingmodes = AFECommandAverage()
+        self.averaging_mode = kwargs.get("averaging_mode", averagingmodes.NONE)
         self.latest_reading = SensorReading()
         
         # Measurement download settings
@@ -161,10 +162,14 @@ class CSVLogger:
             
 class EmptyLogger:
     def __init__(self,**kwargs):
+        self.levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "MEASUREMENT"]
+        self.verbosity_level = "DEBUG".upper()
         pass
-    def log(self,**kwargs):
-        pass
+    def _should_log(self, level):
+        return self.levels.index(level.upper()) >= self.levels.index(self.verbosity_level)
     def log(self, level, message):
+        if self._should_log(level):
+            print("{}: {}".format(level,message))
         pass
     def sync(self):
         pass
@@ -255,7 +260,7 @@ class JSONLogger:
         except OSError:
             print("Error: Cannot read JSON log file.")
 
-
+cmndavrg = AFECommandAverage()
 AFE_Config = [
     {
         "afe_id": 35,
@@ -267,8 +272,8 @@ AFE_Config = [
             SensorChannel(3, time_interval_ms=1000),
             SensorChannel(4, time_interval_ms=1000),
             SensorChannel(5, time_interval_ms=1000),
-            SensorChannel(6, time_interval_ms=1000, a=0.08057, b=6, averaging_mode=1),
-            SensorChannel(7, time_interval_ms=1000, a=0.08057, b=6, averaging_mode=1),
+            SensorChannel(6, time_interval_ms=1000, a=0.08057, b=6, alpha=1.0/1000, averaging_mode=cmndavrg.WEIGHTED_EXPONENTIAL),
+            SensorChannel(7, time_interval_ms=1000, a=0.08057, b=6, alpha=1.0/1000, averaging_mode=cmndavrg.WEIGHTED_EXPONENTIAL),
         ],
     }
 ]

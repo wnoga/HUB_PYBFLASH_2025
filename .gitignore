@@ -39,3 +39,7 @@
 
 /log
 /logs
+
+__pycache__
+pycache/*
+pycache
