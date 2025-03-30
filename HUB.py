@@ -6,7 +6,7 @@ import struct
 import random
 
 from AFE import AFEDevice, AFECommand, millis, SensorChannel, SensorReading
-from my_utilities import JSONLogger, EmptyLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, AFE_Config
+from my_utilities import JSONLogger, EmptyLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, AFE_Config, read_callibration_csv
 
 logger = EmptyLogger()
 # logger = JSONLogger()
@@ -196,13 +196,67 @@ class HUBDevice:
                         afe.stop_periodic_measurement_download()
                     else:
                         A.remove(afe)
+    def get_configuration_from_files(self, afe_id, callibration_data_file_csv = "dane_kalibracyjne.csv", TempLoop_file_csv = "TempLoop.csv",UID=None):
+        TempLoop_data, TempLoop_data_mean = read_callibration_csv(TempLoop_file_csv)
+        callib_data, callib_data_mean = read_callibration_csv(callibration_data_file_csv)
+        
+        callibration = {'ID':afe_id}
+        for c0 in [callib_data,TempLoop_data]:
+            for c in c0:
+                if c['ID'] != afe_id:
+                    continue
+                if UID is not None:
+                    if c['SN_AFE'] != UID:
+                        continue
+                g = c['M/S']
+                if g not in callibration:
+                    callibration[g] = {}
+                callibration[g].update(c)
+        
+        for c0 in [callib_data_mean,TempLoop_data_mean]:
+            for g in ['M','S']:
+                for k,v in c0[g].items():
+                    if k not in callibration[g]: # no key
+                        self.logger.log("WARNING", "Calibration data: AFE {}: No key: {}".format(afe_id, k))
+                        callibration[g][k] = ''
+                    elif len(str(callibration[g][k])) == 0: # empty string:
+                        self.logger.log("WARNING", "Calibration data: AFE {}: No value {}, set to {}".format(afe_id,k,v))
+                        callibration[g][k] = v # set default value
+        return callibration
+                        
     def default_procedure(self, afe_id=35):
-        # afe = AFEDevice()
         channels = AFECommandChannel()
         averages = AFECommandAverage()
+        subdevices = AFECommandSubdevice()
         afe = self.get_afe_by_id(afe_id)
+        # afe = AFEDevice()
         if afe is None:
             return
+        callib = self.get_configuration_from_files(afe_id)
+        print(str(callib).replace("'",'"'))
+        print("####")
+        # afe.enqueue_float_for_channel(afe.commands.setAveragingAlpha_byMask,channels.)
+        # return
+        # for g in ["M","S"]:
+        for g in ["M"]:
+            subdevice = subdevices.AFECommandSubdevice_master if g=='M' else subdevices.AFECommandSubdevice_slave
+            # ch_id = channels.AFECommandChannel_6 if g=='M' else channels.AFECommandChannel_7 # select proper channel id
+            ch_id = None
+            for k,v in callib[g].items():
+                ks = k.split(" ")[0]
+                if ks == "T_measured_a":
+                    ch_id = channels.AFECommandChannel_6 if g=='M' else channels.AFECommandChannel_7
+                    afe.enqueue_float_for_channel(afe.commands.setChannel_a_byMask,ch_id,v)
+                # elif ks == "T_measured_b":
+                #     ch_id = channels.AFECommandChannel_6 if g=='M' else channels.AFECommandChannel_7
+                #     afe.enqueue_float_for_channel(afe.commands.setChannel_b,ch_id,v)
+                # elif ks == "U_measured_a":
+                #     ch_id = channels.AFECommandChannel_6 if g=='M' else channels.AFECommandChannel_7
+                #     afe.enqueue_float_for_channel(afe.commands.setChannel_b,ch_id,v)
+                else:
+                    continue
+                print(g,ch_id,k,v)
+        return
         # afe.enqueue_command(afe.commands.getVersion)  # get Version
         afeConfig = None
         for a in AFE_Config:
@@ -236,8 +290,13 @@ def initialize_can_hub():
     can_bus = pyb.CAN(1)
     can_bus.init(pyb.CAN.NORMAL, extframe=False, prescaler=54, sjw=1, bs1=7, bs2=2, auto_restart=True)
     # can_bus.setfilter(0, can_bus.MASK32, 0, (0, 0))
-    can_bus.setfilter(0, can_bus.MASK16, 0, (0, 0, 0, 0))
+    can_bus.setfilter(0, can_bus.MASK16, 0, (0, 0, 0, 0)) 
+    
+    # print(str(callib_data[0]).replace("'",'"'))
+    # return
     
     print("CAN Bus Initialized")
     hub = HUBDevice(can_bus,logger=logger)
+    
+    
     return can_bus, hub

@@ -7,6 +7,7 @@ import machine
 
 from my_utilities import AFECommand, AFECommandGPIO, AFECommandChannel, AFECommandSubdevice
 from my_utilities import millis, SensorChannel, SensorReading, AFE_Config, EmptyLogger
+from my_utilities import e_ADC_CHANNEL
 
 # class AFESendCommandQueue:
 #     def __init__(self,can_interface,device_id,verbose=0):
@@ -158,6 +159,20 @@ class AFEDevice:
     def bytes_to_float(self, data):
         return struct.unpack('<f', bytes(data))[0]
     
+    def unmask_channel(self,masked_channel):
+        if masked_channel == 0: # often as timestamp
+            return [1<<8]
+        else:
+            channels = []
+            for i in range(8):
+                if 0x01 & (masked_channel >> i):
+                    channels.append(i)
+            return channels
+        
+    def getChannelName(self,number: int) -> str:
+        return e_ADC_CHANNEL.get(number, "Unknown")
+                    
+    
     # Prepare frame payload for the AFE
     def prepare_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms = None, startKeepOutput=False, outputRestart=False):
         if data is None:
@@ -265,14 +280,24 @@ class AFEDevice:
                 self.firmware_version = int("".join(map(str, chunk_payload)))
                 self.version_checked = True
                 self.update_last_msg("version",self.firmware_version)
-   
-            elif command == self.commands.setAveragingMode:
+                
+            elif command == self.commands.getSensorDataSi_last_byMask:
+                unmasked_channels = self.unmask_channel(chunk_payload[0])
+                for uch in unmasked_channels:
+                    print("Last data: CH:{} = {:0.4f}".format(self.getChannelName(uch), self.bytes_to_float(chunk_payload[1:])))
+
+            elif command == self.commands.getSensorDataSi_average_byMask:
+                unmasked_channels = self.unmask_channel(chunk_payload[0])
+                for uch in unmasked_channels:
+                    print("Average data: CH:{} = {:0.4f}".format(self.getChannelName(uch), self.bytes_to_float(chunk_payload[1:])))
+            
+            elif command == self.commands.setAveragingMode_byMask:
                 self.channels[chunk_payload[0]].averaging_mode = chunk_payload[1]
 
-            elif command == self.commands.setAveragingAlpha:
+            elif command == self.commands.setAveragingAlpha_byMask:
                 self.channels[chunk_payload[0]].alpha = self.bytes_to_float(chunk_payload[1:])
             
-            elif command == self.commands.setChannel_dt_ms:
+            elif command == self.commands.setChannel_dt_ms_byMask:
                 self.channels[chunk_payload[0]].time_interval_ms = self.bytes_to_u32(chunk_payload[1:])
             
             elif command == self.commands.setChannel_a:
@@ -284,10 +309,10 @@ class AFEDevice:
             elif command == self.commands.setChannel_multiplicator:
                 self.channels[chunk_payload[0]].multiplicator = self.bytes_to_float(chunk_payload[1:])
             
-            elif command == self.commands.setSensorDataSi_all_periodic_average:
-                flag = chunk_payload[0]
-                for i,b in enumerate([(flag >> x) & 0x01 for x in range(8)]):
-                    self.channels[i].periodic_sending_is_enabled = True if b else False
+            # elif command == self.commands.setSensorDataSi_all_periodic_average:
+            #     flag = chunk_payload[0]
+            #     for i,b in enumerate([(flag >> x) & 0x01 for x in range(8)]):
+            #         self.channels[i].periodic_sending_is_enabled = True if b else False
             
             elif command == self.commands.getSensorDataSi_all_periodic_average:
                 channel = chunk_payload[0]
@@ -304,7 +329,7 @@ class AFEDevice:
                     print("{}: {}".format(channel, self.channels[channel].latest_reading))
                     
             
-            elif command == self.commands.getSensorDataSiAndTimestamp_average:
+            elif command == self.commands.getSensorDataSiAndTimestamp_average_byMask:
                 channel = chunk_payload[0]
                 if chunk_id == 1:
                     value = self.bytes_to_float(chunk_payload[1:]) # value
@@ -317,25 +342,25 @@ class AFEDevice:
             elif command == self.commands.writeGPIO:
                 self.blink_is_enabled = True
             
-            elif command == self.commands.setTemperatureLoopForChannelState_bySubdevice:
-                # print("Subdevice")
-                channel = chunk_payload[0]
-                status = chunk_payload[1]
-                channel_name = "?"
-                status_status = True if status == 1 else False
-                if channel == 1:
-                    self.temperatureLoop_master_is_enabled = status_status
-                    channel_name = "master"
-                elif channel == 2:
-                    self.temperatureLoop_slave_is_enabled = status_status
-                    channel_name = "slave"
-                elif channel == 3:
-                    self.temperatureLoop_master_is_enabled = status_status
-                    self.temperatureLoop_slave_is_enabled = status_status
-                    channel_name = "master+slave"
-                print("TemperatureLoop for {} is {}".format(
-                    channel_name, "enabled" if status == 1 else "disabled"
-                ))
+            # elif command == self.commands.setTemperatureLoopForChannelState_bySubdevice:
+            #     # print("Subdevice")
+            #     channel = chunk_payload[0]
+            #     status = chunk_payload[1]
+            #     channel_name = "?"
+            #     status_status = True if status == 1 else False
+            #     if channel == 1:
+            #         self.temperatureLoop_master_is_enabled = status_status
+            #         channel_name = "master"
+            #     elif channel == 2:
+            #         self.temperatureLoop_slave_is_enabled = status_status
+            #         channel_name = "slave"
+            #     elif channel == 3:
+            #         self.temperatureLoop_master_is_enabled = status_status
+            #         self.temperatureLoop_slave_is_enabled = status_status
+            #         channel_name = "master+slave"
+            #     print("TemperatureLoop for {} is {}".format(
+            #         channel_name, "enabled" if status == 1 else "disabled"
+            #     ))
             
             elif command == self.commands.debug_machine_control:
                 channel = chunk_payload[0]

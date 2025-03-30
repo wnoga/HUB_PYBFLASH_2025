@@ -12,6 +12,7 @@ can = None
 hub = None
 # can, hub = initialize_can_hub()
 # pyb.delay(500)
+ 
 if True:
     can, hub = initialize_can_hub()
     # hub.start_discovery(interval=0.1)
@@ -29,6 +30,8 @@ if True:
     else:
         while(hub_process_enabled is True):
             hub.main_process()
+    pyb.delay(500)
+    hub.default_procedure()
 
 # from pyb import CAN
 # can = CAN(1)
