@@ -63,6 +63,7 @@ class AFECommandAverage:
     GEOMETRIC = 0x06
     TRIMMED = 0x07
     WEIGHTED_EXPONENTIAL = 0x08
+    ARIMA = 0x09
 
 
 e_ADC_CHANNEL: dict[int, str] = {
@@ -173,7 +174,7 @@ class CSVLogger:
 class EmptyLogger:
     def __init__(self,**kwargs):
         self.levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "MEASUREMENT"]
-        self.verbosity_level = "DEBUG".upper()
+        self.verbosity_level = "INFO".upper()
         pass
     def _should_log(self, level):
         return self.levels.index(level.upper()) >= self.levels.index(self.verbosity_level)

@@ -151,9 +151,9 @@ class AFEDevice:
         except Exception as error:
             print("Error transmitting settings to AFE {}: {}".format(self.device_id, error))
     
-    # Convert byte list to 32-bit integer
+    # Convert byte list to 32-bit unsigned integer
     def bytes_to_u32(self, data):
-        return sum(data[i] << (8 * i) for i in range(len(data)))
+        return struct.unpack('<I', bytes(data))[0]
     
     # Convert byte list to float
     def bytes_to_float(self, data):
@@ -228,7 +228,8 @@ class AFEDevice:
                 self.keep_output = True
             if command["outputRestart"]:
                 self.output = {}
-            self.can_interface.send(command["frame"], command["can_address"])
+            self.can_interface.send(command["frame"], command["can_address"],timeout=self.command_timeout)
+            print("Sending",command)
     
     # Receive and process data from AFE
     def process_received_data(self, received_data):
@@ -281,33 +282,59 @@ class AFEDevice:
                 self.version_checked = True
                 self.update_last_msg("version",self.firmware_version)
                 
+            elif command == self.commands.resetAll:
+                self.logger.log("ERROR","AFE {} was restared!".format(device_id))
+                self.logger.sync()
+                pyb.delay(2000)
+                
             elif command == self.commands.getSensorDataSi_last_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
                 for uch in unmasked_channels:
-                    print("Last data: CH:{} = {:0.4f}".format(self.getChannelName(uch), self.bytes_to_float(chunk_payload[1:])))
+                    if uch == (1<<8):
+                        print("Last timestamp: CH:{} = {}".format(self.getChannelName(uch), self.bytes_to_u32(chunk_payload[1:])))
+                    else:
+                        print("Last data: CH:{} = {}".format(self.getChannelName(uch), self.bytes_to_float(chunk_payload[1:])))
 
             elif command == self.commands.getSensorDataSi_average_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
+                print(chunk_payload)
                 for uch in unmasked_channels:
-                    print("Average data: CH:{} = {:0.4f}".format(self.getChannelName(uch), self.bytes_to_float(chunk_payload[1:])))
+                    if uch == (1<<8):
+                        print("Average timestamp: CH:{} = {}".format(self.getChannelName(uch), self.bytes_to_u32(chunk_payload[1:])))
+                    else:
+                        print("Average data: CH:{} = {}".format(self.getChannelName(uch), self.bytes_to_float(chunk_payload[1:])))
+            
+            elif command == self.commands.setAD8402Value_byte_byMask:
+                for uch in self.unmask_channel(chunk_payload[0]):
+                    if 0x01 & (chunk_payload[2] >> uch):
+                        self.logger.log("ERROR", "AFE {}: ERROR setAD8402Value_byte_byMask for CH{}".format(
+                            device_id, uch
+                        ))
             
             elif command == self.commands.setAveragingMode_byMask:
-                self.channels[chunk_payload[0]].averaging_mode = chunk_payload[1]
+                unmasked_channels = self.unmask_channel(chunk_payload[0])
+                for uch in unmasked_channels:
+                    self.channels[uch].averaging_mode = chunk_payload[1]
 
             elif command == self.commands.setAveragingAlpha_byMask:
-                self.channels[chunk_payload[0]].alpha = self.bytes_to_float(chunk_payload[1:])
+                for uch in self.unmask_channel(chunk_payload[0]):
+                    self.channels[uch].alpha = self.bytes_to_float(chunk_payload[1:])
             
             elif command == self.commands.setChannel_dt_ms_byMask:
-                self.channels[chunk_payload[0]].time_interval_ms = self.bytes_to_u32(chunk_payload[1:])
+                for uch in self.unmask_channel(chunk_payload[0]):
+                    self.channels[uch].time_interval_ms = self.bytes_to_u32(chunk_payload[1:])
             
-            elif command == self.commands.setChannel_a:
-                self.channels[chunk_payload[0]].a = self.bytes_to_float(chunk_payload[1:])
+            elif command == self.commands.setChannel_a_byMask:
+                for uch in self.unmask_channel(chunk_payload[0]):
+                    self.channels[uch].a = self.bytes_to_float(chunk_payload[1:])
             
-            elif command == self.commands.setChannel_b:
-                self.channels[chunk_payload[0]].b = self.bytes_to_float(chunk_payload[1:])
+            elif command == self.commands.setChannel_b_byMask:
+                for uch in self.unmask_channel(chunk_payload[0]):
+                    self.channels[uch].b = self.bytes_to_float(chunk_payload[1:])
             
-            elif command == self.commands.setChannel_multiplicator:
-                self.channels[chunk_payload[0]].multiplicator = self.bytes_to_float(chunk_payload[1:])
+            elif command == self.commands.setChannel_multiplicator_byMask:
+                for uch in self.unmask_channel(chunk_payload[0]):
+                    self.channels[uch].multiplicator = self.bytes_to_float(chunk_payload[1:])
             
             # elif command == self.commands.setSensorDataSi_all_periodic_average:
             #     flag = chunk_payload[0]
