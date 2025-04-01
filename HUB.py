@@ -240,6 +240,7 @@ class HUBDevice:
         if True:
             # afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[channels.AFECommandChannel_7], timeout_ms=2500)
             # afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[channels.AFECommandChannel_7 | channels.AFECommandChannel_6], timeout_ms=2500)
+            afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,[0xFF], timeout_ms=2500)
             afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[0xFF], timeout_ms=2500)
         else:
             afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,
@@ -311,8 +312,9 @@ class HUBDevice:
                 for uch in afe.unmask_channel(ch_id):
                     print("Loaded for AFE {}:{}:CH{}: {} = {}".format(afe_id,g,uch,k,v))
             afe.enqueue_u32_for_channel(afe.commands.setAveraging_max_dt_ms_byMask,0xFF,100*200)
-            afe.enqueue_command(afe.commands.setAveragingMode_byMask,[0xFF,averages.EXPONENTIAL])
+            afe.enqueue_command(afe.commands.setAveragingMode_byMask,[0xFF,averages.STANDARD])
             afe.enqueue_float_for_channel(afe.commands.setAveragingAlpha_byMask,0xFF,1.0/100.0)
+
         # print("Start periodic measurement report for AFE {}".format(afe_id))
         # afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,[0xFF],timeout_ms=2500)
         return
@@ -329,6 +331,19 @@ class HUBDevice:
             afe.enqueue_float_for_channel(afe.commands.setChannel_b,ch.channel_id,ch.b)
             afe.enqueue_u32_for_channel(afe.commands.setChannel_dt_ms,ch.channel_id,ch.time_interval_ms)
             afe.enqueue_float_for_channel(afe.commands.setAveragingAlpha,ch.channel_id,ch.alpha)
+
+    def parse(self,msg):
+        print("Parsed: {}".format(msg))
+        
+    def send_back_data(self,afe_id: int):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        toSend = afe.last_msg.copy()
+        if toSend == {}:
+            return
+        afe.last_msg = {}
+        print("Send back: {}".format(toSend))
 
     def main_process(self,timer=None):
         if self.discovery_active:

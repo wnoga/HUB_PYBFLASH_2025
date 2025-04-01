@@ -12,9 +12,13 @@ can = None
 hub = None
 # can, hub = initialize_can_hub()
 # pyb.delay(500)
- 
+from my_server import MyServer
+# Example usage:
+
 if True:
     can, hub = initialize_can_hub()
+    server = MyServer(hub)
+    server.start_server()
     # hub.start_discovery(interval=0.1)
     # pass
     hub_process_enabled = True

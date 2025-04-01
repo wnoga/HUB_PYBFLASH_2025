@@ -105,7 +105,7 @@ class AFEDevice:
             if c["afe_id"] == self.device_id:
                 self.afe_config = c
                 
-        print("Found config for AFE {}".format(self.afe_config["afe_id"]))
+        self.logger.log("DEBUG","Found config for AFE {}".format(self.afe_config["afe_id"]))
         
     def update_output(self, output, value_name, value, channel = None):
         if channel is None:
@@ -229,7 +229,7 @@ class AFEDevice:
             if command["outputRestart"]:
                 self.output = {}
             self.can_interface.send(command["frame"], command["can_address"],timeout=self.command_timeout)
-            print("Sending",command)
+            self.logger.log("DEBUG","Sending {}".format(command))
     
     # Receive and process data from AFE
     def process_received_data(self, received_data):
@@ -285,7 +285,6 @@ class AFEDevice:
             elif command == self.commands.resetAll:
                 self.logger.log("ERROR","AFE {} was restared!".format(device_id))
                 self.logger.sync()
-                pyb.delay(2000)
                 
             elif command == self.commands.getSensorDataSi_last_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
@@ -297,7 +296,6 @@ class AFEDevice:
 
             elif command == self.commands.getSensorDataSi_average_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
-                print(chunk_payload)
                 for uch in unmasked_channels:
                     if uch == (1<<8):
                         print("Average timestamp: CH:{} = {}".format(self.getChannelName(uch), self.bytes_to_u32(chunk_payload[1:])))
