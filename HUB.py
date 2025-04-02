@@ -250,7 +250,10 @@ class HUBDevice:
                                 channels.AFECommandChannel_7
                             ],
                             timeout_ms=2500)
-
+    def callback_1(self,msg=None):
+        msg["callback"] = None
+        msg = json.dumps(msg)
+        print("callback:",msg)
                         
     def default_procedure(self, afe_id=35):
         channels = AFECommandChannel()
@@ -271,9 +274,11 @@ class HUBDevice:
         print("### DEFAULT PROCEDURE ###")
         print(str(callib).replace("'",'"'))
         print("#########################")
+        afe.callback_1 = self.callback_1
         # afe.enqueue_float_for_channel(afe.commands.setAveragingAlpha_byMask,channels.)
         # afe.enqueue_command(afe.commands.setAveragingMode_byMask,[channels.AFECommandChannel_6,averages.STANDARD],timeout_ms=5000)
-        # return
+        afe.enqueue_command(AFECommand.getVersion,callback=self.callback_1)
+        return
         for g in ["M","S"]: 
             subdevice = subdevices.AFECommandSubdevice_master if g=='M' else subdevices.AFECommandSubdevice_slave
             # ch_id = channels.AFECommandChannel_6 if g=='M' else channels.AFECommandChannel_7 # select proper channel id
@@ -370,6 +375,7 @@ def initialize_can_hub():
     # return
     
     print("CAN Bus Initialized")
+    # logger.verbosity_level = "DEBUG"
     hub = HUBDevice(can_bus,logger=logger)
     
     

@@ -17,8 +17,8 @@ from my_server import MyServer
 
 if True:
     can, hub = initialize_can_hub()
-    server = MyServer(hub)
-    server.start_server()
+    # server = MyServer(hub)
+    # server.start_server()
     # hub.start_discovery(interval=0.1)
     # pass
     hub_process_enabled = True
@@ -27,15 +27,16 @@ if True:
     # hub.tx_timeout_ms = 5000
     hub.use_tx_delay = True
     hub.afe_manage_active = True
-    import machine
-    hubTask = machine.Timer()
     if True:
-        hubTask.init(period=int(0.001 * 1000), mode=machine.Timer.PERIODIC, callback=hub.main_process)
-    else:
-        while(hub_process_enabled is True):
-            hub.main_process()
-    pyb.delay(500)
-    hub.default_procedure()
+        import machine
+        hubTask = machine.Timer()
+        if True:
+            hubTask.init(period=int(0.001 * 1000), mode=machine.Timer.PERIODIC, callback=hub.main_process)
+        else:
+            while(hub_process_enabled is True):
+                hub.main_process()
+        pyb.delay(500)
+        hub.default_procedure()
 
 # from pyb import CAN
 # can = CAN(1)

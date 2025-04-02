@@ -77,6 +77,12 @@ e_ADC_CHANNEL: dict[int, str] = {
     7: "TEMP_LOCAL"
 }
 
+class CommandStatus:
+    NONE = 0x000
+    IDLE = 0x001
+    RECIEVED = 0x010
+    ERROR = 0x100
+
 class AFECommandGPIO:
     def __init__(self,pin=None,port=None):
         self.port = {

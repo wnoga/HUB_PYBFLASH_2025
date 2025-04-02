@@ -7,7 +7,7 @@ import machine
 
 from my_utilities import AFECommand, AFECommandGPIO, AFECommandChannel, AFECommandSubdevice
 from my_utilities import millis, SensorChannel, SensorReading, AFE_Config, EmptyLogger
-from my_utilities import e_ADC_CHANNEL
+from my_utilities import e_ADC_CHANNEL, CommandStatus
 
 # class AFESendCommandQueue:
 #     def __init__(self,can_interface,device_id,verbose=0):
@@ -54,7 +54,7 @@ from my_utilities import e_ADC_CHANNEL
 
 # Device (AFE) Class
 class AFEDevice:
-    def __init__(self, can_interface, device_id, logger=EmptyLogger(), config_path=None):
+    def __init__(self, can_interface: pyb.CAN, device_id, logger=EmptyLogger(), config_path=None):
         self.can_interface = can_interface
         self.device_id = device_id  # Channel number
         self.unique_id = [0,0,0] # 3*32-bit = 96-bit STM32 Unique ID
@@ -74,11 +74,12 @@ class AFEDevice:
         self.version_checked = False
         self.channels = [SensorChannel(x) for x in range(self.total_channels)]
         self.is_configured = False
-        self.current_command = 0x00
-        self.last_command_time = millis()
-        self.last_command_status = 0 # 0: None, 1: idle, 2: recieved, 3: error
-        self.default_command_timeout = 1000
-        self.command_timeout = self.default_command_timeout
+        # self.current_command = 0x00
+        # self.last_command_time = millis()
+        # self.last_command_status = 0 # 0: None, 1: idle, 2: recieved, 3: error
+        self.default_command_timeout_ms = 1000
+        # self.command_timeout = self.default_command_timeout
+        self.default_can_timeout_ms = 1000
         self.verbose = 2
         self.commands = AFECommand()
         self.blink_status = 0
@@ -89,10 +90,13 @@ class AFEDevice:
         self.temperatureLoop_slave_is_enabled = False
         
         self.to_execute = []
-        self.keep_output = False
-        self.output = {}
+        self.execute_timestamp = 0
+        # self.keep_output = False
+        # self.output = {}
+        self.executing = None
+        self.executed = []
         
-        self.last_msg = {}
+        # self.last_msg = {}
         
         self.debug_machine_control_msg = [{},{}]
         
@@ -106,7 +110,7 @@ class AFEDevice:
                 self.afe_config = c
                 
         self.logger.log("DEBUG","Found config for AFE {}".format(self.afe_config["afe_id"]))
-        
+    
     def update_output(self, output, value_name, value, channel = None):
         if channel is None:
             # Store the value outside if no channel is provided
@@ -123,9 +127,10 @@ class AFEDevice:
         return output
 
     def update_last_msg(self,value_name, value, channel = None):
-        if self.keep_output is True:
-            self.output = self.update_output(self.output,value_name,value,channel)
-        self.last_msg = self.update_output(self.last_msg,value_name,value,channel)
+        return
+        # if self.keep_output is True:
+        #     self.output = self.update_output(self.output,value_name,value,channel)
+        # self.last_msg = self.update_output(self.last_msg,value_name,value,channel)
         
     def restart_device(self):
         self.current_command = None
@@ -174,7 +179,7 @@ class AFEDevice:
                     
     
     # Prepare frame payload for the AFE
-    def prepare_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms = None, startKeepOutput=False, outputRestart=False):
+    def prepare_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms = None, preserve=False, startKeepOutput=False, outputRestart=False, can_timeout_ms=None, callback=None):
         if data is None:
             data = []
         elif isinstance(data, int):
@@ -192,16 +197,20 @@ class AFEDevice:
             "command": command, # command
             "frame": frame,  # payload
             "can_address": self.can_address,  # can address
-            "timeout_ms": self.default_command_timeout if timeout_ms is None else timeout_ms, # override timeout
+            "timeout_ms": self.default_command_timeout_ms if timeout_ms is None else timeout_ms, # override timeout
             "timestamp_ms": millis(),  # insert timestamp or None if start timeout when sending
             "startKeepOutput": startKeepOutput,
             "outputRestart": outputRestart,
-            
+            "can_timeout_ms": self.default_can_timeout_ms if can_timeout_ms is None else can_timeout_ms,
+            "status": CommandStatus.NONE,
+            "preserve":preserve,
+            "retval": None,
+            "callback": callback
         }
     
-    def enqueue_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms = None, startKeepOutput=False, outputRestart=False):
+    def enqueue_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms = None, preserve = False, startKeepOutput=False, outputRestart=False, can_timeout_ms=None, callback=None):
         self.to_execute.append(
-            self.prepare_command(command, data, chunk, max_chunks, timeout_ms, startKeepOutput, outputRestart)
+            self.prepare_command(command, data, chunk, max_chunks, timeout_ms, preserve, startKeepOutput, outputRestart, can_timeout_ms, callback)
         )
 
     def enqueue_gpio_set(self,gpio,state):
@@ -218,18 +227,13 @@ class AFEDevice:
 
     # Execute commands from the buffer
     def execute(self,timeout_ms=5000,**kwargs):
-        
-        if len(self.to_execute):
-            command = self.to_execute.pop(0)
-            self.last_command_time = millis() if command["timestamp_ms"] is None else command["timestamp_ms"]
-            self.current_command = command["command"]
-            self.command_timeout = command["timeout_ms"]
-            if command["startKeepOutput"] is True:
-                self.keep_output = True
-            if command["outputRestart"]:
-                self.output = {}
-            self.can_interface.send(command["frame"], command["can_address"],timeout=self.command_timeout)
-            self.logger.log("DEBUG","Sending {}".format(command))
+        if len(self.to_execute) and self.executing is None:
+            self.execute_timestamp = millis()
+            cmd = self.to_execute.pop(0)
+            self.executing = cmd
+            self.executing["status"] = CommandStatus.IDLE
+            self.can_interface.send(cmd["frame"], cmd["can_address"],timeout=cmd["can_timeout_ms"])
+            self.logger.log("DEBUG","Sending {}".format(cmd))
     
     # Receive and process data from AFE
     def process_received_data(self, received_data):
@@ -237,6 +241,7 @@ class AFEDevice:
         chunk_id = None
         max_chunks = None
         chunk_payload = []
+        parsed_data = {}
         try:
             data_bytes = list(bytes(received_data[3]))
             device_id = (received_data[0] >> 2) & 0xFF
@@ -254,11 +259,11 @@ class AFEDevice:
             self.logger.log("DEBUG","R: ID:{}; Command: 0x{:02X}: {}".format(device_id, command, data_bytes))
             
             # New message arrived
-            if chunk_id == 1:
-                self.last_msg = {
-                    "command":command,
-                    "msg_timestamp":millis()
-                    }
+            # if chunk_id == 1:
+            #     # self.last_msg = {
+            #     #     "command":command,
+            #     #     "msg_timestamp":millis()
+            #     #     }
             
             if command == self.commands.getSerialNumber:
                 # print(command, self.commands.getSerialNumber)
@@ -274,13 +279,15 @@ class AFEDevice:
                     uid1 = 0x46415716
                     uid2 = 0x20353634
                     self.unique_id_str = "".join("{:08X}".format(b) for b in self.unique_id)
-                    self.update_last_msg("UID",self.unique_id_str)
+                    # self.update_last_msg("UID",self.unique_id_str)
                     self.logger.log("INFO", {"AFE": self.device_id, "UID": self.unique_id_str})
+                    parsed_data.update({"unique_id_str":self.unique_id_str})
             
             elif command == self.commands.getVersion:
                 self.firmware_version = int("".join(map(str, chunk_payload)))
                 self.version_checked = True
                 self.update_last_msg("version",self.firmware_version)
+                parsed_data.update({"version":self.firmware_version})
                 
             elif command == self.commands.resetAll:
                 self.logger.log("ERROR","AFE {} was restared!".format(device_id))
@@ -288,11 +295,13 @@ class AFEDevice:
                 
             elif command == self.commands.getSensorDataSi_last_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
+                if not "last_data" in parsed_data:
+                    parsed_data["last_data"] = {}
                 for uch in unmasked_channels:
                     if uch == (1<<8):
-                        print("Last timestamp: CH:{} = {}".format(self.getChannelName(uch), self.bytes_to_u32(chunk_payload[1:])))
+                        parsed_data["last_data"].update({"timestamp_ms".format(uch):self.bytes_to_float(chunk_payload[1:])})
                     else:
-                        print("Last data: CH:{} = {}".format(self.getChannelName(uch), self.bytes_to_float(chunk_payload[1:])))
+                        parsed_data["last_data"].update({"ch{}".format(uch):self.bytes_to_float(chunk_payload[1:])})
 
             elif command == self.commands.getSensorDataSi_average_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
@@ -419,13 +428,22 @@ class AFEDevice:
             #         ))
             
             
-            if command == self.current_command and chunk_id == max_chunks:
+            if chunk_id == max_chunks:
                 if(self.verbose >= 3):
                     print("0x{:02X} END".format(command))
-                self.current_command = None
+                if self.executing is not None:
+                    if command == self.executing["command"]:
+                        self.executing["status"] = CommandStatus.RECIEVED
+                        self.executing["retval"] = parsed_data
+                        self.logger.log("DEBUG","END: {}".format(self.executing))
+                        if self.executing["preserve"] == True:
+                            self.executed.append(self.executing.copy())
+                        if "callback" in self.executing and callable(self.executing["callback"]):
+                            self.executing["callback"](self.executing)
+                        self.executing = None
             received_data = None
         except Exception as error:
-            print("Error processing received AFE data: {}".format(error))
+            print("Error processing received AFE data: {}: {}".format(error,command))
     
     def start_periodic_measurement_download(self,interval_ms=2500):
         self.enqueue_command(
@@ -451,20 +469,18 @@ class AFEDevice:
     
     # AFE state management
     def manage_state(self):
-        if self.current_command is not None:
-            # print("0x{:02X} : {} > {} ? {}".format(
-            #     self.current_command, 
-            #     millis() - self.last_command_time,self.command_timeout, 
-            #     (millis() - self.last_command_time) > self.command_timeout))
-            if (millis() - self.last_command_time) > self.command_timeout:
-                # if(self.verbose >= 1):
-                self.logger.log("DEBUG","AFE:manage_state:0x{:02X} TIMEOUT".format(self.current_command))
-                self.current_command = None
+        if self.executing is not None:
+            # print(self.executing)
+            if (millis() - self.executing["timestamp_ms"]) > self.executing["timeout_ms"]:
+                self.logger.log("DEBUG","AFE:manage_state:0x{:02X} TIMEOUT".format(self.executing["command"]))
+                self.executing["status"] = CommandStatus.ERROR
+                self.executed.append(self.executed.copy())
+                self.executing = None
             return
         
         # Try send commands
         if self.use_tx_delay:
-            if (millis() - self.last_command_time) < self.tx_timeout_ms:
+            if (millis() - self.execute_timestamp) < self.tx_timeout_ms:
                 return
 
         if not self.is_configured:
