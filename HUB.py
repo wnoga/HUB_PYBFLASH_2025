@@ -240,8 +240,8 @@ class HUBDevice:
         if True:
             # afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[channels.AFECommandChannel_7], timeout_ms=2500)
             # afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[channels.AFECommandChannel_7 | channels.AFECommandChannel_6], timeout_ms=2500)
-            afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,[0xFF], timeout_ms=2500)
-            afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[0xFF], timeout_ms=2500)
+            afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,[0xFF], timeout_ms=2500,preserve=True)
+            afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[0xFF], timeout_ms=2500,preserve=True)
         else:
             afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,
                             [
@@ -254,7 +254,21 @@ class HUBDevice:
         msg["callback"] = None
         msg = json.dumps(msg)
         print("callback:",msg)
-                        
+        
+    def default_set_dac(self, afe_id=35, dac_master=1000, dac_slave=1000):
+        print("Set DAC for {}".format(afe_id))
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        def get_subdevice_ch_id(g):
+            return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
+        print("Set DAC for {}".format(afe_id))
+        for g in ["M", "S"]:
+            afe.enqueue_u16_for_channel(AFECommand.setDACValueRaw_bySubdeviceMask,
+                                        get_subdevice_ch_id(g), dac_master if g == 'M' else dac_slave)
+            afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g == 'M' else afe.AFEGPIO_EN_HV1, 1)
+
+
     def default_procedure(self, afe_id=35):
         channels = AFECommandChannel()
         averages = AFECommandAverage()
@@ -277,8 +291,8 @@ class HUBDevice:
         afe.callback_1 = self.callback_1
         # afe.enqueue_float_for_channel(afe.commands.setAveragingAlpha_byMask,channels.)
         # afe.enqueue_command(afe.commands.setAveragingMode_byMask,[channels.AFECommandChannel_6,averages.STANDARD],timeout_ms=5000)
-        afe.enqueue_command(AFECommand.getVersion,callback=self.callback_1)
-        return
+        # afe.enqueue_command(AFECommand.getVersion,callback=self.callback_1)
+        # return
         for g in ["M","S"]: 
             subdevice = subdevices.AFECommandSubdevice_master if g=='M' else subdevices.AFECommandSubdevice_slave
             # ch_id = channels.AFECommandChannel_6 if g=='M' else channels.AFECommandChannel_7 # select proper channel id

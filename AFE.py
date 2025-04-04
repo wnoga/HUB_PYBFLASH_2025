@@ -220,6 +220,10 @@ class AFEDevice:
     def enqueue_float_for_channel(self, command, channel, value):
         self.enqueue_command(
             command, [channel] + list(struct.pack('<f', value)))
+    
+    def enqueue_u16_for_channel(self, command, channel, value):
+        self.enqueue_command(
+            command, [channel] + list(struct.pack('<H', value)))
 
     def enqueue_u32_for_channel(self, command, channel, value):
         self.enqueue_command(
@@ -299,18 +303,19 @@ class AFEDevice:
                     parsed_data["last_data"] = {}
                 for uch in unmasked_channels:
                     if uch == (1<<8):
-                        parsed_data["last_data"].update({"timestamp_ms".format(uch):self.bytes_to_float(chunk_payload[1:])})
+                        parsed_data["last_data"].update({"timestamp_ms".format(uch):self.bytes_to_u32(chunk_payload[1:])})
                     else:
                         parsed_data["last_data"].update({"ch{}".format(uch):self.bytes_to_float(chunk_payload[1:])})
 
             elif command == self.commands.getSensorDataSi_average_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
+                if not "average_data" in parsed_data:
+                    parsed_data["average_data"] = {}
                 for uch in unmasked_channels:
                     if uch == (1<<8):
-                        print("Average timestamp: CH:{} = {}".format(self.getChannelName(uch), self.bytes_to_u32(chunk_payload[1:])))
+                        parsed_data["average_data"].update({"timestamp_ms".format(uch):self.bytes_to_u32(chunk_payload[1:])})
                     else:
-                        print("Average data: CH:{} = {}".format(self.getChannelName(uch), self.bytes_to_float(chunk_payload[1:])))
-            
+                        parsed_data["average_data"].update({"ch{}".format(uch):self.bytes_to_float(chunk_payload[1:])})
             elif command == self.commands.setAD8402Value_byte_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     if 0x01 & (chunk_payload[2] >> uch):
@@ -395,6 +400,8 @@ class AFEDevice:
             #     print("TemperatureLoop for {} is {}".format(
             #         channel_name, "enabled" if status == 1 else "disabled"
             #     ))
+            elif command == 0xD4:
+                pass
             
             elif command == self.commands.debug_machine_control:
                 channel = chunk_payload[0]
@@ -427,19 +434,34 @@ class AFEDevice:
             #             channel.latest_reading.timestamp_ms, chunk_payload[0], channel.latest_reading.value
             #         ))
             
-            
+            if self.executing is not None:
+                if command == self.executing["command"]:
+                    if self.executing["preserve"] == True:
+                        if self.executing["retval"] is None:
+                            self.executing["retval"] = {}
+                        for key, value in parsed_data.items():
+                            if key not in self.executing["retval"]:
+                                self.executing["retval"][key] = value
+                            elif isinstance(self.executing["retval"][key], dict) and isinstance(value, dict):
+                                self.executing["retval"][key].update(value)
+                            else:
+                                self.executing["retval"][key] = value
+                            
+                                
+
             if chunk_id == max_chunks:
                 if(self.verbose >= 3):
                     print("0x{:02X} END".format(command))
                 if self.executing is not None:
                     if command == self.executing["command"]:
                         self.executing["status"] = CommandStatus.RECIEVED
-                        self.executing["retval"] = parsed_data
                         self.logger.log("DEBUG","END: {}".format(self.executing))
-                        if self.executing["preserve"] == True:
-                            self.executed.append(self.executing.copy())
                         if "callback" in self.executing and callable(self.executing["callback"]):
                             self.executing["callback"](self.executing)
+                        if self.executing["preserve"] == True:
+                            self.executed.append(self.executing.copy())
+                            # self.logger.log("DEBUG",self.executing)
+                            print(self.executing)
                         self.executing = None
             received_data = None
         except Exception as error:
@@ -474,7 +496,8 @@ class AFEDevice:
             if (millis() - self.executing["timestamp_ms"]) > self.executing["timeout_ms"]:
                 self.logger.log("DEBUG","AFE:manage_state:0x{:02X} TIMEOUT".format(self.executing["command"]))
                 self.executing["status"] = CommandStatus.ERROR
-                self.executed.append(self.executed.copy())
+                if self.executing["preserve"] == True:
+                    self.executed.append(self.executing.copy())
                 self.executing = None
             return
         
