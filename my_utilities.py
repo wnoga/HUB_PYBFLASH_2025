@@ -77,6 +77,26 @@ e_ADC_CHANNEL: dict[int, str] = {
     7: "TEMP_LOCAL"
 }
 
+channel_name_xxx: dict[str, int] = {
+    "MASTER_VOLTAGE": AFECommandChannel.AFECommandChannel_2,
+    "SLAVE_VOLTAGE": AFECommandChannel.AFECommandChannel_3,
+    "MASTER_CURRENT": AFECommandChannel.AFECommandChannel_4,
+    "SLAVE_CURRENT": AFECommandChannel.AFECommandChannel_5,
+    "MASTER_TEMPERATURE": AFECommandChannel.AFECommandChannel_6,
+    "SLAVE_TEMPERATURE": AFECommandChannel.AFECommandChannel_7, 
+}
+
+ResetReason: dict[int, str] = {
+    0: "RESET_UNKNOWN",
+    1: "RESET_POWER_ON",
+    2: "RESET_PIN",
+    3: "RESET_BROWN_OUT",
+    4: "RESET_SOFTWARE",
+    5: "RESET_WATCHDOG",
+    6: "RESET_WINDOW_WATCHDOG",
+    7: "RESET_LOW_POWER"
+}
+
 class CommandStatus:
     NONE = 0x000
     IDLE = 0x001

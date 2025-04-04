@@ -7,7 +7,7 @@ import machine
 
 from my_utilities import AFECommand, AFECommandGPIO, AFECommandChannel, AFECommandSubdevice
 from my_utilities import millis, SensorChannel, SensorReading, AFE_Config, EmptyLogger
-from my_utilities import e_ADC_CHANNEL, CommandStatus
+from my_utilities import e_ADC_CHANNEL, CommandStatus, ResetReason
 
 # class AFESendCommandQueue:
 #     def __init__(self,can_interface,device_id,verbose=0):
@@ -294,7 +294,7 @@ class AFEDevice:
                 parsed_data.update({"version":self.firmware_version})
                 
             elif command == self.commands.resetAll:
-                self.logger.log("ERROR","AFE {} was restared!".format(device_id))
+                self.logger.log("ERROR","AFE {} was restared! Reason {}".format(device_id, ResetReason[chunk_payload[0]]))
                 self.logger.sync()
                 
             elif command == self.commands.getSensorDataSi_last_byMask:
@@ -379,7 +379,8 @@ class AFEDevice:
 
             
             elif command == self.commands.writeGPIO:
-                self.blink_is_enabled = True
+                # self.blink_is_enabled = True
+                print("GPIO {}".format(chunk_payload))
             
             # elif command == self.commands.setTemperatureLoopForChannelState_bySubdevice:
             #     # print("Subdevice")
@@ -403,6 +404,16 @@ class AFEDevice:
             elif command == 0xD4:
                 pass
             
+            elif command == AFECommand.setDACValueRaw_bySubdeviceMask:
+                channel = chunk_payload[0]
+
+            elif command == AFECommand.setDAC_bySubdeviceMask_asMask:
+                print(chunk_payload)
+                # unmasked_channels = self.unmask_channel(chunk_payload[0])
+                # for uch in unmasked_channels:
+                #     print("DAC{} is {}".format(uch, "ON" if chunk_payload[1] & (1 << uch) else "OFF"))
+
+
             elif command == self.commands.debug_machine_control:
                 channel = chunk_payload[0]
                 if chunk_id == 1:
