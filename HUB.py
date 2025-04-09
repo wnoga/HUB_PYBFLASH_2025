@@ -69,25 +69,58 @@ class HUBDevice:
             print("handle_can_rx: HUB RX Error: {e}".format(e=e))
             
     def get_afe_by_id(self, afe_id) -> AFEDevice:
-        """ Find an AFE by its short ID. """
+        """
+        Find an AFE by its short ID.
+
+        Args:
+            afe_id: The short ID of the AFE to find.
+        Returns:
+            The AFEDevice object if found, otherwise None.
+        """
         for afe in self.afe_devices:
-            if (afe.device_id == afe_id):
+            if afe.device_id == afe_id:
                 return afe
         return None
     
     def process_received_messages(self, timer=None):
-        """ Process messages from the queue periodically. """
+        """
+        Process messages received from the CAN bus.
+
+        This method retrieves messages from the message queue, identifies the
+        AFE device associated with each message, and processes the received data.
+        If a message is from a new AFE, it creates a new AFEDevice instance.
+        """
+        
+        # Check if message queue is empty
+        if not self.message_queue:
+            return  # Exit early if there are no messages to process
+
+        # Check if message processing is active
+        if not self.rx_process_active:
+            return  # Exit early if message processing is not active
+        
         if len(self.message_queue): # Process only if anythong is in the queue
             message = self.message_queue.pop(0) # get from FIFO
             afe_id = (message[0] >> 2) & 0xFF # unmask the AFE ID
             afe = self.get_afe_by_id(afe_id)
             if afe is None: # Add new discovered AFE
+                # Create a new AFE device instance with the discovered ID
                 afe = AFEDevice(self.can_bus, afe_id, logger=self.logger)
+                # Add the new AFE device to the list of known devices
                 self.afe_devices.append(afe)
+            # Process the received data using the AFE device's method
             afe.process_received_data(message)
     
     def discover_devices(self, timer=None):
         """ Periodically discover AFEs on the CAN bus. """
+        
+        # Check if there are any AFE devices
+        if not self.afe_devices and not self.discovery_active:
+            return
+        
+        # Check if discovery is active
+        if not self.discovery_active:
+            return  # Exit early if discovery is not active
         
         # Check if all devices are discovered
         if len(self.afe_devices) == self.afe_devices_max:
@@ -103,20 +136,23 @@ class HUBDevice:
                 self.can_bus.restart()
             return
         try:
-            # Check if AFE with current ID is already discovered
-            while True:
-                if self.current_discovery_id > self.afe_id_max:
-                    self.current_discovery_id = self.afe_id_min
-                if not any(afe.is_online and afe.device_id == self.current_discovery_id for afe in self.afe_devices):
-                    # Send get ID msg
-                    self.can_bus.send(b"\x00\x11", self.current_discovery_id << 2,timeout=self.tx_timeout_ms)
-                    self.last_tx_time = millis()
-                    # print("Sending",self.current_discovery_id)
-                self.current_discovery_id += 1 # increment ID
-                break
-                
+            # Check if AFE with current ID is already discovered or if we've exceeded the maximum ID
+            if self.current_discovery_id > self.afe_id_max:
+                self.current_discovery_id = self.afe_id_min  # Reset to the minimum ID
+            
+            if not any(afe.is_online and afe.device_id == self.current_discovery_id for afe in self.afe_devices):
+                # Send get ID msg to discover new AFE
+                self.can_bus.send(b"\x00\x11", self.current_discovery_id << 2, timeout=self.tx_timeout_ms)
+                self.last_tx_time = millis()
+                self.logger.log("DEBUG", "Sending discovery message to ID: {}".format(self.current_discovery_id))
+            else:
+                self.logger.log("DEBUG", "AFE with ID {} already discovered".format(self.current_discovery_id))
+
+            self.current_discovery_id += 1  # Increment ID for the next iteration
+
         except Exception as e:
-            print("discover_devices: HUB Error sending: {e}".format(e=e))
+            self.logger.log("ERROR", "discover_devices: HUB Error sending: {}".format(e))
+            
     
     def start_discovery(self):
         """ Start the device discovery process. """
@@ -203,7 +239,28 @@ class HUBDevice:
                         afe.stop_periodic_measurement_download()
                     else:
                         A.remove(afe)
+
     def get_configuration_from_files(self, afe_id, callibration_data_file_csv = "dane_kalibracyjne.csv", TempLoop_file_csv = "TempLoop.csv",UID=None):
+        """
+        Retrieves calibration data for a specific AFE from CSV files.
+
+        This function reads calibration data from two CSV files: one for general
+        calibration data and another for temperature loop data. It then filters
+        this data to find entries that match the specified AFE ID and optional UID.
+        The function also checks for missing or empty calibration values and
+        provides warnings if such issues are found.
+
+        Args:
+            afe_id (int): The ID of the AFE for which to retrieve calibration data.
+            callibration_data_file_csv (str, optional): The path to the CSV file
+                containing general calibration data. Defaults to "dane_kalibracyjne.csv".
+            TempLoop_file_csv (str, optional): The path to the CSV file containing
+                temperature loop data. Defaults to "TempLoop.csv".
+            UID (str, optional): The unique identifier of the AFE. If provided,
+                only data matching this UID will be considered. Defaults to None.
+        Returns:
+            dict: A dictionary containing the calibration data for the specified AFE.
+        """
         TempLoop_data, TempLoop_data_mean = read_callibration_csv(TempLoop_file_csv)
         callib_data, callib_data_mean = read_callibration_csv(callibration_data_file_csv)
         
@@ -232,15 +289,12 @@ class HUBDevice:
         return callibration
     
     def default_get_measurement(self, afe_id=35):
-        channels = AFECommandChannel()
-        averages = AFECommandAverage()
-        subdevices = AFECommandSubdevice()
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
         
-        # afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[channels.AFECommandChannel_7], timeout_ms=2500)
-        # afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[channels.AFECommandChannel_7 | channels.AFECommandChannel_6], timeout_ms=2500)
+        # afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[AFECommandChannel.AFECommandChannel_7], timeout_ms=2500)
+        # afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[AFECommandChannel.AFECommandChannel_7 | AFECommandChannel.AFECommandChannel_6], timeout_ms=2500)
         afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,[0xFF], timeout_ms=2500,preserve=True)
         afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[0xFF], timeout_ms=2500,preserve=True)
         
@@ -277,7 +331,7 @@ class HUBDevice:
             pass
         afe.enqueue_command(AFECommand.setDAC_bySubdeviceMask_asMask, [3,3])
         afe.enqueue_command(AFECommand.setDACValueRaw_bySubdeviceMask, dac_master)
-        afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0, 0)
+        afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0, 1)
         afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV1, 1)
         afe.enqueue_gpio_set(afe.AFEGPIO_blink,1)
         afe.enqueue_gpio_set(afe.AFEGPIO_blink,0)
@@ -288,6 +342,19 @@ class HUBDevice:
                 afe.enqueue_command(0x03)
 
     def default_procedure(self, afe_id=35):
+        """
+        Sets up the default procedure for an AFE device.
+
+        This function configures various settings for the specified AFE,
+        including calibration data, channel settings, and averaging modes.
+        It reads calibration data from files, applies it to the AFE, and
+        sets up default configurations for channels and averaging.
+
+        Args:
+            afe_id (int, optional): The ID of the AFE to configure.
+                Defaults to 35.
+        """
+        
         def get_controller_ch_id(g):
             return AFECommandChannel.AFECommandChannel_7 if g=='M' else AFECommandChannel.AFECommandChannel_6
         def get_U_measured_ch_id(g):
@@ -341,13 +408,14 @@ class HUBDevice:
                     for uch in afe.unmask_channel(ch_id):
                         print("Loaded for AFE {}:{}:CH{}({}): {} = {}".format(afe_id,g,uch,e_ADC_CHANNEL[uch],k,v))
         
-        afe.enqueue_u16_for_channel(afe.commands.setAD8402Value_byte_byMask,AFECommandSubdevice.AFECommandSubdevice_master | AFECommandSubdevice.AFECommandSubdevice_slave,int(200))
-        afe.enqueue_float_for_channel(AFECommand.setChannel_a_byMask,0xFF,1.0)
-        afe.enqueue_float_for_channel(AFECommand.setChannel_b_byMask,0xFF,0.0)
-        afe.enqueue_float_for_channel(AFECommand.setChannel_multiplicator_byMask,0xFF,1.0)
+        if True:
+            afe.enqueue_u16_for_channel(afe.commands.setAD8402Value_byte_byMask,AFECommandSubdevice.AFECommandSubdevice_master | AFECommandSubdevice.AFECommandSubdevice_slave,int(200))
+            afe.enqueue_float_for_channel(AFECommand.setChannel_a_byMask,0xFF,1.0)
+            afe.enqueue_float_for_channel(AFECommand.setChannel_b_byMask,0xFF,0.0)
         afe.enqueue_u32_for_channel(AFECommand.setChannel_dt_ms_byMask,0xFF,1000)
         afe.enqueue_u32_for_channel(afe.commands.setAveraging_max_dt_ms_byMask,0xFF,100*200)
-        afe.enqueue_command(afe.commands.setAveragingMode_byMask,[0xFF,AFECommandAverage.STANDARD])
+        afe.enqueue_command(afe.commands.setAveragingMode_byMask,[0xFF,AFECommandAverage.WEIGHTED_EXPONENTIAL])
+        afe.enqueue_float_for_channel(AFECommand.setChannel_multiplicator_byMask,0xFF,1.0)
         afe.enqueue_float_for_channel(afe.commands.setAveragingAlpha_byMask,0xFF,1.0/100.0)
 
         # print("Start periodic measurement report for AFE {}".format(afe_id))
@@ -371,21 +439,25 @@ class HUBDevice:
         print("Parsed: {}".format(msg))
         
     def send_back_data(self,afe_id: int):
+        """
+        Sends back the last received message from a specific AFE.
+
+        Args:
+            afe_id (int): The ID of the AFE from which to send the last message.
+        """
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        toSend = afe.last_msg.copy()
-        if toSend == {}:
-            return
-        afe.last_msg = {}
-        print("Send back: {}".format(toSend))
+        toSend = afe.executed.copy() # get all executed commands
+        afe.executed = [] # clear executed commands
+        print("Send back: {}".format(json.dumps(toSend)))
 
     def main_process(self,timer=None):
-        if self.discovery_active:
-            self.discover_devices()
+        self.discover_devices()
         if self.afe_manage_active:
             for afe in self.afe_devices:
                 if afe.is_online:
+                    # print("manage_state")
                     afe.manage_state()
         if self.rx_process_active:
             self.process_received_messages()

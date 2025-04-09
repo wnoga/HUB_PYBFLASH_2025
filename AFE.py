@@ -164,7 +164,20 @@ class AFEDevice:
     def bytes_to_float(self, data):
         return struct.unpack('<f', bytes(data))[0]
     
-    def unmask_channel(self,masked_channel):
+    def unmask_channel(self, masked_channel):
+        """
+        Unmasks a channel mask to determine which channels are active.
+
+        This function takes a masked channel value and returns a list of
+        channel numbers that are active based on the mask. If the masked
+        channel is 0, it returns a special value indicating a timestamp.
+
+        Args:
+            masked_channel (int): The masked channel value.
+
+        Returns:
+            list: A list of active channel numbers or a special value for timestamp.
+        """
         if masked_channel == 0: # often as timestamp
             return [1<<8]
         else:
@@ -180,6 +193,31 @@ class AFEDevice:
     
     # Prepare frame payload for the AFE
     def prepare_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms = None, preserve=False, startKeepOutput=False, outputRestart=False, can_timeout_ms=None, callback=None):
+        """
+        Prepares a command to be sent to the AFE device.
+
+        This function constructs a command frame with the given parameters,
+        including command code, chunk information, and data payload. It also
+        sets up metadata for command execution, such as timeouts, timestamps,
+        and status.
+
+        Args:
+            command (int): The command code to be sent to the AFE.
+            data (list or int, optional): The data payload to be included in the
+                command. Can be an integer or a list of integers. Defaults to None.
+            chunk (int, optional): The current chunk number for multi-chunk
+                commands. Defaults to 1.
+            max_chunks (int, optional): The total number of chunks for multi-chunk
+                commands. Defaults to 1.
+            timeout_ms (int, optional): The timeout in milliseconds for the
+                command execution. Defaults to None.
+            preserve (bool, optional): Whether to preserve the command's return
+                value. Defaults to False.
+            startKeepOutput (bool, optional): Whether to start keeping output.
+                Defaults to False.
+            outputRestart (bool, optional): Whether to restart output. Defaults to False.
+            can_timeout_ms (int, optional): The timeout for CAN communication. Defaults to None.
+        """
         if data is None:
             data = []
         elif isinstance(data, int):
@@ -209,6 +247,27 @@ class AFEDevice:
         }
     
     def enqueue_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms = None, preserve = False, startKeepOutput=False, outputRestart=False, can_timeout_ms=None, callback=None):
+        """
+        Enqueues a command to be executed by the AFE device.
+
+        This function adds a command to the execution queue, preparing it with
+        the specified parameters. It uses the `prepare_command` method to
+        construct the command frame and metadata.
+
+        Args:
+            command (int): The command code to be sent to the AFE.
+            data (list or int, optional): The data payload for the command.
+                Defaults to None.
+            chunk (int, optional): The current chunk number for multi-chunk
+                commands. Defaults to 1.
+            max_chunks (int, optional): The total number of chunks for multi-chunk
+                commands. Defaults to 1.
+            timeout_ms (int, optional): The timeout in milliseconds for the
+                command execution. Defaults to None.
+            preserve (bool, optional): Whether to preserve the command's return
+                value. Defaults to False.
+            can_timeout_ms (int, optional): The timeout for CAN communication. Defaults to None.
+        """
         self.to_execute.append(
             self.prepare_command(command, data, chunk, max_chunks, timeout_ms, preserve, startKeepOutput, outputRestart, can_timeout_ms, callback)
         )
@@ -217,19 +276,87 @@ class AFEDevice:
         self.enqueue_command(self.commands.writeGPIO,
                              [gpio.port,gpio.pin,state])
 
-    def enqueue_float_for_channel(self, command, channel, value):
-        self.enqueue_command(
-            command, [channel] + list(struct.pack('<f', value)))
-    
-    def enqueue_u16_for_channel(self, command, channel, value):
-        self.enqueue_command(
-            command, [channel] + list(struct.pack('<H', value)))
+    def enqueue_float_for_channel(self, command, channel, value,**kwargs):
+        """
+        Enqueues a command with a float value for a specific channel.
 
+        This function prepares a command that includes a float value, which is
+        packed into bytes and associated with a specific channel.
+
+        Args:
+            command (int): The command code to be sent to the AFE.
+            channel (int): The channel number to which the command applies.
+            value (float): The float value to be sent with the command.
+        """
+        self.enqueue_command(
+            command, [channel] + list(struct.pack('<f', value)),**kwargs)
+    
+    def enqueue_u16_for_channel(self, command, channel, value,**kwargs):
+        """
+        Enqueues a command with a 16-bit unsigned integer value for a specific channel.
+
+        This function prepares a command that includes a 16-bit unsigned integer
+        value, which is packed into bytes and associated with a specific channel.
+
+        Args:
+            command (int): The command code to be sent to the AFE.
+            channel (int): The channel number to which the command applies.
+            value (int): The 16-bit unsigned integer value to be sent with the command.
+        """
+        self.enqueue_command(
+            command, [channel] + list(struct.pack('<H', value)),**kwargs)
+    
     def enqueue_u32_for_channel(self, command, channel, value):
+        """
+        Enqueues a command with a 32-bit unsigned integer value for a specific channel.
+
+        Args:
+            command (int): The command code to be sent to the AFE.
+            channel (int): The channel number to which the command applies.
+            value (int): The 32-bit unsigned integer value to be sent with the command.
+        """
         self.enqueue_command(
             command, [channel] + list(struct.pack('<I', value)))
 
-    # Execute commands from the buffer
+    def start_periodic_command_download(self, channel_mask: int, data_type: int, interval_ms: int = 2500):
+        """
+        Starts periodic data download for specified channels.
+
+        This function configures the AFE device to periodically send data for
+        the specified channels. It sets the sending period and data type
+        (average or last) for each channel.
+
+        Args:
+            channel_mask (int): A bitmask indicating which channels to enable
+                periodic data download for. Each bit corresponds to a channel.
+            data_type (int): An integer indicating the type of data to send.
+                This could represent whether to send average or last data.
+            interval_ms (int, optional): The interval in milliseconds between
+                data transmissions. Defaults to 2500.
+        """
+        # Iterate over the unmasked channels and enable periodic sending
+        for channel in self.unmask_channel(channel_mask):
+            self.channels[channel].periodic_sending_is_enabled = True
+
+        # Set the data type for the specified channels
+        self.enqueue_u32_for_channel(AFECommand.setChannel_send_period_type_byMask, channel_mask, data_type)
+        # Set the sending period for the specified channels
+        self.enqueue_u32_for_channel(AFECommand.setChannel_send_period_ms_byMask, channel_mask, interval_ms)
+
+    """
+    Executes commands from the execution queue.
+
+    This function checks if there are commands in the `to_execute` queue and if
+    no command is currently being executed. If both conditions are met, it
+    retrieves the next command from the queue, marks it as `IDLE`, sends it
+    over the CAN interface, and logs the action.
+
+    Args:
+        timeout_ms (int, optional): The timeout in milliseconds for the
+            command execution. Defaults to 5000.
+        **kwargs: Additional keyword arguments.
+
+    """
     def execute(self,timeout_ms=5000,**kwargs):
         if len(self.to_execute) and self.executing is None:
             self.execute_timestamp = millis()
@@ -239,8 +366,28 @@ class AFEDevice:
             self.can_interface.send(cmd["frame"], cmd["can_address"],timeout=cmd["can_timeout_ms"])
             self.logger.log("DEBUG","Sending {}".format(cmd))
     
-    # Receive and process data from AFE
     def process_received_data(self, received_data):
+        """
+        Processes received data from the AFE device.
+
+        This function handles incoming data packets from the AFE, parses them
+        based on the command and chunk information, and updates the device's
+        state accordingly. It supports various commands, including reading
+        sensor data, managing GPIO, setting DAC values, and handling
+        temperature loop configurations.
+
+        Args:
+            received_data (list): A list containing the received data packet,
+                typically including the CAN ID, RTR, FMI, and the data payload.
+
+        Raises:
+            Exception: If there is an error processing the received data, such
+                as incorrect data format or unexpected command codes.
+
+        Notes:
+            This function is designed to be robust against various types of
+            errors, logging warnings and errors as needed.
+        """
         command = None
         chunk_id = None
         max_chunks = None
