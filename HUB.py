@@ -309,6 +309,15 @@ class HUBDevice:
                                   refresh_rate_ms=5000,
                                   **args):
         pass
+    
+    def default_hv_set(self, afe_id=35, enable=False):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        for g in ["M", "S"]:
+            afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g ==
+                                'M' else afe.AFEGPIO_EN_HV1, 1 if enable else 0)
+                                
         
     def default_set_dac(self, afe_id=35, dac_master=2481, dac_slave=2481):
         afe = self.get_afe_by_id(afe_id)
@@ -318,28 +327,53 @@ class HUBDevice:
         def get_subdevice_ch_id(g):
             return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
         print("Set DAC for {}".format(afe_id))
-        for g in ["M", "S"]:
-            # afe.enqueue_u16_for_channel(AFECommand.setDACValueRaw_bySubdeviceMask,
-            #                             get_subdevice_ch_id(g), dac_master if g == 'M' else dac_slave)
-            # afe.enqueue_command(AFECommand.setDAC_bySubdeviceMask_asMask, [
-            #                     AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave,
-            #                     AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave])
-            # afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g ==
-            #                      'M' else afe.AFEGPIO_EN_HV1, 1)
-            # afe.enqueue_gpio_set(afe.AFEGPIO_blink,1)
-            # afe.enqueue_gpio_set(afe.AFEGPIO_blink,0)
-            pass
-        afe.enqueue_command(AFECommand.setDAC_bySubdeviceMask_asMask, [3,3])
-        afe.enqueue_command(AFECommand.setDACValueRaw_bySubdeviceMask, dac_master)
-        afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0, 1)
-        afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV1, 1)
-        afe.enqueue_gpio_set(afe.AFEGPIO_blink,1)
-        afe.enqueue_gpio_set(afe.AFEGPIO_blink,0)
+        if True:
+            for g in ["M", "S"]:
+                afe.enqueue_command(AFECommand.setDAC_bySubdeviceMask, [
+                                    AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave,
+                                    1])
+                afe.enqueue_u16_for_channel(AFECommand.setDACValueRaw_bySubdeviceMask,
+                                            get_subdevice_ch_id(g), dac_master if g == 'M' else dac_slave)
+                afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g ==
+                                    'M' else afe.AFEGPIO_EN_HV1, 1)
+                afe.enqueue_gpio_set(afe.AFEGPIO_EN_CAL_IN0 if g ==
+                                    'M' else afe.AFEGPIO_EN_CAL_IN1, 1)
+                afe.enqueue_gpio_set(afe.AFEGPIO_blink,1)
+                afe.enqueue_gpio_set(afe.AFEGPIO_blink,0)
+        else:
+            afe.enqueue_command(AFECommand.setDAC_bySubdeviceMask_asMask, [3,3])
+            afe.enqueue_command(AFECommand.setDACValueRaw_bySubdeviceMask, dac_master)
+            afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0, 0)
+            afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV1, 0)
+            afe.enqueue_gpio_set(afe.AFEGPIO_blink,1)
+            afe.enqueue_gpio_set(afe.AFEGPIO_blink,0)
 
     def reset(self, afe_id=35):
         for afe in self.afe_devices:
             if afe.device_id == afe_id:
                 afe.enqueue_command(0x03)
+                
+    def test1(self, afe_id=35, command=0xF8):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        # afe.enqueue_float_for_channel(0xF8,0,21.37)
+        afe.enqueue_command(command)
+        
+    def test2(self, afe_id=35, command=0xF9):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        # afe.enqueue_float_for_channel(0xF8,0,21.37)
+        afe.enqueue_command(command,preserve=True)
+        
+    def test3(self, afe_id=35, command=0xF7,mask=0xFF):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        # afe.enqueue_float_for_channel(0xF8,0,21.37)
+        afe.enqueue_command(command,[mask],preserve=True)
+        
 
     def default_procedure(self, afe_id=35):
         """
@@ -355,7 +389,9 @@ class HUBDevice:
                 Defaults to 35.
         """
         
-        def get_controller_ch_id(g):
+        def get_subdevice_ch_id(g):
+            return AFECommandSubdevice.AFECommandSubdevice_master if g=='M' else AFECommandSubdevice.AFECommandSubdevice_slave
+        def get_T_measured_ch_id(g):
             return AFECommandChannel.AFECommandChannel_7 if g=='M' else AFECommandChannel.AFECommandChannel_6
         def get_U_measured_ch_id(g):
             return AFECommandChannel.AFECommandChannel_2 if g=='M' else AFECommandChannel.AFECommandChannel_3
@@ -374,22 +410,22 @@ class HUBDevice:
         # afe.enqueue_command(afe.commands.setAveragingMode_byMask,[channels.AFECommandChannel_6,averages.STANDARD],timeout_ms=5000)
         # afe.enqueue_command(AFECommand.getVersion,callback=self.callback_1)
         # return
-        for g in ["M","S"]: 
-            subdevice = AFECommandSubdevice.AFECommandSubdevice_master if g=='M' else AFECommandSubdevice.AFECommandSubdevice_slave
-            # ch_id = channels.AFECommandChannel_6 if g=='M' else channels.AFECommandChannel_7 # select proper channel id
-            ch_id = None
-            if True:
+        if True:
+            for g in ["M","S"]: 
+                subdevice = AFECommandSubdevice.AFECommandSubdevice_master if g=='M' else AFECommandSubdevice.AFECommandSubdevice_slave
+                # ch_id = channels.AFECommandChannel_6 if g=='M' else channels.AFECommandChannel_7 # select proper channel id
+                ch_id = None
                 for k,v in callib[g].items():
                     ch_id = 0x00
                     ks = k.split(" ")[0]
                     if ks == "T_measured_a":
-                        ch_id = get_controller_ch_id(g)
+                        ch_id = get_T_measured_ch_id(g)
                         afe.enqueue_float_for_channel(afe.commands.setChannel_a_byMask,ch_id,v)
                     elif ks == "T_measured_b":
-                        ch_id = get_controller_ch_id(g)
+                        ch_id = get_T_measured_ch_id(g)
                         afe.enqueue_float_for_channel(afe.commands.setChannel_b_byMask,ch_id,v)
                     elif ks == "offset":
-                        ch_id = get_controller_ch_id(g)
+                        ch_id = get_subdevice_ch_id(g)
                         afe.enqueue_u16_for_channel(afe.commands.setAD8402Value_byte_byMask,ch_id,int(v))
                     elif ks == "U_measured_a":
                         ch_id = get_U_measured_ch_id(g)
@@ -407,8 +443,8 @@ class HUBDevice:
                         continue
                     for uch in afe.unmask_channel(ch_id):
                         print("Loaded for AFE {}:{}:CH{}({}): {} = {}".format(afe_id,g,uch,e_ADC_CHANNEL[uch],k,v))
-        
-        if True:
+            
+        else:
             afe.enqueue_u16_for_channel(afe.commands.setAD8402Value_byte_byMask,AFECommandSubdevice.AFECommandSubdevice_master | AFECommandSubdevice.AFECommandSubdevice_slave,int(200))
             afe.enqueue_float_for_channel(AFECommand.setChannel_a_byMask,0xFF,1.0)
             afe.enqueue_float_for_channel(AFECommand.setChannel_b_byMask,0xFF,0.0)
@@ -417,6 +453,8 @@ class HUBDevice:
         afe.enqueue_command(afe.commands.setAveragingMode_byMask,[0xFF,AFECommandAverage.WEIGHTED_EXPONENTIAL])
         afe.enqueue_float_for_channel(AFECommand.setChannel_multiplicator_byMask,0xFF,1.0)
         afe.enqueue_float_for_channel(afe.commands.setAveragingAlpha_byMask,0xFF,1.0/100.0)
+        
+        afe.enqueue_command(AFECommand.startADC,[0xFF,0xFF])
 
         # print("Start periodic measurement report for AFE {}".format(afe_id))
         # afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,[0xFF],timeout_ms=2500)

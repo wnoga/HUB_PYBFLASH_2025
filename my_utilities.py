@@ -9,6 +9,7 @@ class AFECommand:
     getSerialNumber = 0x0
     getVersion = 0x1
     resetAll = 0x3
+    startADC = 0x4
     getSensorDataSi_last_byMask = 0x30
     getSensorDataSi_average_byMask = 0x31
     getSensorDataSiAndTimestamp_average_byMask = 0x3b
@@ -24,7 +25,7 @@ class AFECommand:
     setDACValueRaw_bySubdeviceMask = 0xc2
     setDACValueSi_bySubdeviceMask = 0xc3
     stopTemperatureLoopForAllChannels = 0xc4
-    setDAC_bySubdeviceMask_asMask = 0xc5
+    setDAC_bySubdeviceMask = 0xc5
     setDACRampOneBytePerMillisecond_ms = 0xc6
     setAveragingMode_byMask = 0xd0
     setAveragingAlpha_byMask = 0xd1

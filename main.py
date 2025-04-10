@@ -17,6 +17,7 @@ from my_server import MyServer
 
 if True:
     can, hub = initialize_can_hub()
+    hub.afe_devices_max = 1
     # server = MyServer(hub)
     # server.start_server()
     # hub.start_discovery(interval=0.1)
@@ -35,8 +36,9 @@ if True:
         else:
             while(hub_process_enabled is True):
                 hub.main_process()
-        pyb.delay(500)
-        hub.default_procedure()
+        if False:
+            pyb.delay(500)
+            hub.default_procedure()
 
 # from pyb import CAN
 # can = CAN(1)
