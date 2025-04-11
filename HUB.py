@@ -4,6 +4,7 @@ import machine
 import pyb
 import struct
 import random
+import _thread
 
 from AFE import AFEDevice, AFECommand, millis, SensorChannel, SensorReading
 from my_utilities import JSONLogger, EmptyLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, AFE_Config, read_callibration_csv
@@ -20,6 +21,9 @@ class HUBDevice:
         self.can_bus = can_bus
         self.afe_devices = []
         self.afe_devices_max = 8
+        
+        self.t = None
+        self.run = True
         
         self.logger = logger
         
@@ -63,6 +67,7 @@ class HUBDevice:
             while self.can_bus.any(0):  # Check FIFO 0 for messages
                 self.can_bus.recv(0, self.rx_message)  # Read message from FIFO 0
                 if len(self.message_queue) >= 255:
+                    print("Poped message: {}".format(self.message_queue[0]))
                     self.message_queue.pop(0)
                 self.message_queue.append(self.rx_message)
         except Exception as e:
@@ -292,11 +297,11 @@ class HUBDevice:
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        
+        commandKwargs = {"timeout_ms":10220,"preserve":True,"timeout_start_on": 5000}
         # afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[AFECommandChannel.AFECommandChannel_7], timeout_ms=2500)
         # afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[AFECommandChannel.AFECommandChannel_7 | AFECommandChannel.AFECommandChannel_6], timeout_ms=2500)
-        afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,[0xFF], timeout_ms=2500,preserve=True)
-        afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[0xFF], timeout_ms=2500,preserve=True)
+        afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,[0xFF], **commandKwargs)
+        afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[0xFF], **commandKwargs)
         
     def callback_1(self,msg=None):
         msg["callback"] = None
@@ -317,29 +322,34 @@ class HUBDevice:
         for g in ["M", "S"]:
             afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g ==
                                 'M' else afe.AFEGPIO_EN_HV1, 1 if enable else 0)
+            
+    def default_cal_in_set(self, afe_id=35, enable=False):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        for g in ["M", "S"]:
+            afe.enqueue_gpio_set(afe.AFEGPIO_EN_CAL_IN0 if g ==
+                                'M' else afe.AFEGPIO_EN_CAL_IN1, 1 if enable else 0)
                                 
         
     def default_set_dac(self, afe_id=35, dac_master=2481, dac_slave=2481):
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-
+        commandKwargs = {"timeout_ms":10220,"preserve":False,"timeout_start_on_send_ms":2000}
         def get_subdevice_ch_id(g):
             return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
         print("Set DAC for {}".format(afe_id))
         if True:
             for g in ["M", "S"]:
-                afe.enqueue_command(AFECommand.setDAC_bySubdeviceMask, [
-                                    AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave,
-                                    1])
-                afe.enqueue_u16_for_channel(AFECommand.setDACValueRaw_bySubdeviceMask,
-                                            get_subdevice_ch_id(g), dac_master if g == 'M' else dac_slave)
+                afe.enqueue_u16_for_channel(AFECommand.setDACValueRaw_bySubdeviceMask, get_subdevice_ch_id(g), dac_master if g == 'M' else dac_slave,**commandKwargs)
+                afe.enqueue_command(AFECommand.setDAC_bySubdeviceMask, [get_subdevice_ch_id(g),1],**commandKwargs)
                 afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g ==
-                                    'M' else afe.AFEGPIO_EN_HV1, 1)
+                                    'M' else afe.AFEGPIO_EN_HV1, 1,**commandKwargs)
                 afe.enqueue_gpio_set(afe.AFEGPIO_EN_CAL_IN0 if g ==
-                                    'M' else afe.AFEGPIO_EN_CAL_IN1, 1)
-                afe.enqueue_gpio_set(afe.AFEGPIO_blink,1)
-                afe.enqueue_gpio_set(afe.AFEGPIO_blink,0)
+                                    'M' else afe.AFEGPIO_EN_CAL_IN1, 1,**commandKwargs)
+                afe.enqueue_gpio_set(afe.AFEGPIO_blink,1,**commandKwargs)
+                afe.enqueue_gpio_set(afe.AFEGPIO_blink,0,**commandKwargs)
         else:
             afe.enqueue_command(AFECommand.setDAC_bySubdeviceMask_asMask, [3,3])
             afe.enqueue_command(AFECommand.setDACValueRaw_bySubdeviceMask, dac_master)
@@ -373,7 +383,25 @@ class HUBDevice:
             return
         # afe.enqueue_float_for_channel(0xF8,0,21.37)
         afe.enqueue_command(command,[mask],preserve=True)
-        
+    
+    def test4(self, afe_id=35):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        self.reset(afe_id)
+        pyb.delay(500)
+        self.default_procedure(afe_id)
+        self.default_set_dac(afe_id)
+        for i in range(10):
+            print("get measurement")
+            self.default_get_measurement(afe_id)
+            pyb.delay(500)
+    
+    def d(self,cmd,data=None):
+        afe = self.get_afe_by_id(35)
+        if afe is None:
+            return
+        afe.enqueue_command(cmd,data,preserve=True)        
 
     def default_procedure(self, afe_id=35):
         """
@@ -406,9 +434,13 @@ class HUBDevice:
         print(str(callib).replace("'",'"'))
         print("#########################")
         afe.callback_1 = self.callback_1
-        # afe.enqueue_float_for_channel(afe.commands.setAveragingAlpha_byMask,channels.)
+        # timeoutForCommand_ms = 10000
+        commandKwargs = {"timeout_ms":10220,"preserve":False,"timeout_start_on_send_ms":1000}
+        # afe.enqueue_float_for_channel(AFECommand.setAveragingAlpha_byMask,AFECommandChannel.AFECommandChannel_7,1.0/100.0,timeout_ms=4135)
         # afe.enqueue_command(afe.commands.setAveragingMode_byMask,[channels.AFECommandChannel_6,averages.STANDARD],timeout_ms=5000)
         # afe.enqueue_command(AFECommand.getVersion,callback=self.callback_1)
+        # afe.enqueue_command(AFECommand.getVersion,preserve=True)
+        # afe.enqueue_command(AFECommand.setAveragingMode_byMask,[0x01,1],**commandKwargs)
         # return
         if True:
             for g in ["M","S"]: 
@@ -420,41 +452,41 @@ class HUBDevice:
                     ks = k.split(" ")[0]
                     if ks == "T_measured_a":
                         ch_id = get_T_measured_ch_id(g)
-                        afe.enqueue_float_for_channel(afe.commands.setChannel_a_byMask,ch_id,v)
+                        afe.enqueue_float_for_channel(afe.commands.setChannel_a_byMask,ch_id,v,**commandKwargs)
                     elif ks == "T_measured_b":
                         ch_id = get_T_measured_ch_id(g)
-                        afe.enqueue_float_for_channel(afe.commands.setChannel_b_byMask,ch_id,v)
+                        afe.enqueue_float_for_channel(afe.commands.setChannel_b_byMask,ch_id,v,**commandKwargs)
                     elif ks == "offset":
                         ch_id = get_subdevice_ch_id(g)
-                        afe.enqueue_u16_for_channel(afe.commands.setAD8402Value_byte_byMask,ch_id,int(v))
+                        afe.enqueue_u16_for_channel(afe.commands.setAD8402Value_byte_byMask,ch_id,int(v),**commandKwargs)
                     elif ks == "U_measured_a":
                         ch_id = get_U_measured_ch_id(g)
-                        afe.enqueue_float_for_channel(afe.commands.setChannel_a_byMask,ch_id,v)
+                        afe.enqueue_float_for_channel(afe.commands.setChannel_a_byMask,ch_id,v,**commandKwargs)
                     elif ks == "U_measured_b":
                         ch_id = get_U_measured_ch_id(g)
-                        afe.enqueue_float_for_channel(afe.commands.setChannel_b_byMask,ch_id,v)
+                        afe.enqueue_float_for_channel(afe.commands.setChannel_b_byMask,ch_id,v,**commandKwargs)
                     elif ks == "I_measured_a":
                         ch_id = get_I_measured_ch_id(g)
-                        afe.enqueue_float_for_channel(afe.commands.setChannel_a_byMask,ch_id,v)
+                        afe.enqueue_float_for_channel(afe.commands.setChannel_a_byMask,ch_id,v,**commandKwargs)
                     elif ks == "I_measured_b":
                         ch_id = get_I_measured_ch_id(g)
-                        afe.enqueue_float_for_channel(afe.commands.setChannel_b_byMask,ch_id,v)
+                        afe.enqueue_float_for_channel(afe.commands.setChannel_b_byMask,ch_id,v,**commandKwargs)
                     else:
                         continue
                     for uch in afe.unmask_channel(ch_id):
-                        print("Loaded for AFE {}:{}:CH{}({}): {} = {}".format(afe_id,g,uch,e_ADC_CHANNEL[uch],k,v))
+                        print("AFE {} {} Loading {} (CH{} ? {}) value {}".format(afe_id,g,k,uch,e_ADC_CHANNEL[uch],v))
             
         else:
             afe.enqueue_u16_for_channel(afe.commands.setAD8402Value_byte_byMask,AFECommandSubdevice.AFECommandSubdevice_master | AFECommandSubdevice.AFECommandSubdevice_slave,int(200))
             afe.enqueue_float_for_channel(AFECommand.setChannel_a_byMask,0xFF,1.0)
             afe.enqueue_float_for_channel(AFECommand.setChannel_b_byMask,0xFF,0.0)
-        afe.enqueue_u32_for_channel(AFECommand.setChannel_dt_ms_byMask,0xFF,1000)
-        afe.enqueue_u32_for_channel(afe.commands.setAveraging_max_dt_ms_byMask,0xFF,100*200)
-        afe.enqueue_command(afe.commands.setAveragingMode_byMask,[0xFF,AFECommandAverage.WEIGHTED_EXPONENTIAL])
-        afe.enqueue_float_for_channel(AFECommand.setChannel_multiplicator_byMask,0xFF,1.0)
-        afe.enqueue_float_for_channel(afe.commands.setAveragingAlpha_byMask,0xFF,1.0/100.0)
+        afe.enqueue_u32_for_channel(AFECommand.setChannel_dt_ms_byMask,0xFF,1000,**commandKwargs)
+        afe.enqueue_u32_for_channel(afe.commands.setAveraging_max_dt_ms_byMask,0xFF,100*200,**commandKwargs)
+        afe.enqueue_command(afe.commands.setAveragingMode_byMask,[0xFF,AFECommandAverage.WEIGHTED_EXPONENTIAL],**commandKwargs)
+        afe.enqueue_float_for_channel(AFECommand.setChannel_multiplicator_byMask,0xFF,1.0,**commandKwargs)
+        afe.enqueue_float_for_channel(afe.commands.setAveragingAlpha_byMask,0xFF,1.0/100.0,**commandKwargs)
         
-        afe.enqueue_command(AFECommand.startADC,[0xFF,0xFF])
+        afe.enqueue_command(AFECommand.startADC,[0xFF,0xFF],**{"timeout_ms":10000,"preserve":True})
 
         # print("Start periodic measurement report for AFE {}".format(afe_id))
         # afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,[0xFF],timeout_ms=2500)
@@ -503,6 +535,12 @@ class HUBDevice:
             if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
                 self.curent_function = None
                 self.curent_function_retval = "timeout"
+    
+    def main_loop(self):
+        while self.run:
+            self.main_process()
+            pyb.delay(10)
+        
             
 def initialize_can_hub():
     """ Initialize the CAN bus and HUB. """
@@ -517,6 +555,7 @@ def initialize_can_hub():
     print("CAN Bus Initialized")
     # logger.verbosity_level = "DEBUG"
     hub = HUBDevice(can_bus,logger=logger)
+    hub.t = _thread.start_new_thread(hub.main_loop,())
     
     
     return can_bus, hub

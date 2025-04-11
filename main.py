@@ -28,7 +28,7 @@ if True:
     # hub.tx_timeout_ms = 5000
     hub.use_tx_delay = True
     hub.afe_manage_active = True
-    if True:
+    if False:
         import machine
         hubTask = machine.Timer()
         if True:
@@ -39,6 +39,11 @@ if True:
         if False:
             pyb.delay(500)
             hub.default_procedure()
+    else:
+        pass
+        # import _thread
+        # t = _thread.start_new_thread(hub.main_loop,())
+        
 
 # from pyb import CAN
 # can = CAN(1)

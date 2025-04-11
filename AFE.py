@@ -194,7 +194,7 @@ class AFEDevice:
                     
     
     # Prepare frame payload for the AFE
-    def prepare_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms = None, preserve=False, startKeepOutput=False, outputRestart=False, can_timeout_ms=None, callback=None):
+    def prepare_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms = None, preserve=False, startKeepOutput=False, outputRestart=False, can_timeout_ms=None, callback=None, **kwargs):
         """
         Prepares a command to be sent to the AFE device.
 
@@ -225,8 +225,9 @@ class AFEDevice:
         elif isinstance(data, int):
             data = [data]
         elif not (isinstance(data, list) and all(isinstance(i, int) for i in data)):
-            raise ValueError("Data must be an integer or a list of integers (bytes). {data}".format())
-
+            data = list(map(int, data))
+            # raise ValueError("Data must be an integer or a list of integers (bytes). {}".format(data))
+        timestamp_ms = millis()
         chunk_info = (max_chunks << 4) | chunk
         frame = bytearray([command, chunk_info] + data[:6])
         if(self.verbose >= 4):
@@ -238,17 +239,19 @@ class AFEDevice:
             "frame": frame,  # payload
             "can_address": self.can_address,  # can address
             "timeout_ms": self.default_command_timeout_ms if timeout_ms is None else timeout_ms, # override timeout
-            "timestamp_ms": millis(),  # insert timestamp or None if start timeout when sending
+            "timestamp_ms": timestamp_ms,
+            "timestamp_ms_enqueued": timestamp_ms,
             "startKeepOutput": startKeepOutput,
             "outputRestart": outputRestart,
             "can_timeout_ms": self.default_can_timeout_ms if can_timeout_ms is None else can_timeout_ms,
             "status": CommandStatus.NONE,
             "preserve":preserve,
+            "timeout_start_on_send_ms": None, # if not None then timestamp_ms is restarted
             "retval": None,
             "callback": callback
         }
     
-    def enqueue_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms = None, preserve = False, startKeepOutput=False, outputRestart=False, can_timeout_ms=None, callback=None):
+    def _enqueue_command(self, command, data=None, **kwargs):
         """
         Enqueues a command to be executed by the AFE device.
 
@@ -271,12 +274,14 @@ class AFEDevice:
             can_timeout_ms (int, optional): The timeout for CAN communication. Defaults to None.
         """
         self.to_execute.append(
-            self.prepare_command(command, data, chunk, max_chunks, timeout_ms, preserve, startKeepOutput, outputRestart, can_timeout_ms, callback)
+            self.prepare_command(command, data, **kwargs)
         )
+    def enqueue_command(self, command, data=None, **kwargs):
+        self._enqueue_command(command, data, **kwargs)
 
-    def enqueue_gpio_set(self,gpio,state):
+    def enqueue_gpio_set(self,gpio,state,**kwargs):
         self.enqueue_command(self.commands.writeGPIO,
-                             [gpio.port,gpio.pin,state])
+                             [gpio.port,gpio.pin,state],**kwargs)
 
     def enqueue_float_for_channel(self, command, channel, value,**kwargs):
         """
@@ -308,7 +313,7 @@ class AFEDevice:
         self.enqueue_command(
             command, [channel] + list(struct.pack('<H', value)),**kwargs)
     
-    def enqueue_u32_for_channel(self, command, channel, value):
+    def enqueue_u32_for_channel(self, command, channel, value,**kwargs):
         """
         Enqueues a command with a 32-bit unsigned integer value for a specific channel.
 
@@ -318,7 +323,7 @@ class AFEDevice:
             value (int): The 32-bit unsigned integer value to be sent with the command.
         """
         self.enqueue_command(
-            command, [channel] + list(struct.pack('<I', value)))
+            command, [channel] + list(struct.pack('<I', value)),**kwargs)
 
     def start_periodic_command_download(self, channel_mask: int, data_type: int, interval_ms: int = 2500):
         """
@@ -365,6 +370,9 @@ class AFEDevice:
             cmd = self.to_execute.pop(0)
             self.executing = cmd
             self.executing["status"] = CommandStatus.IDLE
+            if self.executing["timeout_start_on_send_ms"] is not None:
+                self.executing["timestamp_ms"] = millis()
+                self.executing["timeout_ms"] = self.executing["timeout_start_on_send_ms"]
             self.can_interface.send(cmd["frame"], cmd["can_address"],timeout=cmd["can_timeout_ms"])
             self.logger.log("DEBUG","Sending {}".format(cmd))
     
@@ -679,7 +687,7 @@ class AFEDevice:
         if self.executing is not None:
             # print(self.executing)
             if (millis() - self.executing["timestamp_ms"]) > self.executing["timeout_ms"]:
-                self.logger.log("DEBUG","AFE:manage_state:0x{:02X} TIMEOUT".format(self.executing["command"]))
+                self.logger.log("WARNING","AFE:manage_state:0x{:02X} TIMEOUT -> {}".format(self.executing["command"],list(self.executing["frame"])))
                 self.executing["status"] = CommandStatus.ERROR
                 if self.executing["preserve"] == True:
                     self.executed.append(self.executing.copy())
