@@ -427,7 +427,9 @@ class AFEDevice:
             #     #     }
             
             if command == self.commands.getSerialNumber:
+                self.logger.log("WARNING","R: ID:{}; Command: 0x{:02X}: {}".format(device_id, command, data_bytes))
                 # print(command, self.commands.getSerialNumber)
+                # print("UID:{}".format(chunk_payload))
                 chunk_data = self.bytes_to_u32(chunk_payload)
                 if chunk_id == 0:
                     self.unique_id = []
@@ -465,7 +467,7 @@ class AFEDevice:
                     if uch == (1<<8):
                         parsed_data["last_data"].update({"timestamp_ms".format(uch):self.bytes_to_u32(chunk_payload[1:])})
                     else:
-                        parsed_data["last_data"].update({"{}".format(e_ADC_CHANNEL.get(uch)):round(self.bytes_to_float(chunk_payload[1:]),5)})
+                        parsed_data["last_data"].update({"{}".format(e_ADC_CHANNEL.get(uch)):self.bytes_to_float(chunk_payload[1:])})
 
             elif command == self.commands.getSensorDataSi_average_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
@@ -475,7 +477,7 @@ class AFEDevice:
                     if uch == (1<<8):
                         parsed_data["average_data"].update({"timestamp_ms".format(uch):self.bytes_to_u32(chunk_payload[1:])})
                     else:
-                        parsed_data["average_data"].update({"{}".format(e_ADC_CHANNEL.get(uch)):round(self.bytes_to_float(chunk_payload[1:]),5)})
+                        parsed_data["average_data"].update({"{}".format(e_ADC_CHANNEL.get(uch)):self.bytes_to_float(chunk_payload[1:])})
             elif command == self.commands.setAD8402Value_byte_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     if 0x01 & (chunk_payload[2] >> uch):
@@ -602,7 +604,7 @@ class AFEDevice:
                     if uch == (1<<8):
                         parsed_data["test_data"].update({"timestamp_ms".format(uch):self.bytes_to_u32(chunk_payload[1:])})
                     else:
-                        parsed_data["test_data"].update({"CH{}".format(uch):round(self.bytes_to_float(chunk_payload[1:]),5)})
+                        parsed_data["test_data"].update({"CH{}".format(uch):self.bytes_to_float(chunk_payload[1:])})
 
             elif command == 0xF7:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
@@ -612,7 +614,7 @@ class AFEDevice:
                     if uch == (1<<8):
                         parsed_data["test_data"].update({"timestamp_ms".format(uch):self.bytes_to_u32(chunk_payload[1:])})
                     else:
-                        parsed_data["test_data"].update({"CH{}".format(uch):round(self.bytes_to_float(chunk_payload[1:]),5)})
+                        parsed_data["test_data"].update({"CH{}".format(uch):self.bytes_to_float(chunk_payload[1:])})
 
             else:
                 print("Unknow command: 0x{:02X}: {}".format(command,data_bytes))

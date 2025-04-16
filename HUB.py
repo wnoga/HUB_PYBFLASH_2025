@@ -9,6 +9,7 @@ import _thread
 from AFE import AFEDevice, AFECommand, millis, SensorChannel, SensorReading
 from my_utilities import JSONLogger, EmptyLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, AFE_Config, read_callibration_csv
 from my_utilities import channel_name_xxx, e_ADC_CHANNEL
+from my_utilities import wdt
 
 logger = EmptyLogger()
 # logger = JSONLogger()
@@ -17,7 +18,21 @@ logger = EmptyLogger()
 # afe = AFEDevice() # only for autocomplete
 
 class HUBDevice:
-    def __init__(self, can_bus, logger = EmptyLogger()):
+    """
+    HUBDevice class manages communication with multiple AFE devices over CAN bus.
+
+    This class handles device discovery, message processing, and command execution
+    for a network of Analog Front-End (AFE) devices. It uses a CAN bus for
+    communication and supports both polling and callback-based message handling.
+
+    Attributes:
+        can_bus (pyb.CAN): The CAN bus object used for communication.
+        lock (_thread.allocate_lock): A lock for thread synchronization.
+        logger (EmptyLogger): Logger for logging events and errors.
+        use_rxcallback (bool): Flag to enable or disable CAN RX callback.
+    """
+    def __init__(self, can_bus, lock: _thread.allocate_lock, logger = EmptyLogger(), use_rxcallback=True):
+        self.lock = lock
         self.can_bus = can_bus
         self.afe_devices = []
         self.afe_devices_max = 8
@@ -29,7 +44,8 @@ class HUBDevice:
         
         self.rx_buffer = bytearray(8)  # Pre-allocate memory
         self.rx_message = [0, 0, 0, memoryview(self.rx_buffer)]  # Use memoryview to reduce heap allocations
-        self.can_bus.rxcallback(0, self.handle_can_rx) # Trigger every new CAN message
+        self.use_rxcallback = use_rxcallback
+        if self.use_rxcallback: self.can_bus.rxcallback(0, self.handle_can_rx) # Trigger every new CAN message
         
         self.message_queue = []
         
@@ -81,6 +97,10 @@ class HUBDevice:
                 self.message_queue.append(self.rx_message)
         except Exception as e:
             print("handle_can_rx: HUB RX Error: {e}".format(e=e))
+    
+    def handle_can_rx_polling(self):
+        if self.can_bus.any(0):
+            self.handle_can_rx(self.can_bus,0)
             
     def get_afe_by_id(self, afe_id) -> AFEDevice:
         """
@@ -355,8 +375,8 @@ class HUBDevice:
                 afe.enqueue_command(AFECommand.setDAC_bySubdeviceMask, [get_subdevice_ch_id(g),1],**commandKwargs)
                 afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g ==
                                     'M' else afe.AFEGPIO_EN_HV1, 1,**commandKwargs)
-                afe.enqueue_gpio_set(afe.AFEGPIO_EN_CAL_IN0 if g ==
-                                    'M' else afe.AFEGPIO_EN_CAL_IN1, 1,**commandKwargs)
+                # afe.enqueue_gpio_set(afe.AFEGPIO_EN_CAL_IN0 if g ==
+                #                     'M' else afe.AFEGPIO_EN_CAL_IN1, 1,**commandKwargs)
                 afe.enqueue_gpio_set(afe.AFEGPIO_blink,1,**commandKwargs)
                 afe.enqueue_gpio_set(afe.AFEGPIO_blink,0,**commandKwargs)
         else:
@@ -540,18 +560,21 @@ class HUBDevice:
                     afe.manage_state()
         if self.rx_process_active:
             self.process_received_messages()
-        if self.curent_function is not None:
+        if not self.use_rxcallback: self.handle_can_rx_polling()
+        if self.curent_function is not None: # check if function is running
             if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
                 self.curent_function = None
                 self.curent_function_retval = "timeout"
     
     def main_loop(self):
         while self.run:
-            self.main_process()
-            pyb.delay(10)
+            with self.lock:
+                self.main_process()
+            wdt.feed()
+            # pyb.delay(10)
         
             
-def initialize_can_hub():
+def initialize_can_hub(lock: _thread.allocate_lock,use_rxcallback=True):
     """ Initialize the CAN bus and HUB. """
     can_bus = pyb.CAN(1)
     can_bus.init(pyb.CAN.NORMAL, extframe=False, prescaler=54, sjw=1, bs1=7, bs2=2, auto_restart=True)
@@ -563,8 +586,8 @@ def initialize_can_hub():
     
     print("CAN Bus Initialized")
     # logger.verbosity_level = "DEBUG"
-    hub = HUBDevice(can_bus,logger=logger)
-    hub.t = _thread.start_new_thread(hub.main_loop,())
+    hub = HUBDevice(can_bus,logger=logger,lock=lock,use_rxcallback=use_rxcallback)
+    # hub.t = _thread.start_new_thread(hub.main_loop,())
     
     
     return can_bus, hub

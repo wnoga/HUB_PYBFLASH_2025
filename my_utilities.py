@@ -5,6 +5,13 @@ except:
 import json
 import os
 
+try:
+    from machine import WDT
+    wdt = WDT(timeout=10000)  # enable it with a timeout of 5s
+    wdt.feed()
+except:
+    pass
+
 class AFECommand:
     getSerialNumber = 0x0
     getVersion = 0x1
