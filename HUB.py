@@ -574,7 +574,7 @@ class HUBDevice:
             # pyb.delay(10)
         
             
-def initialize_can_hub(lock: _thread.allocate_lock,use_rxcallback=True):
+def initialize_can_hub(lock: _thread.allocate_lock,use_rxcallback=True,**kwargs):
     """ Initialize the CAN bus and HUB. """
     can_bus = pyb.CAN(1)
     can_bus.init(pyb.CAN.NORMAL, extframe=False, prescaler=54, sjw=1, bs1=7, bs2=2, auto_restart=True)
@@ -586,7 +586,7 @@ def initialize_can_hub(lock: _thread.allocate_lock,use_rxcallback=True):
     
     print("CAN Bus Initialized")
     # logger.verbosity_level = "DEBUG"
-    hub = HUBDevice(can_bus,logger=logger,lock=lock,use_rxcallback=use_rxcallback)
+    hub = HUBDevice(can_bus,logger=logger,lock=lock,use_rxcallback=use_rxcallback,**kwargs)
     # hub.t = _thread.start_new_thread(hub.main_loop,())
     
     

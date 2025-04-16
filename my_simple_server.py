@@ -13,6 +13,7 @@ from my_utilities import millis
 class MySimpleServer():
     def __init__(self, hub: HUBDevice, lock: _thread.allocate_lock, static_ip=None):
         self.lan = network.LAN()
+        self.port = 5555
         self.s = None
         self.t = None
         self.running = False  # Add running flag to control server loop
@@ -30,21 +31,31 @@ class MySimpleServer():
         self.timestamp_ms = 0
         self.wait_ms = 100
         self.lock = lock
+        
+        self.setup_lan_state = 0
 
-    def setup_lan(self):
-        self.lan.active(True)
-        
-        if self.static_ip:
-            self.lan.ifconfig((self.static_ip, '255.255.255.0', '192.168.1.1', '8.8.8.8'))
+    def setup_lan_machine(self):
+        if self.setup_lan_state == 0:
+            self.lan = network.LAN()
+            self.lan.active(True)
+            if self.static_ip:
+                self.lan.ifconfig((self.static_ip, '255.255.255.0', '192.168.1.1', '8.8.8.8'))
+            else:
+                self.lan.ifconfig('dhcp')
+            timestamp_ms = millis()
+            self.setup_lan_state = 1
+        elif self.setup_lan_state == 1:
+            if self.lan.isconnected():
+                self.setup_lan_state = 2
+                print("Connected to LAN: {}".format(self.lan.ifconfig()))
+            else:
+                if (millis() - timestamp_ms) > 15000:
+                    self.setup_lan_state = 0
+        elif self.setup_lan_state == 2:
+            if not self.lan.isconnected():
+                self.setup_lan_state = 0 # Recconect
         else:
-            self.lan.ifconfig('dhcp')
-        
-        while not self.lan.isconnected():
-            print("Waiting for LAN connection...".format())
-            time.sleep(1)
-        
-        print("Connected to LAN: {}".format(self.lan.ifconfig()))
-        return self.lan
+            self.setup_lan_state = 0
 
     def handle_client(self, connection: socket.socket, address: tuple):
         print("New connection from {}".format(address))
@@ -87,16 +98,20 @@ class MySimpleServer():
                 print("Error handling client from {}: {}".format(address, e))
         except Exception as e:
             print("Error handling client from {}: {}".format(address, e))
+        finally: # Avoid deadlock
+            connection.close()
+            print("Connection closed from {}".format(address))
     
     def setup_socket(self):
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.settimeout(2.0)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind((self.lan.ifconfig()[0], 5555))
+            self.server_socket.bind((self.lan.ifconfig()[0], int(self.port)))
             self.server_socket.listen(1)
-            print("Server started on: {}:5555".format(self.lan.ifconfig()[0]))
-        except OSError as e:
+            print("Server started on: {}:{}}".format(self.lan.ifconfig()[0],int(self.port)))
+        except Exception as e:
+            self.server_socket = None
             print("Error setting up server socket: {}", e)
     
     def main_machine(self):
@@ -104,8 +119,7 @@ class MySimpleServer():
             return
         self.timestamp_ms = millis()
         with self.lock:
-            if not self.lan.isconnected():
-                self.lan = self.setup_lan()
+            self.setup_lan_machine()
             if self.server_socket is None:
                 self.setup_socket()
             try:
@@ -116,6 +130,11 @@ class MySimpleServer():
                 # self.connecions.append({"connection":connection,"address":address})
             except:
                 pass
+            finally:
+                try:
+                    connection.close()
+                except:
+                    pass
             
     
     def run(self):

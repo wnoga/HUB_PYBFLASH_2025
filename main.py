@@ -57,7 +57,7 @@ if True:
     # while True:
     # main_loop()
     
-    t = _thread.start_new_thread(main_loop,())
+    t = _thread.start_new_thread(main_loop,()) # Start in thread for python interactive mode
         
     # t_hub = _thread.start_new_thread(hub.main_loop,())
     # t_server = _thread.start_new_thread(server.main_machine,())
