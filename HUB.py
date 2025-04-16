@@ -53,7 +53,16 @@ class HUBDevice:
         self.curent_function_retval = None
         
         self.afecmd = AFECommand()
-        
+    
+    def powerOn(self):
+        pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
+        pyb.Pin.cpu.E12.value(1)
+        print("HV is on")
+
+    def powerOff(self):
+        pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
+        pyb.Pin.cpu.E12.value(0)
+        print("HV is off")
         
     def reset_all(self):
         self.stop_discovery()
