@@ -659,6 +659,7 @@ class AFEDevice:
                             self.executing["callback"](self.executing)
                         if self.executing["preserve"] == True:
                             self.executed.append(self.executing.copy())
+                            self.logger.log("MEASUREMENT",self.executing)
                             # self.logger.log("DEBUG",self.executing)
                             print(self.executing)
                         self.executing = None

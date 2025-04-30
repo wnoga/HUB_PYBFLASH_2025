@@ -29,9 +29,7 @@ if True:
     can, hub = initialize_can_hub(lock,use_rxcallback=False)
     hub.afe_devices_max = 1
     # server = MyServer(hub)
-    
     # server = MySimpleServer(hub,lock)
-    
     # server.start_server()
     # hub.start_discovery(interval=0.1)
     # pass

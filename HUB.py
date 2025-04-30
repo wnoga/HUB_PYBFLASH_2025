@@ -11,8 +11,8 @@ from my_utilities import JSONLogger, EmptyLogger, AFECommandChannel, AFECommandS
 from my_utilities import channel_name_xxx, e_ADC_CHANNEL
 from my_utilities import wdt
 
-logger = EmptyLogger()
-# logger = JSONLogger()
+# logger = EmptyLogger()
+logger = JSONLogger()
 # logger.log("INFO",{"test":"test"})
 
 # afe = AFEDevice() # only for autocomplete
@@ -321,16 +321,31 @@ class HUBDevice:
                         callibration[g][k] = v # set default value
         return callibration
     
-    def default_get_measurement(self, afe_id=35):
+    def default_get_measurement(self, afe_id=35,callback=None):
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
         commandKwargs = {"timeout_ms":10220,"preserve":True,"timeout_start_on": 5000}
+        if callback is not None:
+            commandKwargs["callback"] = callback
         # afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[AFECommandChannel.AFECommandChannel_7], timeout_ms=2500)
         # afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[AFECommandChannel.AFECommandChannel_7 | AFECommandChannel.AFECommandChannel_6], timeout_ms=2500)
         afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,[0xFF], **commandKwargs)
         afe.enqueue_command(afe.commands.getSensorDataSi_average_byMask,[0xFF], **commandKwargs)
-        
+    
+    def default_callback_return(self,msg=None):
+        return msg
+    
+    def default_get_measurement_last(self, afe_id=35,callback=None):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        commandKwargs = {"timeout_ms":10220,"preserve":True,"timeout_start_on": 5000}
+        if callback is not None:
+            commandKwargs["callback"] = callback
+        afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,[0xFF], **commandKwargs)
+    
+     
     def callback_1(self,msg=None):
         msg["callback"] = None
         msg = json.dumps(msg)
