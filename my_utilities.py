@@ -5,10 +5,25 @@ except:
 import json
 import os
 
+class wdt_x:
+    def __init__(self, timeout=2000):
+        try:
+            # from machine import WDT
+            # self.wdt = WDT(timeout=timeout)
+            self.wdt = None
+        except:
+            self.wdt = None
+    def feed(self):
+        if self.wdt is not None:
+            self.wdt.feed()
+
+
 try:
-    from machine import WDT
-    wdt = WDT(timeout=10000)  # enable it with a timeout of 5s
-    wdt.feed()
+    wdt = wdt_x()
+    # from machine import WDT
+    # wdt = WDT(timeout=10000)  # enable it with a timeout of 5s
+    # wdt.feed()
+
 except:
     pass
 

@@ -459,6 +459,10 @@ class AFEDevice:
             elif command == self.commands.startADC:
                 print("ADC started: {}".format(chunk_payload))
                 
+            elif command == self.commands.setTemperatureLoopForChannelState_byMask_asMask:
+                print("setTemperatureLoopForChannelState_byMask_asMask: {}".format(chunk_payload))
+                
+                
             elif command == self.commands.getSensorDataSi_last_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
                 if not "last_data" in parsed_data:

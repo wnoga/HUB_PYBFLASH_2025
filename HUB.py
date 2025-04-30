@@ -149,7 +149,7 @@ class HUBDevice:
         """ Periodically discover AFEs on the CAN bus. """
         
         # Check if there are any AFE devices
-        if not self.afe_devices and not self.discovery_active:
+        if not self.discovery_active:
             return
         
         # Check if discovery is active
@@ -160,7 +160,6 @@ class HUBDevice:
         if len(self.afe_devices) == self.afe_devices_max:
             self.stop_discovery()
             return
-        
         if self.use_tx_delay:
             if (millis() - self.last_tx_time) < self.tx_timeout_ms:
                 return
@@ -386,6 +385,27 @@ class HUBDevice:
             afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV1, 0)
             afe.enqueue_gpio_set(afe.AFEGPIO_blink,1)
             afe.enqueue_gpio_set(afe.AFEGPIO_blink,0)
+            
+    def default_start_temperature_loop(self, afe_id=35):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        commandKwargs = {"timeout_ms":10220,"preserve":True,"timeout_start_on_send_ms":2000}
+        def get_subdevice_ch_id(g):
+            return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
+        print("Set DAC for {}".format(afe_id))
+        if True:
+            for g in ["M", "S"]:
+                afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asMask, [get_subdevice_ch_id(g),1],**commandKwargs)
+        else:
+            pass
+        
+    def default_full(self, afe_id=35):
+        self.powerOn()
+        self.default_procedure(afe_id)
+        self.default_set_dac(afe_id)
+        self.default_start_temperature_loop(afe_id)
+        self.default_get_measurement(afe_id)
 
     def reset(self, afe_id=35):
         for afe in self.afe_devices:

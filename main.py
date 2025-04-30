@@ -26,10 +26,12 @@ from my_simple_server import MySimpleServer
 
 if True:
     lock = _thread.allocate_lock()
-    can, hub = initialize_can_hub(lock,use_rxcallback=True)
+    can, hub = initialize_can_hub(lock,use_rxcallback=False)
     hub.afe_devices_max = 1
     # server = MyServer(hub)
-    server = MySimpleServer(hub,lock)
+    
+    # server = MySimpleServer(hub,lock)
+    
     # server.start_server()
     # hub.start_discovery(interval=0.1)
     # pass
@@ -43,7 +45,7 @@ if True:
     def main_loop():
         while True:
             hub.main_process()
-            server.main_machine()
+            # server.main_machine()
             wdt.feed()
             # pyb.delay(100)
             
@@ -52,7 +54,7 @@ if True:
     #     server.main_machine()
     #     wdt.feed()
     #     pyb.delay(10)
-    server.running = True
+    # server.running = True
     wdt.feed()
     # while True:
     # main_loop()
