@@ -5,6 +5,24 @@ except:
 import json
 import os
 
+try:
+    import _thread
+    # lock = _thread.allocate_lock()
+except:
+    pass
+
+# Create a lock for safe printing
+print_lock = _thread.allocate_lock()
+
+class Print:
+    def __init__(self):
+        pass
+    def print(self, *args, **kwargs):
+        with print_lock:
+            print(*args, **kwargs)
+p = Print()
+
+
 class wdt_x:
     def __init__(self, timeout=2000):
         try:
@@ -216,9 +234,9 @@ class CSVLogger:
         try:
             with open(self.filename, "r") as file:
                 for line in file:
-                    print(line.strip())  # Print each line
+                    p.print(line.strip())  # Print each line
         except OSError:
-            print("Error: Cannot read JSON log file.")
+            p.print("Error: Cannot read JSON log file.")
             
 class EmptyLogger:
     def __init__(self,**kwargs):
@@ -229,7 +247,7 @@ class EmptyLogger:
         return self.levels.index(level.upper()) >= self.levels.index(self.verbosity_level)
     def log(self, level, message):
         if self._should_log(level):
-            print("{} @ {}: {}".format(millis(), level,message))
+            p.print("{} @ {}: {}".format(millis(), level,message))
         pass
     def sync(self):
         pass
@@ -280,7 +298,7 @@ class JSONLogger:
             log_entry = {"timestamp": log_timestamp, "level": level.upper(), "message": message}
             self.file.write(json.dumps(log_entry) + "\n")  # Append log as a new line
             self.file.flush()  # Ensure data is written immediately
-            print("LOG:",log_entry)
+            p.print("LOG:",log_entry)
             if self.levels.index(level.upper()) >= self.levels.index("MEASUREMENT"):
                 self.csv_logger.log(message)
     
@@ -316,9 +334,9 @@ class JSONLogger:
         try:
             with open(self.filename, "r") as file:
                 for line in file:
-                    print(line.strip())  # Print each line
+                    p.print(line.strip())  # Print each line
         except OSError:
-            print("Error: Cannot read JSON log file.")
+            p.print("Error: Cannot read JSON log file.")
 
 cmndavrg = AFECommandAverage()
 AFE_Config = [
@@ -401,9 +419,9 @@ if __name__ == "__main__":
     callib_data, callib_data_mean = read_callibration_csv(callibration_data_file_csv)
     TempLoop_data, TempLoop_data_mean = read_callibration_csv(TempLoop_file_csv)
 
-    print("Callibration data:\n",json.dumps(callib_data, indent=4))
-    print("TempLoop data:\n",json.dumps(TempLoop_data, indent=4))
+    p.print("Callibration data:\n",json.dumps(callib_data, indent=4))
+    p.print("TempLoop data:\n",json.dumps(TempLoop_data, indent=4))
 
     
-    print("Callibration data mean:\n",json.dumps(callib_data_mean, indent=4))
-    print("TempLoop data mean:\n",json.dumps(TempLoop_data_mean, indent=4))
+    p.print("Callibration data mean:\n",json.dumps(callib_data_mean, indent=4))
+    p.print("TempLoop data mean:\n",json.dumps(TempLoop_data_mean, indent=4))

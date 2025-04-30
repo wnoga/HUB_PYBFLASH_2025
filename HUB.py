@@ -10,9 +10,11 @@ from AFE import AFEDevice, AFECommand, millis, SensorChannel, SensorReading
 from my_utilities import JSONLogger, EmptyLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, AFE_Config, read_callibration_csv
 from my_utilities import channel_name_xxx, e_ADC_CHANNEL
 from my_utilities import wdt
+from my_utilities import p
+# from my_utilities import lock
 
-# logger = EmptyLogger()
-logger = JSONLogger()
+logger = EmptyLogger()
+# logger = JSONLogger()
 # logger.log("INFO",{"test":"test"})
 
 # afe = AFEDevice() # only for autocomplete
@@ -31,8 +33,7 @@ class HUBDevice:
         logger (EmptyLogger): Logger for logging events and errors.
         use_rxcallback (bool): Flag to enable or disable CAN RX callback.
     """
-    def __init__(self, can_bus, lock: _thread.allocate_lock, logger = EmptyLogger(), use_rxcallback=True):
-        self.lock = lock
+    def __init__(self, can_bus, logger = EmptyLogger(), use_rxcallback=True):
         self.can_bus = can_bus
         self.afe_devices = []
         self.afe_devices_max = 8
@@ -73,12 +74,12 @@ class HUBDevice:
     def powerOn(self):
         pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
         pyb.Pin.cpu.E12.value(1)
-        print("HV is on")
+        p.print("HV is on")
 
     def powerOff(self):
         pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
         pyb.Pin.cpu.E12.value(0)
-        print("HV is off")
+        p.print("HV is off")
         
     def reset_all(self):
         self.stop_discovery()
@@ -92,11 +93,11 @@ class HUBDevice:
             while self.can_bus.any(0):  # Check FIFO 0 for messages
                 self.can_bus.recv(0, self.rx_message)  # Read message from FIFO 0
                 if len(self.message_queue) >= 255:
-                    print("Poped message: {}".format(self.message_queue[0]))
+                    p.print("Poped message: {}".format(self.message_queue[0]))
                     self.message_queue.pop(0)
                 self.message_queue.append(self.rx_message)
         except Exception as e:
-            print("handle_can_rx: HUB RX Error: {e}".format(e=e))
+            p.print("handle_can_rx: HUB RX Error: {e}".format(e=e))
     
     def handle_can_rx_polling(self):
         if self.can_bus.any(0):
@@ -124,7 +125,7 @@ class HUBDevice:
         AFE device associated with each message, and processes the received data.
         If a message is from a new AFE, it creates a new AFEDevice instance.
         """
-        
+        message = None
         # Check if message queue is empty
         if not self.message_queue:
             return  # Exit early if there are no messages to process
@@ -135,6 +136,9 @@ class HUBDevice:
         
         if len(self.message_queue): # Process only if anythong is in the queue
             message = self.message_queue.pop(0) # get from FIFO
+        try:
+            if message is None:
+                return
             afe_id = (message[0] >> 2) & 0xFF # unmask the AFE ID
             afe = self.get_afe_by_id(afe_id)
             if afe is None: # Add new discovered AFE
@@ -144,6 +148,8 @@ class HUBDevice:
                 self.afe_devices.append(afe)
             # Process the received data using the AFE device's method
             afe.process_received_data(message)
+        except Exception as e:
+            p.print("process_received_messages: {}".format(e))
     
     def discover_devices(self, timer=None):
         """ Periodically discover AFEs on the CAN bus. """
@@ -194,7 +200,7 @@ class HUBDevice:
     def stop_discovery(self):
         """ Stop the device discovery process. """
         self.discovery_active = False
-        print("STOP DISCOVERY")
+        p.print("STOP DISCOVERY")
         
     def start_periodic_measurement_download(self, interval_ms=2500):
         A = list(self.afe_devices)  # Directly use the list of devices
@@ -349,7 +355,7 @@ class HUBDevice:
     def callback_1(self,msg=None):
         msg["callback"] = None
         msg = json.dumps(msg)
-        print("callback:",msg)
+        p.print("callback:",msg)
         
     def default_start_measurement(self, afe_id=35,
                                   enable_temperature_loop=True,
@@ -382,7 +388,7 @@ class HUBDevice:
         commandKwargs = {"timeout_ms":10220,"preserve":False,"timeout_start_on_send_ms":2000}
         def get_subdevice_ch_id(g):
             return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
-        print("Set DAC for {}".format(afe_id))
+        p.print("Set DAC for {}".format(afe_id))
         if True:
             for g in ["M", "S"]:
                 afe.enqueue_u16_for_channel(AFECommand.setDACValueRaw_bySubdeviceMask, get_subdevice_ch_id(g), dac_master if g == 'M' else dac_slave,**commandKwargs)
@@ -408,7 +414,7 @@ class HUBDevice:
         commandKwargs = {"timeout_ms":10220,"preserve":True,"timeout_start_on_send_ms":2000}
         def get_subdevice_ch_id(g):
             return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
-        print("Set DAC for {}".format(afe_id))
+        p.print("Set DAC for {}".format(afe_id))
         if True:
             for g in ["M", "S"]:
                 afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asMask, [get_subdevice_ch_id(g),1],**commandKwargs)
@@ -457,7 +463,7 @@ class HUBDevice:
         self.default_procedure(afe_id)
         self.default_set_dac(afe_id)
         for i in range(10):
-            print("get measurement")
+            p.print("get measurement")
             self.default_get_measurement(afe_id)
             pyb.delay(500)
     
@@ -494,9 +500,9 @@ class HUBDevice:
         if afe is None:
             return
         callib = self.get_configuration_from_files(afe_id)
-        print("### DEFAULT PROCEDURE ###")
-        print(str(callib).replace("'",'"'))
-        print("#########################")
+        p.print("### DEFAULT PROCEDURE ###")
+        p.print(str(callib).replace("'",'"'))
+        p.print("#########################")
         afe.callback_1 = self.callback_1
         # timeoutForCommand_ms = 10000
         commandKwargs = {"timeout_ms":10220,"preserve":False,"timeout_start_on_send_ms":1000}
@@ -538,7 +544,7 @@ class HUBDevice:
                     else:
                         continue
                     for uch in afe.unmask_channel(ch_id):
-                        print("AFE {} {} Loading {} (CH{} ? {}) value {}".format(afe_id,g,k,uch,e_ADC_CHANNEL[uch],v))
+                        p.print("AFE {} {} Loading {} (CH{} ? {}) value {}".format(afe_id,g,k,uch,e_ADC_CHANNEL[uch],v))
             
         else:
             afe.enqueue_u16_for_channel(afe.commands.setAD8402Value_byte_byMask,AFECommandSubdevice.AFECommandSubdevice_master | AFECommandSubdevice.AFECommandSubdevice_slave,int(200))
@@ -552,7 +558,7 @@ class HUBDevice:
         
         afe.enqueue_command(AFECommand.startADC,[0xFF,0xFF],**{"timeout_ms":10000,"preserve":True})
 
-        # print("Start periodic measurement report for AFE {}".format(afe_id))
+        # p.print("Start periodic measurement report for AFE {}".format(afe_id))
         # afe.enqueue_command(afe.commands.getSensorDataSi_last_byMask,[0xFF],timeout_ms=2500)
         return
         # afe.enqueue_command(afe.commands.getVersion)  # get Version
@@ -561,7 +567,7 @@ class HUBDevice:
             if a["afe_id"] == afe_id:
                 afeConfig = a
                 break
-        # print(afeConfig["afe_id"])
+        # p.print(afeConfig["afe_id"])
         for ch in afeConfig["channel"]:
             afe.enqueue_command(afe.commands.setAveragingMode,[ch.channel_id,ch.averaging_mode])
             afe.enqueue_float_for_channel(afe.commands.setChannel_a,ch.channel_id,ch.a)
@@ -570,7 +576,7 @@ class HUBDevice:
             afe.enqueue_float_for_channel(afe.commands.setAveragingAlpha,ch.channel_id,ch.alpha)
 
     def parse(self,msg):
-        print("Parsed: {}".format(msg))
+        p.print("Parsed: {}".format(msg))
         
     def send_back_data(self,afe_id: int):
         """
@@ -584,44 +590,45 @@ class HUBDevice:
             return
         toSend = afe.executed.copy() # get all executed commands
         afe.executed = [] # clear executed commands
-        print("Send back: {}".format(json.dumps(toSend)))
+        p.print("Send back: {}".format(json.dumps(toSend)))
 
     def main_process(self,timer=None):
-        self.discover_devices()
-        if self.afe_manage_active:
-            for afe in self.afe_devices:
-                if afe.is_online:
-                    # print("manage_state")
-                    afe.manage_state()
-        if self.rx_process_active:
-            self.process_received_messages()
-        if not self.use_rxcallback: self.handle_can_rx_polling()
-        if self.curent_function is not None: # check if function is running
-            if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
-                self.curent_function = None
-                self.curent_function_retval = "timeout"
+        if True:
+            if not self.use_rxcallback: self.handle_can_rx_polling()
+            self.discover_devices()
+            if self.rx_process_active:
+                self.process_received_messages()
+            if self.afe_manage_active:
+                for afe in self.afe_devices:
+                    if afe.is_online:
+                        # p.print("manage_state")
+                        afe.manage_state()
+            if self.curent_function is not None: # check if function is running
+                if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
+                    self.curent_function = None
+                    self.curent_function_retval = "timeout"
+        if False:
+            pass
     
     def main_loop(self):
         while self.run:
-            with self.lock:
-                self.main_process()
-            wdt.feed()
-            # pyb.delay(10)
+            self.main_process()
+            time.sleep_us(1)
         
             
-def initialize_can_hub(lock: _thread.allocate_lock,use_rxcallback=True,**kwargs):
+def initialize_can_hub(use_rxcallback=True,**kwargs):
     """ Initialize the CAN bus and HUB. """
     can_bus = pyb.CAN(1)
     can_bus.init(pyb.CAN.NORMAL, extframe=False, prescaler=54, sjw=1, bs1=7, bs2=2, auto_restart=True)
     # can_bus.setfilter(0, can_bus.MASK32, 0, (0, 0))
     can_bus.setfilter(0, can_bus.MASK16, 0, (0, 0, 0, 0)) 
     
-    # print(str(callib_data[0]).replace("'",'"'))
+    # p.print(str(callib_data[0]).replace("'",'"'))
     # return
     
-    print("CAN Bus Initialized")
+    p.print("CAN Bus Initialized")
     # logger.verbosity_level = "DEBUG"
-    hub = HUBDevice(can_bus,logger=logger,lock=lock,use_rxcallback=use_rxcallback,**kwargs)
+    hub = HUBDevice(can_bus,logger=logger,use_rxcallback=use_rxcallback,**kwargs)
     # hub.t = _thread.start_new_thread(hub.main_loop,())
     
     

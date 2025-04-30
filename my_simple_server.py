@@ -9,9 +9,10 @@ import pyb
 
 from my_utilities import wdt
 from my_utilities import millis
+from my_utilities import p
 
 class MySimpleServer():
-    def __init__(self, hub: HUBDevice, lock: _thread.allocate_lock, static_ip=None):
+    def __init__(self, hub: HUBDevice, static_ip=None):
         self.lan = network.LAN()
         self.port = 5555
         self.s = None
@@ -30,7 +31,6 @@ class MySimpleServer():
         self.connecions = []
         self.timestamp_ms = 0
         self.wait_ms = 100
-        self.lock = lock
         
         self.setup_lan_state = 0
 
@@ -47,7 +47,7 @@ class MySimpleServer():
         elif self.setup_lan_state == 1:
             if self.lan.isconnected():
                 self.setup_lan_state = 2
-                print("Connected to LAN: {}".format(self.lan.ifconfig()))
+                p.print("Connected to LAN: {}".format(self.lan.ifconfig()))
             else:
                 if (millis() - timestamp_ms) > 15000:
                     self.setup_lan_state = 0
@@ -58,19 +58,19 @@ class MySimpleServer():
             self.setup_lan_state = 0
 
     def handle_client(self, connection: socket.socket, address: tuple):
-        print("New connection from {}".format(address))
+        p.print("New connection from {}".format(address))
         connection.settimeout(5.0)
         try:
             data = connection.recv(1024).decode()
             if not data:
                 return
-            print("Received: {}".format(data))
+            p.print("Received: {}".format(data))
             try:
                 j = ujson.loads(data)
                 # afe_id = j["afe_id"]
                 afe_id = 35
                 if "procedure" in j:
-                    print("Procedure: {}".format(j["procedure"]))
+                    p.print("Procedure: {}".format(j["procedure"]))
                     afe_id = int(j["afe_id"])
                     afe = self.hub.get_afe_by_id(afe_id)
                     if afe is None:
@@ -119,18 +119,18 @@ class MySimpleServer():
                     elif j["command"] == "test1":
                         self.hub.test1(afe_id)
             except Exception as e:
-                print("Error: {}".format(e))
+                p.print("Error: {}".format(e))
             connection.sendall(ujson.dumps({"status":"OK"}).encode())
         except OSError as e:
             if e.args[0] == 110:  # ETIMEDOUT
-                print("Connection timed out from {}".format(address))
+                p.print("Connection timed out from {}".format(address))
             else:
-                print("Error handling client from {}: {}".format(address, e))
+                p.print("Error handling client from {}: {}".format(address, e))
         except Exception as e:
-            print("Error handling client from {}: {}".format(address, e))
+            p.print("Error handling client from {}: {}".format(address, e))
         finally: # Avoid deadlock
             connection.close()
-            print("Connection closed from {}".format(address))
+            p.print("Connection closed from {}".format(address))
     
     def setup_socket(self):
         try:
@@ -141,37 +141,36 @@ class MySimpleServer():
             self.server_socket.listen(1)
         except Exception as e:
             self.server_socket = None
-            print("Error setting up server socket: {}".format(e))
+            p.print("Error setting up server socket: {}".format(e))
     
     def main_machine(self):
         if (millis() - self.timestamp_ms) < self.wait_ms:
             return
         self.timestamp_ms = millis()
-        # print("MAIN MACHINE SERVER")
-        # print(self.lan.ifconfig())
-        with self.lock:
-            self.setup_lan_machine()
-            if self.server_socket is None:
-                self.setup_socket()
-                pass
+        # p.print("MAIN MACHINE SERVER")
+        # p.print(self.lan.ifconfig())
+        self.setup_lan_machine()
+        if self.server_socket is None:
+            self.setup_socket()
+            pass
+        try:
+            self.server_socket.settimeout(0.01)
+            connection, address = self.server_socket.accept()
+            # _thread.start_new_thread(self.handle_client, (connection, address,))
+            self.handle_client(connection,address)
+            # self.connecions.append({"connection":connection,"address":address})
+        except:
+            pass
+        finally:
             try:
-                self.server_socket.settimeout(0.01)
-                connection, address = self.server_socket.accept()
-                # _thread.start_new_thread(self.handle_client, (connection, address,))
-                self.handle_client(connection,address)
-                # self.connecions.append({"connection":connection,"address":address})
+                connection.close()
             except:
                 pass
-            finally:
-                try:
-                    connection.close()
-                except:
-                    pass
             
     
-    def run(self):
+    def main_loop(self):
         while self.running:
-            self.main_machine(self.lock)
+            self.main_machine()
             wdt.feed()
                 
     def start_server(self):
@@ -183,4 +182,4 @@ class MySimpleServer():
     def x(self):
         while True:
             pyb.delay(100)
-            # print("TEST")
+            # p.print("TEST")
