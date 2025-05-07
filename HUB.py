@@ -417,9 +417,18 @@ class HUBDevice:
         p.print("Set DAC for {}".format(afe_id))
         if True:
             for g in ["M", "S"]:
-                afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asMask, [get_subdevice_ch_id(g),1],**commandKwargs)
+                afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus, [get_subdevice_ch_id(g),1],**commandKwargs)
         else:
             pass
+        
+    def default_manual_blocking_measurement_loop(self, afe_id=35):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        timestamp_ms = millis()
+        while (millis() - timestamp_ms) <= 10000:
+            self.default_get_measurement(afe_id)
+            time.sleep(5.0)
        
     def default_periodic_measurement_download_all(self, afe_id=35, ms=10000):
         afe = self.get_afe_by_id(afe_id)
@@ -434,6 +443,7 @@ class HUBDevice:
         self.default_set_dac(afe_id)
         self.default_start_temperature_loop(afe_id)
         self.default_get_measurement(afe_id)
+        self.default_periodic_measurement_download_all(afe_id)
 
     def reset(self, afe_id=35):
         for afe in self.afe_devices:
@@ -632,7 +642,7 @@ class HUBDevice:
     def main_loop(self):
         while self.run:
             self.main_process()
-            time.sleep_us(1)
+            time.sleep_us(10)
         
             
 def initialize_can_hub(use_rxcallback=True,**kwargs):

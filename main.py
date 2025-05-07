@@ -40,6 +40,7 @@ hub.discovery_active = True
 hub.rx_process_active = True
 hub.use_tx_delay = True
 hub.afe_manage_active = True
+hub.tx_timeout_ms = 1
 # # h = _thread.start_new_thread(hub.main_loop,())
         
 # # Start threads

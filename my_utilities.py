@@ -53,7 +53,7 @@ class AFECommand:
     getSensorDataSi_last_byMask = 0x30
     getSensorDataSi_average_byMask = 0x31
     getSensorDataSiAndTimestamp_average_byMask = 0x3b
-    getSensorDataSi_all_periodic_average = 0x3f
+    AFECommand_getSensorDataSi_periodic = 0x3f
     setSensorDataSi_periodic_last = 0x40
     setSensorDataSiAndTimestamp_periodic_last = 0x41
     setSensorDataSi_periodic_average = 0x42
@@ -61,7 +61,7 @@ class AFECommand:
     transmitSPIData = 0xa0
     setAD8402Value_byte_byMask = 0xa1
     writeGPIO = 0xa2
-    setTemperatureLoopForChannelState_byMask_asMask = 0xc1
+    setTemperatureLoopForChannelState_byMask_asStatus = 0xc1
     setDACValueRaw_bySubdeviceMask = 0xc2
     setDACValueSi_bySubdeviceMask = 0xc3
     stopTemperatureLoopForAllChannels = 0xc4

@@ -97,6 +97,9 @@ class AFEDevice:
         self.executing = None
         self.executed = []
         
+        self.save_periodic_data = True
+        self.periodic_data = {}
+        
         # self.last_msg = {}
         
         self.debug_machine_control_msg = [{},{}]
@@ -405,6 +408,7 @@ class AFEDevice:
         max_chunks = None
         chunk_payload = []
         parsed_data = {}
+        periodic_data = {}
         try:
             data_bytes = list(bytes(received_data[3]))
             device_id = (received_data[0] >> 2) & 0xFF
@@ -461,8 +465,8 @@ class AFEDevice:
             elif command == self.commands.startADC:
                 p.print("ADC started: {}".format(chunk_payload))
                 
-            elif command == self.commands.setTemperatureLoopForChannelState_byMask_asMask:
-                p.print("setTemperatureLoopForChannelState_byMask_asMask: {}".format(chunk_payload))
+            elif command == self.commands.setTemperatureLoopForChannelState_byMask_asStatus:
+                p.print("setTemperatureLoopForChannelState_byMask_asStatus: {}".format(chunk_payload))
                 
                 
             elif command == self.commands.getSensorDataSi_last_byMask:
@@ -539,24 +543,26 @@ class AFEDevice:
             #     for i,b in enumerate([(flag >> x) & 0x01 for x in range(8)]):
             #         self.channels[i].periodic_sending_is_enabled = True if b else False
             
-            elif command == self.commands.getSensorDataSi_all_periodic_average:
-                channel = chunk_payload[0]
-                # p.print("xxxx {} {} {}".format(chunk_id, channel,chunk_payload))
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    value = self.bytes_to_float(chunk_payload[1:])
-                    p.print("xxxx {} {} {}".format(chunk_id, uch, value))
-                # p.print("xxxx {}".format(chunk_payload))
-                # if chunk_id == 1:
-                #     value = self.bytes_to_float(chunk_payload[1:])
-                #     self.channels[channel].latest_reading.timestamp_ms = 0
-                #     self.channels[channel].latest_reading.value = value
-                #     self.update_last_msg("periodic_average_value_si",value,channel)
-                # elif chunk_id == 2:
-                #     value = self.bytes_to_u32(chunk_payload[1:])
-                #     self.channels[channel].latest_reading.timestamp_ms = value
-                #     self.update_last_msg("periodic_average_timestamp_ms",value,channel)
-                #     p.print("{}: {}".format(channel, self.channels[channel].latest_reading))
-                    
+            elif command == self.commands.AFECommand_getSensorDataSi_periodic:
+                unmasked_channels = self.unmask_channel(chunk_payload[0])
+                if chunk_id == 1:
+                    self.periodic_data = {} # Clear periodic data if new chunk set arrived
+                    self.periodic_data["last_data"] = {}
+                    self.periodic_data["average_data"] = {}
+                    self.periodic_data["timestamp_ms"] = millis()
+                if chunk_id == max_chunks: # Calculation timestamp
+                    self.periodic_data["last_data"].update({"calculation_timestamp_ms":self.bytes_to_u32(chunk_payload[1:])})
+                    self.periodic_data["average_data"].update({"calculation_timestamp_ms":self.bytes_to_u32(chunk_payload[1:])})
+                else:
+                    for uch in unmasked_channels:
+                        if uch == (1<<8):
+                            self.periodic_data["last_data"].update({"timestamp_ms".format(uch):self.bytes_to_u32(chunk_payload[1:])})
+                            self.periodic_data["last_data"].update({"timestamp_ms".format(uch):self.bytes_to_u32(chunk_payload[1:])})
+                        else:
+                            if chunk_id == 3:
+                                self.periodic_data["average_data"].update({"{}".format(e_ADC_CHANNEL.get(uch)):self.bytes_to_float(chunk_payload[1:])})
+                            else:
+                                self.periodic_data["last_data"].update({"{}".format(e_ADC_CHANNEL.get(uch)):self.bytes_to_float(chunk_payload[1:])})
             
             elif command == self.commands.getSensorDataSiAndTimestamp_average_byMask:
                 channel = chunk_payload[0]
@@ -687,6 +693,16 @@ class AFEDevice:
                             # self.logger.log("DEBUG",self.executing)
                             p.print(self.executing)
                         self.executing = None
+                if self.save_periodic_data is True:
+                    if self.periodic_data.get("timestamp_ms"):
+                        toLog = {
+                            "command": AFECommand.AFECommand_getSensorDataSi_periodic,
+                            "retval": self.periodic_data,
+                            "timestamp_ms": millis(),
+                        }
+                        self.periodic_data = {}
+                        self.logger.log("MEASUREMENT",toLog)
+
             received_data = None
         except Exception as error:
             p.print("Error processing received AFE data: {}: {}".format(error,command))
