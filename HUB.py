@@ -541,6 +541,18 @@ class HUBDevice:
                     elif ks == "I_measured_b":
                         ch_id = get_I_measured_ch_id(g)
                         afe.enqueue_float_for_channel(afe.commands.setChannel_b_byMask,ch_id,v,**commandKwargs)
+                    elif ks == "U_set_a":
+                        ch_id = get_subdevice_ch_id(g)
+                        afe.enqueue_float_for_channel(afe.commands.setRegulator_a_dac_byMask,ch_id,v,**commandKwargs)
+                    elif ks == "U_set_b":
+                        ch_id = get_subdevice_ch_id(g)
+                        afe.enqueue_float_for_channel(afe.commands.setRegulator_b_dac_byMask,ch_id,v,**commandKwargs)
+                    elif ks == "V_opt":
+                        ch_id = get_subdevice_ch_id(g)
+                        afe.enqueue_float_for_channel(afe.commands.setRegulator_V_opt_byMask,ch_id,v,**commandKwargs)
+                    elif ks == "dV/dT":
+                        ch_id = get_subdevice_ch_id(g)
+                        afe.enqueue_float_for_channel(afe.commands.setRegulator_dV_dT_byMask,ch_id,v,**commandKwargs)
                     else:
                         continue
                     for uch in afe.unmask_channel(ch_id):

@@ -515,6 +515,20 @@ class AFEDevice:
             elif command == self.commands.setChannel_multiplicator_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].multiplicator = self.bytes_to_float(chunk_payload[1:])
+                    
+            elif command == self.commands.setRegulator_a_dac_byMask:
+                p.print("setRegulator_a_dac_byMask")
+                
+            elif command == self.commands.setRegulator_b_dac_byMask:
+                p.print("setRegulator_b_dac_byMask")
+                
+            elif command == self.commands.setRegulator_dV_dT_byMask:
+                p.print("setRegulator_dV_dT_byMask")
+                
+            elif command == self.commands.setRegulator_V_opt_byMask:
+                p.print("setRegulator_V_opt_byMask")
+            elif command == self.commands.setRegulator_V_offset_byMask:
+                p.print("setRegulator_V_offset_byMask")
             
             # elif command == self.commands.setSensorDataSi_all_periodic_average:
             #     flag = chunk_payload[0]
