@@ -76,6 +76,7 @@ class AFECommand:
     setAveragingSubdevice = 0xd6
     setChannel_a_byMask = 0xd7
     setChannel_b_byMask = 0xd8
+    setChannel_period_ms_byMask = 0xD9
     
     setRegulator_a_dac_byMask = 0xE5
     setRegulator_b_dac_byMask = 0xE6

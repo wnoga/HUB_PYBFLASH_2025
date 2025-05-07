@@ -529,6 +529,10 @@ class AFEDevice:
                 p.print("setRegulator_V_opt_byMask")
             elif command == self.commands.setRegulator_V_offset_byMask:
                 p.print("setRegulator_V_offset_byMask")
+                
+            elif command == self.commands.setChannel_period_ms_byMask:
+                p.print("setChannel_period_ms_byMask")
+            
             
             # elif command == self.commands.setSensorDataSi_all_periodic_average:
             #     flag = chunk_payload[0]
@@ -537,17 +541,21 @@ class AFEDevice:
             
             elif command == self.commands.getSensorDataSi_all_periodic_average:
                 channel = chunk_payload[0]
-                # p.print("xxxx {} {} {}".format(chunk_id, channel,value))
-                if chunk_id == 1:
+                # p.print("xxxx {} {} {}".format(chunk_id, channel,chunk_payload))
+                for uch in self.unmask_channel(chunk_payload[0]):
                     value = self.bytes_to_float(chunk_payload[1:])
-                    self.channels[channel].latest_reading.timestamp_ms = 0
-                    self.channels[channel].latest_reading.value = value
-                    self.update_last_msg("periodic_average_value_si",value,channel)
-                elif chunk_id == 2:
-                    value = self.bytes_to_u32(chunk_payload[1:])
-                    self.channels[channel].latest_reading.timestamp_ms = value
-                    self.update_last_msg("periodic_average_timestamp_ms",value,channel)
-                    p.print("{}: {}".format(channel, self.channels[channel].latest_reading))
+                    p.print("xxxx {} {} {}".format(chunk_id, uch, value))
+                # p.print("xxxx {}".format(chunk_payload))
+                # if chunk_id == 1:
+                #     value = self.bytes_to_float(chunk_payload[1:])
+                #     self.channels[channel].latest_reading.timestamp_ms = 0
+                #     self.channels[channel].latest_reading.value = value
+                #     self.update_last_msg("periodic_average_value_si",value,channel)
+                # elif chunk_id == 2:
+                #     value = self.bytes_to_u32(chunk_payload[1:])
+                #     self.channels[channel].latest_reading.timestamp_ms = value
+                #     self.update_last_msg("periodic_average_timestamp_ms",value,channel)
+                #     p.print("{}: {}".format(channel, self.channels[channel].latest_reading))
                     
             
             elif command == self.commands.getSensorDataSiAndTimestamp_average_byMask:

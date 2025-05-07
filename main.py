@@ -45,7 +45,7 @@ hub.afe_manage_active = True
 # # Start threads
 try:
     _thread.start_new_thread(hub.main_loop, ())
-    _thread.start_new_thread(server.main_loop, ())
+    # _thread.start_new_thread(server.main_loop, ())
     # _thread.start_new_thread(app2, ())
     # app1()
     # app2()

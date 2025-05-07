@@ -420,6 +420,13 @@ class HUBDevice:
                 afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asMask, [get_subdevice_ch_id(g),1],**commandKwargs)
         else:
             pass
+       
+    def default_periodic_measurement_download_all(self, afe_id=35, ms=10000):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        commandKwargs = {"timeout_ms":10220,"preserve":True,"timeout_start_on_send_ms":2000}
+        afe.enqueue_u32_for_channel(AFECommand.setChannel_period_ms_byMask,0xFF,ms,**commandKwargs) 
         
     def default_full(self, afe_id=35):
         self.powerOn()
