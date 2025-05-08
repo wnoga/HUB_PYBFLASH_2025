@@ -9,7 +9,7 @@ import pyb
 
 from my_utilities import wdt
 from my_utilities import millis
-from my_utilities import p
+from my_utilities import P as p
 
 class MySimpleServer():
     def __init__(self, hub: HUBDevice, static_ip=None):
@@ -35,26 +35,29 @@ class MySimpleServer():
         self.setup_lan_state = 0
 
     def setup_lan_machine(self):
-        if self.setup_lan_state == 0:
-            self.lan = network.LAN()
-            self.lan.active(True)
-            if self.static_ip:
-                self.lan.ifconfig((self.static_ip, '255.255.255.0', '192.168.1.1', '8.8.8.8'))
+        try:
+            if self.setup_lan_state == 0:
+                self.lan = network.LAN()
+                self.lan.active(True)
+                if self.static_ip:
+                    self.lan.ifconfig((self.static_ip, '255.255.255.0', '192.168.1.1', '8.8.8.8'))
+                else:
+                    self.lan.ifconfig('dhcp')
+                timestamp_ms = millis()
+                self.setup_lan_state = 1
+            elif self.setup_lan_state == 1:
+                if self.lan.isconnected():
+                    self.setup_lan_state = 2
+                    p.print("Connected to LAN: {}".format(self.lan.ifconfig()))
+                else:
+                    if (millis() - timestamp_ms) > 15000:
+                        self.setup_lan_state = 0
+            elif self.setup_lan_state == 2:
+                if not self.lan.isconnected():
+                    self.setup_lan_state = 0 # Recconect
             else:
-                self.lan.ifconfig('dhcp')
-            timestamp_ms = millis()
-            self.setup_lan_state = 1
-        elif self.setup_lan_state == 1:
-            if self.lan.isconnected():
-                self.setup_lan_state = 2
-                p.print("Connected to LAN: {}".format(self.lan.ifconfig()))
-            else:
-                if (millis() - timestamp_ms) > 15000:
-                    self.setup_lan_state = 0
-        elif self.setup_lan_state == 2:
-            if not self.lan.isconnected():
-                self.setup_lan_state = 0 # Recconect
-        else:
+                self.setup_lan_state = 0
+        except:
             self.setup_lan_state = 0
 
     def handle_client(self, connection: socket.socket, address: tuple):
@@ -86,7 +89,15 @@ class MySimpleServer():
                             x = True
                             def cb(msg=None):
                                 x = False
-                                return msg
+                                print("EXECUTED CALLBACK ON SERVER: {}".format(msg))
+                                my_dict = msg.copy()
+                                if 'frame' in my_dict:
+                                    my_dict.pop('frame')
+                                if 'callback' in my_dict:
+                                    my_dict.pop('callback')
+
+                                connection.sendall(ujson.dumps(my_dict).encode())
+                                return my_dict
                             self.hub.default_get_measurement_last(afe_id,callback=cb)
                             while x:
                                 if (millis()-timestamp_ms > 5000):

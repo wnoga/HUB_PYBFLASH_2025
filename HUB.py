@@ -633,7 +633,7 @@ class HUBDevice:
         p.print("Send back: {}".format(json.dumps(toSend)))
 
     def main_process(self,timer=None):
-        if True:
+        try:
             if not self.use_rxcallback: self.handle_can_rx_polling()
             self.discover_devices()
             if self.rx_process_active:
@@ -649,12 +649,13 @@ class HUBDevice:
                                 self.default_full(afe_id=afe.device_id)
                                 self.default_periodic_measurement_download_all(afe_id=afe.device_id,ms=10000)
                                 afe.is_fired = True
+                                p.debug("AFE {} was restarted".format(afe.device_id))
             if self.curent_function is not None: # check if function is running
                 if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
                     self.curent_function = None
                     self.curent_function_retval = "timeout"
-        if False:
-            pass
+        except Exception as e:
+            p.print("main_process: HUB Error: {}".format(e))
     
     def main_loop(self):
         while self.run:

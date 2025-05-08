@@ -18,40 +18,71 @@ import time
 # from machine import WDT
 # wdt = WDT(timeout=2000)  # enable it with a timeout of 2s
 # wdt.feed()
+if False:
+    from my_database import SimpleFileDB, StatusFlags
+    db = SimpleFileDB()
+    db.save("test",StatusFlags.READY)
+    while True:
+        tmp = db.next(exclude_flags=0x00)
+        if tmp is None:
+            break
+        print(tmp)
+    print("#######")
+    db.read_pos = 0
+    cnt = 0
+    while True:
+        tmp = db.next(exclude_flags=0x00)
+        if tmp is None:
+            break
+        if cnt == 2:
+            db.update_status(tmp[0],StatusFlags.READY | StatusFlags.SAVED)
+        print(tmp)
+        cnt += 1
+    print("#######")
+    def t():
+        db.read_pos = 0
+        while True:
+            # tmp = db.next(exclude_flags=StatusFlags.SAVED | StatusFlags.SENT)
+            tmp = db.next(exclude_flags=StatusFlags.SAVED)
+            if tmp is None:
+                break
+            print("To send:",tmp)
+if True:
 
-from HUB import HUBDevice, initialize_can_hub
-# can, hub = ci()
-# hub.start_discover(1)
-can = None
-hub = None
-# can, hub = initialize_can_hub()
-# pyb.delay(500)
-# from my_server import MyServer
-from my_simple_server import MySimpleServer
+    from HUB import HUBDevice, initialize_can_hub
+    # can, hub = ci()
+    # hub.start_discover(1)
+    can = None
+    hub = None
+    # can, hub = initialize_can_hub()
+    # pyb.delay(500)
+    # from my_server import MyServer
+    from my_simple_server import MySimpleServer
 
-can, hub = initialize_can_hub(use_rxcallback=True,use_automatic_restart=True)
-hub.afe_devices_max = 1
+    can, hub = initialize_can_hub(use_rxcallback=True,use_automatic_restart=True)
+    hub.afe_devices_max = 1
 
-server = MySimpleServer(hub)
-server.running = True
-# # server.start_server()
-hub_process_enabled = True
-hub.discovery_active = True
-hub.rx_process_active = True
-hub.use_tx_delay = True
-hub.afe_manage_active = True
-hub.tx_delay_ms = 10000
-# # h = _thread.start_new_thread(hub.main_loop,())
-# # Start threads
-try:
-    _thread.start_new_thread(hub.main_loop, ())
-    # _thread.start_new_thread(server.main_loop, ())
-    # _thread.start_new_thread(app2, ())
-    # app1()
-    # app2()
-    # safe_print("Both apps started. REPL is free.")
-except Exception as e:
-    print("Thread error:", e)
+    server = MySimpleServer(hub)
+    server.running = True
+    # # server.start_server()
+    hub_process_enabled = True
+    hub.discovery_active = True
+    hub.rx_process_active = True
+    hub.use_tx_delay = True
+    hub.afe_manage_active = True
+    hub.tx_delay_ms = 10000
+    # # h = _thread.start_new_thread(hub.main_loop,())
+    # # Start threads
+    try:
+        _thread.start_new_thread(hub.main_loop, ())
+        # _thread.start_new_thread(server.main_loop, ())
+        # _thread.start_new_thread(app2, ())
+        # app1()
+        # app2()
+        # safe_print("Both apps started. REPL is free.")
+    except Exception as e:
+        print("Thread error:", e)
+##########################################
 
 # # _thread.start_new_thread(hub.main_loop,())
 # while True:

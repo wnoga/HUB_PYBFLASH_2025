@@ -18,9 +18,22 @@ class Print:
     def __init__(self):
         pass
     def print(self, *args, **kwargs):
+        return
         with print_lock:
             print(*args, **kwargs)
-p = Print()
+    def debug(self, *args, **kwargs):
+        with print_lock:
+            print(*args, **kwargs)
+            
+class PrintButLouder:
+    def __init__(self):
+        pass
+    def print(self, *args, **kwargs):
+        with print_lock:
+            print(*args, **kwargs)
+
+p = PrintButLouder()
+P = PrintButLouder()
 
 
 class wdt_x:

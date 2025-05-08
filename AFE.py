@@ -731,6 +731,7 @@ class AFEDevice:
                         }
                         self.debug_machine_control_msg[subdev] = {}
                         self.logger.log("INFO",toLog)
+                        p.debug(toLog)
                         
 
             received_data = None
