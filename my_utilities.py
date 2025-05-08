@@ -269,12 +269,14 @@ class EmptyLogger:
         pass
     
 class JSONLogger:
-    def __init__(self, filename="log.json", parent_dir="/sd/logs", verbosity_level="INFO", csv_filename="measurements.csv"):
+    def __init__(self, filename="log.json", parent_dir="/sd/logs", verbosity_level="INFO", use_csv=False, csv_filename="measurements.csv"):
         self.parent_dir = parent_dir
         self.verbosity_level = verbosity_level.upper()
         self._ensure_directory()
         self.filename = self._get_unique_filename("{}/{}".format(self.parent_dir, filename))
-        self.csv_logger = CSVLogger(self._get_unique_filename("{}/{}".format(self.parent_dir, csv_filename)))
+        self.csv_logger = None
+        if use_csv is True:
+            self.csv_logger = CSVLogger(self._get_unique_filename("{}/{}".format(self.parent_dir, csv_filename)))
         self.file = open(self.filename, "a")  # Keep JSON log file open for appending
         self.levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "MEASUREMENT"]
         
@@ -307,8 +309,9 @@ class JSONLogger:
             self.file.write(json.dumps(log_entry) + "\n")  # Append log as a new line
             self.file.flush()  # Ensure data is written immediately
             p.print("LOG:",log_entry)
-            if self.levels.index(level.upper()) >= self.levels.index("MEASUREMENT"):
-                self.csv_logger.log(message)
+            if self.csv_logger is not None:
+                if self.levels.index(level.upper()) >= self.levels.index("MEASUREMENT"):
+                    self.csv_logger.log(message)
     
     def sync(self):
         self.file.flush()
@@ -316,10 +319,11 @@ class JSONLogger:
     
     def close(self):
         self.file.close()
-        self.csv_logger.close()
+        if self.csv_logger is not None:
+            self.csv_logger.close()
     
     def read_logs(self):
-        self.file.close()  # Close before reading
+        # self.file.close()  # Close before reading
         logs = []
         try:
             with open(self.filename, "r") as file:
@@ -327,16 +331,17 @@ class JSONLogger:
                     logs.append(json.loads(line))
         except (OSError, ValueError):
             pass
-        self.file = open(self.filename, "a")  # Reopen file for appending
+        # self.file = open(self.filename, "a")  # Reopen file for appending
         return logs
     
     def clear_logs(self):
         self.file.close()
-        self.csv_logger.close()
         os.unlink(self.filename)  # Remove JSON file
-        os.unlink(self.csv_logger.filename)  # Remove CSV file
         self.file = open(self.filename, "w")  # Reopen as empty file
-        self.csv_logger = CSVLogger(self.csv_logger.filename)
+        if self.csv_logger is not None:
+            self.csv_logger.close()
+            os.unlink(self.csv_logger.filename)  # Remove CSV file
+            self.csv_logger = CSVLogger(self.csv_logger.filename)
         
     def print_lines(self):
         try:

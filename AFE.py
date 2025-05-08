@@ -82,11 +82,10 @@ class AFEDevice:
         # self.command_timeout = self.default_command_timeout
         self.default_can_timeout_ms = 1000
         self.verbose = 2
-        self.commands = AFECommand()
         self.blink_status = 0
         
         self.periodic_measurement_download_is_enabled = False
-        self.blink_is_enabled = False
+        # self.blink_is_enabled = False
         self.temperatureLoop_master_is_enabled = False
         self.temperatureLoop_slave_is_enabled = False
         
@@ -97,6 +96,7 @@ class AFEDevice:
         self.executing = None
         self.executed = []
         
+        self.executed_max_len = 100
         self.save_periodic_data = True
         self.periodic_data = {}
         
@@ -111,12 +111,30 @@ class AFEDevice:
         self.AFEGPIO_blink = AFECommandGPIO(port="PORTA",pin=9)
         
         self.afe_config = None
+        self.is_fired = False
+        self.init_after_restart()
+                
+    def init_after_restart(self):
+        self.is_fired = False
+        self.afe_config = None
         for c in AFE_Config:
             if c["afe_id"] == self.device_id:
                 self.afe_config = c
-                
-        self.logger.log("DEBUG","Found config for AFE {}".format(self.afe_config["afe_id"]))
-    
+                self.logger.log("DEBUG","Found config for AFE {}".format(self.afe_config["afe_id"]))
+                break
+        self.channels = [SensorChannel(x) for x in range(self.total_channels)]
+        self.is_configured = False
+        self.executing = None
+        self.to_execute = []
+        self.version_checked = False
+        self.periodic_measurement_download_is_enabled = False
+        self.blink_is_enabled = False
+        self.temperatureLoop_master_is_enabled = False
+        self.temperatureLoop_slave_is_enabled = False
+        self.periodic_data = {}
+        self.debug_machine_control_msg = [{},{}]
+        
+        
     def update_output(self, output, value_name, value, channel = None):
         if channel is None:
             # Store the value outside if no channel is provided
@@ -285,7 +303,7 @@ class AFEDevice:
         self._enqueue_command(command, data, **kwargs)
 
     def enqueue_gpio_set(self,gpio,state,**kwargs):
-        self.enqueue_command(self.commands.writeGPIO,
+        self.enqueue_command(AFECommand.writeGPIO,
                              [gpio.port,gpio.pin,state],**kwargs)
 
     def enqueue_float_for_channel(self, command, channel, value,**kwargs):
@@ -432,9 +450,9 @@ class AFEDevice:
             #     #     "msg_timestamp":millis()
             #     #     }
             
-            if command == self.commands.getSerialNumber:
+            if command == AFECommand.getSerialNumber:
                 self.logger.log("WARNING","R: ID:{}; Command: 0x{:02X}: {}".format(device_id, command, data_bytes))
-                # p.print(command, self.commands.getSerialNumber)
+                # p.print(command, AFECommand.getSerialNumber)
                 # p.print("UID:{}".format(chunk_payload))
                 chunk_data = self.bytes_to_u32(chunk_payload)
                 if chunk_id == 0:
@@ -452,24 +470,26 @@ class AFEDevice:
                     self.logger.log("INFO", {"AFE": self.device_id, "UID": self.unique_id_str})
                     parsed_data.update({"unique_id_str":self.unique_id_str})
             
-            elif command == self.commands.getVersion:
+            elif command == AFECommand.getVersion:
                 self.firmware_version = int("".join(map(str, chunk_payload)))
                 self.version_checked = True
                 self.update_last_msg("version",self.firmware_version)
                 parsed_data.update({"version":self.firmware_version})
                 
-            elif command == self.commands.resetAll:
+            elif command == AFECommand.resetAll:
+                self.init_after_restart()
+                # self.is_online = False
                 self.logger.log("ERROR","AFE {} was restared! Reason {}".format(device_id, ResetReason[chunk_payload[0]]))
                 self.logger.sync()
                 
-            elif command == self.commands.startADC:
+            elif command == AFECommand.startADC:
                 p.print("ADC started: {}".format(chunk_payload))
                 
-            elif command == self.commands.setTemperatureLoopForChannelState_byMask_asStatus:
+            elif command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
                 p.print("setTemperatureLoopForChannelState_byMask_asStatus: {}".format(chunk_payload))
                 
                 
-            elif command == self.commands.getSensorDataSi_last_byMask:
+            elif command == AFECommand.getSensorDataSi_last_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
                 if not "last_data" in parsed_data:
                     parsed_data["last_data"] = {}
@@ -479,7 +499,7 @@ class AFEDevice:
                     else:
                         parsed_data["last_data"].update({"{}".format(e_ADC_CHANNEL.get(uch)):self.bytes_to_float(chunk_payload[1:])})
 
-            elif command == self.commands.getSensorDataSi_average_byMask:
+            elif command == AFECommand.getSensorDataSi_average_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
                 if not "average_data" in parsed_data:
                     parsed_data["average_data"] = {}
@@ -488,62 +508,62 @@ class AFEDevice:
                         parsed_data["average_data"].update({"timestamp_ms".format(uch):self.bytes_to_u32(chunk_payload[1:])})
                     else:
                         parsed_data["average_data"].update({"{}".format(e_ADC_CHANNEL.get(uch)):self.bytes_to_float(chunk_payload[1:])})
-            elif command == self.commands.setAD8402Value_byte_byMask:
+            elif command == AFECommand.setAD8402Value_byte_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     if 0x01 & (chunk_payload[2] >> uch):
                         self.logger.log("ERROR", "AFE {}: ERROR setAD8402Value_byte_byMask for CH{}".format(
                             device_id, uch
                         ))
             
-            elif command == self.commands.setAveragingMode_byMask:
+            elif command == AFECommand.setAveragingMode_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
                 for uch in unmasked_channels:
                     self.channels[uch].averaging_mode = chunk_payload[1]
 
-            elif command == self.commands.setAveragingAlpha_byMask:
+            elif command == AFECommand.setAveragingAlpha_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].alpha = self.bytes_to_float(chunk_payload[1:])
             
-            elif command == self.commands.setChannel_dt_ms_byMask:
+            elif command == AFECommand.setChannel_dt_ms_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].time_interval_ms = self.bytes_to_u32(chunk_payload[1:])
             
-            elif command == self.commands.setChannel_a_byMask:
+            elif command == AFECommand.setChannel_a_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].a = self.bytes_to_float(chunk_payload[1:])
             
-            elif command == self.commands.setChannel_b_byMask:
+            elif command == AFECommand.setChannel_b_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].b = self.bytes_to_float(chunk_payload[1:])
             
-            elif command == self.commands.setChannel_multiplicator_byMask:
+            elif command == AFECommand.setChannel_multiplicator_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].multiplicator = self.bytes_to_float(chunk_payload[1:])
                     
-            elif command == self.commands.setRegulator_a_dac_byMask:
+            elif command == AFECommand.setRegulator_a_dac_byMask:
                 p.print("setRegulator_a_dac_byMask")
                 
-            elif command == self.commands.setRegulator_b_dac_byMask:
+            elif command == AFECommand.setRegulator_b_dac_byMask:
                 p.print("setRegulator_b_dac_byMask")
                 
-            elif command == self.commands.setRegulator_dV_dT_byMask:
+            elif command == AFECommand.setRegulator_dV_dT_byMask:
                 p.print("setRegulator_dV_dT_byMask")
                 
-            elif command == self.commands.setRegulator_V_opt_byMask:
+            elif command == AFECommand.setRegulator_V_opt_byMask:
                 p.print("setRegulator_V_opt_byMask")
-            elif command == self.commands.setRegulator_V_offset_byMask:
+            elif command == AFECommand.setRegulator_V_offset_byMask:
                 p.print("setRegulator_V_offset_byMask")
                 
-            elif command == self.commands.setChannel_period_ms_byMask:
+            elif command == AFECommand.setChannel_period_ms_byMask:
                 p.print("setChannel_period_ms_byMask")
             
             
-            # elif command == self.commands.setSensorDataSi_all_periodic_average:
+            # elif command == AFECommand.setSensorDataSi_all_periodic_average:
             #     flag = chunk_payload[0]
             #     for i,b in enumerate([(flag >> x) & 0x01 for x in range(8)]):
             #         self.channels[i].periodic_sending_is_enabled = True if b else False
             
-            elif command == self.commands.AFECommand_getSensorDataSi_periodic:
+            elif command == AFECommand.AFECommand_getSensorDataSi_periodic:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
                 if chunk_id == 1:
                     self.periodic_data = {} # Clear periodic data if new chunk set arrived
@@ -564,7 +584,7 @@ class AFEDevice:
                             else:
                                 self.periodic_data["last_data"].update({"{}".format(e_ADC_CHANNEL.get(uch)):self.bytes_to_float(chunk_payload[1:])})
             
-            elif command == self.commands.getSensorDataSiAndTimestamp_average_byMask:
+            elif command == AFECommand.getSensorDataSiAndTimestamp_average_byMask:
                 channel = chunk_payload[0]
                 if chunk_id == 1:
                     value = self.bytes_to_float(chunk_payload[1:]) # value
@@ -574,11 +594,11 @@ class AFEDevice:
                     self.update_last_msg("average_timestamp_ms",value,channel)
 
             
-            elif command == self.commands.writeGPIO:
+            elif command == AFECommand.writeGPIO:
                 # self.blink_is_enabled = True
                 p.print("GPIO {}".format(chunk_payload))
             
-            # elif command == self.commands.setTemperatureLoopForChannelState_bySubdevice:
+            # elif command == AFECommand.setTemperatureLoopForChannelState_bySubdevice:
             #     # p.print("Subdevice")
             #     channel = chunk_payload[0]
             #     status = chunk_payload[1]
@@ -612,7 +632,7 @@ class AFEDevice:
                         p.print("DAC{} is {}".format(uch, "ON" if chunk_payload[1] else "OFF"))
 
 
-            elif command == self.commands.debug_machine_control:
+            elif command == AFECommand.debug_machine_control:
                 channel = chunk_payload[0]
                 if chunk_id == 1:
                     self.debug_machine_control_msg[channel] = {} # Clear msg
@@ -654,7 +674,7 @@ class AFEDevice:
                 p.print("Unknow command: 0x{:02X}: {}".format(command,data_bytes))
                 return
 
-            # if command == self.commands.e_can_function_getSensorDataSi and len(chunk_payload) == 5:
+            # if command == AFECommand.e_can_function_getSensorDataSi and len(chunk_payload) == 5:
             #     channel = self.channels[chunk_payload[0]]
             #     channel.latest_reading.timestamp_ms = millis()
             #     channel.latest_reading.value = self.bytes_to_float(chunk_payload[1:])
@@ -702,6 +722,16 @@ class AFEDevice:
                         }
                         self.periodic_data = {}
                         self.logger.log("MEASUREMENT",toLog)
+                for subdev in [0,1]:
+                    if self.debug_machine_control_msg[subdev].get("timestamp_ms"):
+                        toLog = {
+                            "command": AFECommand.debug_machine_control,
+                            "retval": self.debug_machine_control_msg[subdev],
+                            "timestamp_ms": millis(),
+                        }
+                        self.debug_machine_control_msg[subdev] = {}
+                        self.logger.log("INFO",toLog)
+                        
 
             received_data = None
         except Exception as error:
@@ -709,28 +739,32 @@ class AFEDevice:
     
     def start_periodic_measurement_download(self,interval_ms=2500):
         self.enqueue_command(
-            self.commands.setSensorDataSi_all_periodic_average,
+            AFECommand.setSensorDataSi_all_periodic_average,
             list(struct.pack('<I', interval_ms)))
         self.periodic_measurement_download_is_enabled = True
         
     def stop_periodic_measurement_download(self):
         p.print("STOP")
         self.send_command(
-            self.commands.setSensorDataSi_all_periodic_average,
+            AFECommand.setSensorDataSi_all_periodic_average,
             list(struct.pack('<I', 0)))
         self.periodic_measurement_download_is_enabled = False
         
     def start_periodic_measurement_download_for_channel(self, channel, interval_ms=2500):
         self.send_command(
-            self.commands.setSens
+            AFECommand.setSens
         )
         
     def set_offset(self,offset_master=200,offset_slave=200):
-        self.enqueue_command(self.commands.setOffset,[1,offset_master])
-        self.enqueue_command(self.commands.setOffset,[2,offset_slave])
+        self.enqueue_command(AFECommand.setOffset,[1,offset_master])
+        self.enqueue_command(AFECommand.setOffset,[2,offset_slave])
     
     # AFE state management
     def manage_state(self):
+        # keep memory limits
+        while len(self.executed) > self.executed_max_len:
+            self.executed.pop(0)
+        
         if self.executing is not None:
             # p.print(self.executing)
             if (millis() - self.executing["timestamp_ms"]) > self.executing["timeout_ms"]:
@@ -746,77 +780,79 @@ class AFEDevice:
             if (millis() - self.execute_timestamp) < self.tx_timeout_ms:
                 return
 
-        if not self.is_configured:
-            pass
-        else:
-            if self.version_checked != True:
-                self.send_command(0x01)
-                return
-            # # return
-            # # pyb.delay(10000)
-            for channel in self.channels:
-                try:
-                    if channel.averaging_mode == None:
-                        self.send_command(self.commands.setAveragingMode, [channel.channel_id, 1])
-                        return
-                    if channel.alpha is None:
-                        self.send_command(self.commands.setAveragingAlpha, [channel.channel_id] + list(struct.pack('<f', random.randint(1000, 2000))))
-                        return
-                    # if channel.time_interval_ms is None:
-                    #     self.send_command(self.commands.setAveragingDt_ms, [channel.channel_id] + list(struct.pack('<I', random.randint(1000, 2000))))
-                    #     return
-                    # if channel.multiplicator is None:
-                    #     self.send_command(self.commands.setChannel_multiplicator, [channel.channel_id] + list(struct.pack('<f', 1.0)))
-                    #     return
-                    if channel.time_interval_ms is None:
-                        value = self.afe_config["channel"][channel.channel_id].time_interval_ms
-                        self.send_command(self.commands.setChannel_a,[channel.channel_id] + list(struct.pack('<f', value)))
-                    if channel.a is None:
-                        value = self.afe_config["channel"][channel.channel_id].a
-                        self.send_command(self.commands.setChannel_a,[channel.channel_id] + list(struct.pack('<f', value)))
-                    if channel.b is None:
-                        value = self.afe_config["channel"][channel.channel_id].b
-                        self.send_command(self.commands.setChannel_a,[channel.channel_id] + list(struct.pack('<f', value)))
-                except Exception as error:
-                    p.print("set channel averaging_mode: {}".format(error))
-            if self.blink_is_enabled is False:
-                gpio = AFECommandGPIO()
-                self.send_command(
-                    self.commands.writeGPIO,
-                    [gpio.blink_Port,gpio.blink_Pin,1])
-                return
+        if False:
+            if not self.is_configured:
+                pass
+            else:
+                p.print("yy")
+                if self.version_checked != True:
+                    self.send_command(0x01)
+                    return
+                # # return
+                # # pyb.delay(10000)
+                for channel in self.channels:
+                    try:
+                        if channel.averaging_mode == None:
+                            self.send_command(AFECommand.setAveragingMode, [channel.channel_id, 1])
+                            return
+                        if channel.alpha is None:
+                            self.send_command(AFECommand.setAveragingAlpha, [channel.channel_id] + list(struct.pack('<f', random.randint(1000, 2000))))
+                            return
+                        # if channel.time_interval_ms is None:
+                        #     self.send_command(AFECommand.setAveragingDt_ms, [channel.channel_id] + list(struct.pack('<I', random.randint(1000, 2000))))
+                        #     return
+                        # if channel.multiplicator is None:
+                        #     self.send_command(AFECommand.setChannel_multiplicator, [channel.channel_id] + list(struct.pack('<f', 1.0)))
+                        #     return
+                        if channel.time_interval_ms is None:
+                            value = self.afe_config["channel"][channel.channel_id].time_interval_ms
+                            self.send_command(AFECommand.setChannel_a,[channel.channel_id] + list(struct.pack('<f', value)))
+                        if channel.a is None:
+                            value = self.afe_config["channel"][channel.channel_id].a
+                            self.send_command(AFECommand.setChannel_a,[channel.channel_id] + list(struct.pack('<f', value)))
+                        if channel.b is None:
+                            value = self.afe_config["channel"][channel.channel_id].b
+                            self.send_command(AFECommand.setChannel_a,[channel.channel_id] + list(struct.pack('<f', value)))
+                    except Exception as error:
+                        p.print("set channel averaging_mode: {}".format(error))
+                # if self.blink_is_enabled is False:
+                #     gpio = AFECommandGPIO()
+                #     self.send_command(
+                #         AFECommand.writeGPIO,
+                #         [gpio.blink_Port,gpio.blink_Pin,1])
+                #     return
 
-            if self.temperatureLoop_master_is_enabled is False:
-                subdevice = AFECommandSubdevice()
-                self.send_command(
-                    self.commands.setTemperatureLoopForChannelState_bySubdevice,
-                    [subdevice.AFECommandSubdevice_master, 1])
-                return
+                if self.temperatureLoop_master_is_enabled is False:
+                    subdevice = AFECommandSubdevice()
+                    self.send_command(
+                        AFECommand.setTemperatureLoopForChannelState_bySubdevice,
+                        [subdevice.AFECommandSubdevice_master, 1])
+                    return
+                    
+                if self.temperatureLoop_slave_is_enabled is False:
+                    subdevice = AFECommandSubdevice()
+                    self.send_command(
+                        AFECommand.setTemperatureLoopForChannelState_bySubdevice,
+                        [subdevice.AFECommandSubdevice_slave, 1])
+                    return
                 
-            if self.temperatureLoop_slave_is_enabled is False:
-                subdevice = AFECommandSubdevice()
-                self.send_command(
-                    self.commands.setTemperatureLoopForChannelState_bySubdevice,
-                    [subdevice.AFECommandSubdevice_slave, 1])
-                return
-            
 
-            # if self.periodic_measurement_download_is_enabled is False:
-            #     self.start_periodic_measurement_download(10000)
-            #     return
-            
-            # Stop initialization process
-            self.is_configured = True
-            if self.verbose >= 1:
-                self.display_info()
-            return
+                # if self.periodic_measurement_download_is_enabled is False:
+                #     self.start_periodic_measurement_download(10000)
+                #     return
+                
+                # Stop initialization process
+                self.is_configured = True
+                if self.verbose >= 1:
+                    self.display_info()
+                return
 
         self.execute()
         
         return
         # Here you can you can add something to execute post-init commands
         gpioCommand = AFECommandGPIO()
-        self.send_command(self.commands.writeGPIO,
+        self.send_command(AFECommand.writeGPIO,
                           [gpioCommand.blink_Port,gpioCommand.blink_Pin,self.blink_status])
         if self.blink_status is 0:
             self.blink_status = 1
@@ -826,5 +862,5 @@ class AFEDevice:
         # pyb.delay(10)
         # for channel in self.channels:
         #     if (millis() - channel.latest_reading.timestamp_ms) >= (channel.time_interval_ms * 4):
-        #         self.send_command(self.commands.get_sensor_data, [channel.channel_id])
+        #         self.send_command(AFECommand.get_sensor_data, [channel.channel_id])
         #         return
