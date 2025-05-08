@@ -647,7 +647,7 @@ class HUBDevice:
                         if not afe.is_configured:
                             if not afe.is_fired:
                                 self.default_full(afe_id=afe.device_id)
-                                self.default_periodic_measurement_download_all(afe_id=afe.device_id)
+                                self.default_periodic_measurement_download_all(afe_id=afe.device_id,ms=10000)
                                 afe.is_fired = True
             if self.curent_function is not None: # check if function is running
                 if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
