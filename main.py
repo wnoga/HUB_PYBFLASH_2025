@@ -5,6 +5,7 @@
 # import hub_test
 # import hub_interface_v3
 import pyb
+# exit()
 import _thread
 # import micropython
 # micropython.alloc_emergency_exception_buf(100)
@@ -14,6 +15,7 @@ from my_utilities import p
 from my_utilities import wdt
 # from my_utilities import lock
 import time
+
 
 # from machine import WDT
 # wdt = WDT(timeout=2000)  # enable it with a timeout of 2s

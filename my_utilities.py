@@ -213,63 +213,23 @@ class SensorChannel:
         self.periodic_interval_ms = kwargs.get("periodic_interval_ms", 0)
         self.periodic_sending_is_enabled = False
 
-
-class CSVLogger:
-    def __init__(self, filename):
-        self.filename = filename
-        self.file = open(self.filename, "a")
-        self.headers = []
-        self._ensure_headers()
-    
-    def _ensure_headers(self):
-        if os.stat(self.filename)[0] == 0:
-            self.headers = ["log_timestamp", "measurement_timestamp", "level", "message"]
-            self._write_row(self.headers)
-    
-    def _write_row(self, row):
-        self.file.write(",".join(map(str, row)) + "\n")
-        self.file.flush()
-    
-    def update_headers(self, new_entry):
-        new_keys = [key for key in new_entry.keys() if key not in self.headers]
-        if new_keys:
-            self.headers.extend(new_keys)
-            temp_filename = self.filename + ".tmp"
-            with open(temp_filename, "w") as temp_file:
-                temp_file.write(",".join(self.headers) + "\n")
-                with open(self.filename, "r") as old_file:
-                    old_lines = old_file.readlines()[1:]
-                for line in old_lines:
-                    temp_file.write(line.strip() + "," + ",".join(["" for _ in new_keys]) + "\n")
-            os.rename(temp_filename, self.filename)
-            self.file = open(self.filename, "a")
-    
-    def log(self, entry):
-        self.update_headers(entry)
-        self._write_row([entry.get(header, "") for header in self.headers])
-    
-    def close(self):
-        self.file.close()
-        
-    def print_lines(self):
-        try:
-            with open(self.filename, "r") as file:
-                for line in file:
-                    p.print(line.strip())  # Print each line
-        except OSError:
-            p.print("Error: Cannot read JSON log file.")
+VerbosityLevel = {
+    "DEBUG":4,
+    "INFO":3,
+    "WARNING":2,
+    "ERROR":1,
+    "CRITICAL":0,
+    "MEASUREMENT":-1
+}
             
 class EmptyLogger:
-    def __init__(self,**kwargs):
-        self.levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "MEASUREMENT"]
-        self.verbosity_level = "INFO".upper()
-        pass
-    def _should_log(self, level):
-        return self.levels.index(level.upper()) >= self.levels.index(self.verbosity_level)
-    def log(self, level, message):
+    def __init__(self,verbosity_level: int = VerbosityLevel["INFO"],**kwargs):
+        self.verbosity_level = verbosity_level
+    def _should_log(self, level: int):
+        return self.verbosity_level >= level
+    def log(self, level: int, message):
         if self._should_log(level):
-            p.print("{} @ {}: {}".format(millis(), level,message))
-        pass
+            p.print("{} @ {}: {}".format(millis(), level, message))
     def sync(self):
         pass
     def close(self):
@@ -282,16 +242,12 @@ class EmptyLogger:
         pass
     
 class JSONLogger:
-    def __init__(self, filename="log.json", parent_dir="/sd/logs", verbosity_level="INFO", use_csv=False, csv_filename="measurements.csv"):
+    def __init__(self, filename="log.json", parent_dir="/sd/logs", verbosity_level=VerbosityLevel["INFO"]):
         self.parent_dir = parent_dir
-        self.verbosity_level = verbosity_level.upper()
+        self.verbosity_level = verbosity_level
         self._ensure_directory()
         self.filename = self._get_unique_filename("{}/{}".format(self.parent_dir, filename))
-        self.csv_logger = None
-        if use_csv is True:
-            self.csv_logger = CSVLogger(self._get_unique_filename("{}/{}".format(self.parent_dir, csv_filename)))
         self.file = open(self.filename, "a")  # Keep JSON log file open for appending
-        self.levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "MEASUREMENT"]
         
     def _ensure_directory(self):
         if not self._path_exists(self.parent_dir):
@@ -313,18 +269,15 @@ class JSONLogger:
             return False
     
     def _should_log(self, level):
-        return self.levels.index(level.upper()) >= self.levels.index(self.verbosity_level)
+        return self.verbosity_level >= level
     
     def log(self, level, message):
         if self._should_log(level):
             log_timestamp = millis()
-            log_entry = {"timestamp": log_timestamp, "level": level.upper(), "message": message}
+            log_entry = {"timestamp": log_timestamp, "level": VerbosityLevel[level], "message": message}
             self.file.write(json.dumps(log_entry) + "\n")  # Append log as a new line
             self.file.flush()  # Ensure data is written immediately
             p.print("LOG:",log_entry)
-            if self.csv_logger is not None:
-                if self.levels.index(level.upper()) >= self.levels.index("MEASUREMENT"):
-                    self.csv_logger.log(message)
     
     def sync(self):
         self.file.flush()
@@ -332,8 +285,6 @@ class JSONLogger:
     
     def close(self):
         self.file.close()
-        if self.csv_logger is not None:
-            self.csv_logger.close()
     
     def read_logs(self):
         # self.file.close()  # Close before reading
@@ -351,10 +302,6 @@ class JSONLogger:
         self.file.close()
         os.unlink(self.filename)  # Remove JSON file
         self.file = open(self.filename, "w")  # Reopen as empty file
-        if self.csv_logger is not None:
-            self.csv_logger.close()
-            os.unlink(self.csv_logger.filename)  # Remove CSV file
-            self.csv_logger = CSVLogger(self.csv_logger.filename)
         
     def print_lines(self):
         try:
