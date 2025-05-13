@@ -97,7 +97,7 @@ class HUBDevice:
         self.current_discovery_id = 1
         
     def close_all(self):
-        self.logger.log(VerbosityLevel["INFO"],'{{"info":"END","timestamp_ms":{}}}'.format(millis()))
+        self.logger.log(VerbosityLevel["INFO"],{"info":"END","timestamp_ms":millis()})
         self.logger.sync()
         # self.logger.close()
         self.logger.new_file()

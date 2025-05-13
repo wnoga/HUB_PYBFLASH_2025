@@ -134,8 +134,10 @@ class AFEDevice:
     def callback_is_configured(self, kwargs=None):
         self.end_configuration(success=True)
         self.logger.log(
-            VerbosityLevel["INFO"], '{{"device_id":{},"timestamp_ms":{},"info":"configured"}}'.format(
-                self.device_id,millis()))
+            VerbosityLevel["INFO"], {
+                "device_id":self.device_id,
+                "timestamp_ms":millis(),
+                "info":"configured"})
 
     def init_after_restart(self):
         self.is_fired = False
