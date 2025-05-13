@@ -227,6 +227,8 @@ class EmptyLogger:
         self.verbosity_level = verbosity_level
     def _should_log(self, level: int):
         return self.verbosity_level >= level
+    def new_file(self):
+        pass
     def log(self, level: int, message):
         if self._should_log(level):
             p.print("{} @ {}: {}".format(millis(), level, message))
@@ -245,9 +247,10 @@ class JSONLogger:
     def __init__(self, filename="log.json", parent_dir="/sd/logs", verbosity_level=VerbosityLevel["INFO"]):
         self.parent_dir = parent_dir
         self.verbosity_level = verbosity_level
-        self._ensure_directory()
-        self.filename = self._get_unique_filename("{}/{}".format(self.parent_dir, filename))
-        self.file = open(self.filename, "a")  # Keep JSON log file open for appending
+        self.filename = filename
+        self.filename_org = filename
+        self.file = None
+        self.new_file()
         
     def _ensure_directory(self):
         if not self._path_exists(self.parent_dir):
@@ -271,16 +274,32 @@ class JSONLogger:
     def _should_log(self, level):
         return self.verbosity_level >= level
     
-    def log(self, level, message):
+    def new_file(self):
+        try:
+            if self.file is None:
+                pass
+            else:
+                self.file.close()
+        except:
+            pass
+        self._ensure_directory()
+        self.filename = self._get_unique_filename("{}/{}".format(self.parent_dir, self.filename_org))
+        self.file = open(self.filename, "a")  # Keep JSON log file open for appending
+    
+    def log(self, level: int, message):
         if self._should_log(level):
             log_timestamp = millis()
-            log_entry = {"timestamp": log_timestamp, "level": VerbosityLevel[level], "message": message}
-            self.file.write(json.dumps(log_entry) + "\n")  # Append log as a new line
-            self.file.flush()  # Ensure data is written immediately
-            p.print("LOG:",log_entry)
+            try:
+                log_entry = {"timestamp": log_timestamp, "level": level, "message": message}
+                self.file.write(json.dumps(log_entry) + "\n")  # Append log as a new line
+                self.file.flush()  # Ensure data is written immediately
+                p.print("LOG:",log_entry)
+            except Exception as e:
+                p.print("ERROR log: {}  @ {} -> {}".format(e,log_timestamp,message))
     
     def sync(self):
-        self.file.flush()
+        if self.file is not None:
+            self.file.flush()
         os.sync()
     
     def close(self):

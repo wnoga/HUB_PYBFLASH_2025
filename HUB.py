@@ -14,8 +14,8 @@ from my_utilities import p
 from my_utilities import VerbosityLevel
 # from my_utilities import lock
 
-logger = EmptyLogger()
-# logger = JSONLogger(use_csv=False)
+# logger = EmptyLogger()
+logger = JSONLogger()
 # logger.log(VerbosityLevel["INFO"],{"test":"test"})
 
 # afe = AFEDevice() # only for autocomplete
@@ -95,6 +95,15 @@ class HUBDevice:
         self.afe_devices = []
         self.message_queue = []
         self.current_discovery_id = 1
+        
+    def close_all(self):
+        self.logger.log(VerbosityLevel["INFO"],'{{"info":"END","timestamp_ms":{}}}'.format(millis()))
+        self.logger.sync()
+        # self.logger.close()
+        self.logger.new_file()
+        self.use_automatic_restart = False
+        for afe in self.afe_devices:
+            afe.restart_device()
 
     def clear_all_logs(self):
         try:
@@ -543,7 +552,7 @@ class HUBDevice:
         afe.enqueue_command(cmd, data, preserve=True)
 
     def callback_afe_error(self, kwargs=None):
-        print("{}".format(kwargs))
+        p.print("callback_afe_error: {}".format(kwargs))
         afe: AFEDevice = kwargs["afe"]
         afe.restart_device()
         afe.is_any_error = True
@@ -762,6 +771,7 @@ def initialize_can_hub(use_rxcallback=True, **kwargs):
 
     p.print("CAN Bus Initialized")
     # logger.verbosity_level = "DEBUG"
+    logger.verbosity_level = VerbosityLevel["INFO"]
     hub = HUBDevice(can_bus, logger=logger,
                     use_rxcallback=use_rxcallback, **kwargs)
     # hub.t = _thread.start_new_thread(hub.main_loop,())
