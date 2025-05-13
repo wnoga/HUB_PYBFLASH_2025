@@ -5,6 +5,8 @@
 # import hub_test
 # import hub_interface_v3
 import pyb
+import micropython
+micropython.alloc_emergency_exception_buf(100)
 # exit()
 import _thread
 # import micropython
