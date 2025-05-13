@@ -287,6 +287,8 @@ class JSONLogger:
         self.file = open(self.filename, "a")  # Keep JSON log file open for appending
     
     def log(self, level: int, message):
+        if self.file is None:
+            self.new_file()
         if self._should_log(level):
             log_timestamp = millis()
             try:
@@ -305,11 +307,11 @@ class JSONLogger:
     def close(self):
         self.file.close()
     
-    def read_logs(self):
+    def read_logs(self, path=None):
         # self.file.close()  # Close before reading
         logs = []
         try:
-            with open(self.filename, "r") as file:
+            with open(path or self.filename, "r") as file:
                 for line in file:
                     logs.append(json.loads(line))
         except (OSError, ValueError):
@@ -322,9 +324,9 @@ class JSONLogger:
         os.unlink(self.filename)  # Remove JSON file
         self.file = open(self.filename, "w")  # Reopen as empty file
         
-    def print_lines(self):
+    def print_lines(self, path=None):
         try:
-            with open(self.filename, "r") as file:
+            with open(path or self.filename, "r") as file:
                 for line in file:
                     p.print(line.strip())  # Print each line
         except OSError:
