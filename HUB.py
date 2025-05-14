@@ -5,6 +5,7 @@ import pyb
 import struct
 import random
 import _thread
+import micropython
 
 from AFE import AFEDevice, AFECommand, millis, SensorChannel, SensorReading
 from my_utilities import JSONLogger, EmptyLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, AFE_Config, read_callibration_csv
@@ -42,6 +43,7 @@ class HUBDevice:
         self.afe_devices_max = 8
         self.use_automatic_restart = use_automatic_restart
 
+        self.rx_timeout_ms = 1000
         self.t = None
         self.run = True
 
@@ -50,13 +52,15 @@ class HUBDevice:
         self.rx_buffer = bytearray(8)  # Pre-allocate memory
         # Use memoryview to reduce heap allocations
         self.rx_message = [0, 0, 0, memoryview(self.rx_buffer)]
+        while self.handle_can_rx_polling():
+            pass
         self.use_rxcallback = use_rxcallback
         if self.use_rxcallback:
             # Trigger every new CAN message
             self.can_bus.rxcallback(0, self.handle_can_rx)
 
         self.message_queue = []
-        self.message_queue_max = 64
+        self.message_queue_max = 128
 
         self.discovery_active = False  # enable discovery subprocess
         self.afe_manage_active = False  # enable management of the AFEs
@@ -79,6 +83,10 @@ class HUBDevice:
         self.curent_function_retval = None
 
         self.afecmd = AFECommand()
+        
+        self.afe0: AFEDevice = None
+        
+        self.msg_to_process = None
 
     def powerOn(self):
         pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
@@ -112,23 +120,41 @@ class HUBDevice:
                 os.remove("/sd/logs/" + filename)
         except Exception as e:
             p.print("Error clearing logs: {}".format(e))
+            
+    def _queue_message_copy(self, msg_copy):
+        self.message_queue.append(msg_copy)
+        
+    def _dequeue_message_copy(self, _):
+        if len(self.message_queue):
+            self.msg_to_process = self.message_queue.pop(0)
+    
+    def _message_queue_len(self):
+        return len(self.message_queue)
 
-    def handle_can_rx(self, bus, reason):
+    def handle_can_rx(self, bus: pyb.CAN, reason=None):
         """ Callback function to handle received CAN messages. """
         try:
-            while self.can_bus.any(0):  # Check FIFO 0 for messages
-                # Read message from FIFO 0
-                self.can_bus.recv(0, self.rx_message)
-                if len(self.message_queue) >= self.message_queue_max:
-                    p.print("Poped message: {}".format(self.message_queue[0]))
-                    self.message_queue.pop(0)
-                self.message_queue.append(self.rx_message)
+            #     if bus.any(0):
+            # rx_message = [0, 0, 0, memoryview(self.rx_buffer)]
+            # bus.recv(0, self.rx_message, timeout=self.rx_timeout_ms)
+            bus.recv(0, self.rx_message, timeout=self.rx_timeout_ms)
+            # if self.rx_message[0]:
+            
+            # print(list(bytes(self.rx_message[3])))
+            # self.message_queue.append(self.rx_message[:])  # Copy to avoid mutation
+            self.message_queue.append(self.rx_message)  # Copy to avoid mutation
+        # micropython.schedule(self._queue_message_copy, self.rx_message[:])
         except Exception as e:
-            p.print("handle_can_rx: HUB RX Error: {e}".format(e=e))
+            # Optionally log or handle error
+            print("CAN RX error:", e, self.rx_message)
+        #     bus.restart()
+
 
     def handle_can_rx_polling(self):
-        # if self.can_bus.any(0):
-        self.handle_can_rx(self.can_bus, 0)
+        if self.can_bus.any(0):
+            self.handle_can_rx(self.can_bus)
+            return True
+        return None
 
     def get_afe_by_id(self, afe_id) -> AFEDevice:
         """
@@ -153,16 +179,23 @@ class HUBDevice:
         If a message is from a new AFE, it creates a new AFEDevice instance.
         """
         message = None
-        # Check if message queue is empty
-        if not self.message_queue:
-            return  # Exit early if there are no messages to process
-
         # Check if message processing is active
         if not self.rx_process_active:
             return  # Exit early if message processing is not active
-
-        if len(self.message_queue):  # Process only if anythong is in the queue
-            message = self.message_queue.pop(0)  # get from FIFO
+        # if len(self.message_queue):  # Process only if anythong is in the queue
+        #     message = self.message_queue.pop(0)  # get from FIFO
+        # if self._message_queue_len() > 0:
+        #     try:
+        #         message = micropython.schedule(self._dequeue_message_copy)
+        #     except:
+        #         # print("xxxx")
+        #         return
+        # else:
+        #     return
+        if self.msg_to_process is None:
+            return
+        message = self.msg_to_process[:]
+        self.msg_to_process = None
         try:
             if message is None:
                 return
@@ -173,6 +206,8 @@ class HUBDevice:
                 afe = AFEDevice(self.can_bus, afe_id, logger=self.logger)
                 # Add the new AFE device to the list of known devices
                 self.afe_devices.append(afe)
+                if afe_id == 35:
+                    self.afe0 = afe
             # Process the received data using the AFE device's method
             afe.process_received_data(message)
         except Exception as e:
@@ -232,19 +267,6 @@ class HUBDevice:
         self.discovery_active = False
         p.print("STOP DISCOVERY")
 
-    def start_periodic_measurement_download(self, interval_ms=2500):
-        A = list(self.afe_devices)  # Directly use the list of devices
-        timestamp_old = millis()
-
-        while A:  # Loop while A is not empty
-            for afe in A[:]:  # Iterate over a copy of A to allow safe removal
-                if (millis() - timestamp_old) > 5000:
-                    A.remove(afe)
-                elif afe.is_online and afe.current_command is None:
-                    if not afe.enabled_periodic_measurement_download:
-                        afe.start_periodic_measurement_download(interval_ms)
-                    else:
-                        A.remove(afe)
 
     def get_afe_by_id(self, afe_id) -> AFEDevice:
         if len(self.afe_devices) == 0:
@@ -253,61 +275,6 @@ class HUBDevice:
             if afe.device_id == afe_id:
                 return afe
         return None
-
-    def set_offset_for_afe(self, afe_id, offset_master=200, offset_slave=200):
-        afe = self.get_afe_by_id(afe_id)
-        # afe.set_offset(offset_master,offset_slave)
-        subdevice = AFECommandSubdevice()
-        afe.enqueue_u32_for_channel(
-            AFECommand.setAD8402Value_byte, subdevice.AFECommandSubdevice_master, offset_master)
-        afe.enqueue_u32_for_channel(
-            AFECommand.setAD8402Value_byte, subdevice.AFECommandSubdevice_slave, offset_slave)
-
-    def set_hv_on(self, afe_id):
-        afe = self.get_afe_by_id(afe_id)
-        afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0, 1)
-        afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV1, 1)
-
-    def set_hv_off(self, afe_id):
-        afe = self.get_afe_by_id(afe_id)
-        afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0, 0)
-        afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV1, 0)
-
-    def test_start_measurement_record_in_ram(self, afe_id):
-        # afe.enqueue_gpio_set(afe.AFEGPIO_blink,0)
-        afe.enqueue_command(AFECommand.setAveragingMode,
-                            [6, 3], outputRestart=True, startKeepOutput=True)
-
-    def start_all(self):
-        self.set_offset_for_afe(1, 200, 210)
-        self.set_gv_on()
-
-    def abort_execution(self):
-        self.curent_function = None
-        self.curent_function_afe_id = None
-        self.curent_function_timestamp_ms = millis()
-        self.curent_function_retval = None
-
-    def execute_for_id(self, afe_id, function, **kwargs):
-        self.curent_function = function
-        self.curent_function_afe_id = afe_id
-        self.curent_function_timestamp_ms = millis()
-        self.curent_function_retval = None
-        return
-
-    def stop_periodic_measurement_download(self):
-        A = list(self.afe_devices)  # Directly use the list of devices
-        timestamp_old = millis()
-
-        while A:  # Loop while A is not empty
-            for afe in A[:]:  # Iterate over a copy of A to allow safe removal
-                if (millis() - timestamp_old) > 5000:
-                    A.remove(afe)
-                elif afe.is_online and afe.current_command is None:
-                    if afe.enabled_periodic_measurement_download:
-                        afe.stop_periodic_measurement_download()
-                    else:
-                        A.remove(afe)
 
     def get_configuration_from_files(self, afe_id, callibration_data_file_csv="dane_kalibracyjne.csv", TempLoop_file_csv="TempLoop.csv", UID=None):
         """
@@ -595,7 +562,7 @@ class HUBDevice:
         afe.callback_1 = self.callback_1
         afe.begin_configuration()
         # timeoutForCommand_ms = 10000
-        commandKwargs = {"timeout_ms": int(round(10220)),
+        commandKwargs = {"timeout_ms": 10220,
                          "preserve": False,
                          "timeout_start_on_send_ms": 1000,
                          "callback_error": self.callback_afe_error}
@@ -661,7 +628,7 @@ class HUBDevice:
                     else:
                         continue
                     for uch in afe.unmask_channel(ch_id):
-                        self.logger.log(VerbosityLevel["DEBUG"], "AFE {} {} Loading {} (CH{} ? {}) value {}".format(
+                        self.logger.log(VerbosityLevel["INFO"], "AFE {} {} Loading {} (CH{} ? {}) value {}".format(
                             afe_id, g, k, uch, e_ADC_CHANNEL[uch], v))
 
         else:
@@ -682,31 +649,6 @@ class HUBDevice:
         afe.enqueue_float_for_channel(
             AFECommand.setAveragingAlpha_byMask, 0xFF, 1.0/(1000*100.0), **commandKwargs)
 
-        # afe.enqueue_command(AFECommand.startADC, [
-        #                     0xFF, 0xFF], **{"timeout_ms": 10000, "preserve": True})
-
-        # p.print("Start periodic measurement report for AFE {}".format(afe_id))
-        # afe.enqueue_command(AFECommand.getSensorDataSi_last_byMask,[0xFF],timeout_ms=2500)
-        return
-        # afe.enqueue_command(AFECommand.getVersion)  # get Version
-        afeConfig = None
-        for a in AFE_Config:
-            if a["afe_id"] == afe_id:
-                afeConfig = a
-                break
-        # p.print(afeConfig["afe_id"])
-        for ch in afeConfig["channel"]:
-            afe.enqueue_command(AFECommand.setAveragingMode, [
-                                ch.channel_id, ch.averaging_mode])
-            afe.enqueue_float_for_channel(
-                AFECommand.setChannel_a, ch.channel_id, ch.a)
-            afe.enqueue_float_for_channel(
-                AFECommand.setChannel_b, ch.channel_id, ch.b)
-            afe.enqueue_u32_for_channel(
-                AFECommand.setChannel_dt_ms, ch.channel_id, ch.time_interval_ms)
-            afe.enqueue_float_for_channel(
-                AFECommand.setAveragingAlpha, ch.channel_id, ch.alpha)
-
     def parse(self, msg):
         p.print("Parsed: {}".format(msg))
 
@@ -725,9 +667,9 @@ class HUBDevice:
         p.print("Send back: {}".format(json.dumps(toSend)))
 
     def main_process(self, timer=None):
-        # try:
-        # if not self.use_rxcallback:
-        self.handle_can_rx_polling()
+        micropython.schedule(self._dequeue_message_copy,0)
+        if not self.use_rxcallback:
+            self.handle_can_rx_polling()
         self.discover_devices()
         if self.rx_process_active:
             self.process_received_messages()
@@ -739,10 +681,10 @@ class HUBDevice:
                     # TODO Update this
                     if not afe.is_configured:
                         if not afe.is_fired:
+                            afe.is_fired = True
                             self.default_full(afe_id=afe.device_id)
                             self.default_periodic_measurement_download_all(
                                 afe_id=afe.device_id, ms=10000)
-                            afe.is_fired = True
                             p.print("AFE {} was restarted".format(
                                 afe.device_id))
         if self.curent_function is not None:  # check if function is running

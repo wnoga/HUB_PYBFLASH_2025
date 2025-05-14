@@ -250,6 +250,7 @@ class JSONLogger:
         self.filename = filename
         self.filename_org = filename
         self.file = None
+        self.print_verbosity_level = VerbosityLevel["INFO"]
         self.new_file()
         
     def _ensure_directory(self):
@@ -284,7 +285,7 @@ class JSONLogger:
             pass
         self._ensure_directory()
         self.filename = self._get_unique_filename("{}/{}".format(self.parent_dir, self.filename_org))
-        self.file = open(self.filename, "a")  # Keep JSON log file open for appending
+        self.file = open(self.filename, "w")  # Keep JSON log file open for appending
     
     def log(self, level: int, message):
         if self.file is None:
@@ -294,10 +295,12 @@ class JSONLogger:
             try:
                 log_entry = {"timestamp": log_timestamp, "level": level, "message": message}
                 self.file.write(json.dumps(log_entry) + "\n")  # Append log as a new line
-                self.file.flush()  # Ensure data is written immediately
-                p.print("LOG:",log_entry)
+                # self.file.flush()  # Ensure data is written immediately
+                if level >= self.print_verbosity_level:
+                    p.print("LOG:",log_entry)
             except Exception as e:
-                p.print("ERROR log: {}  @ {} -> {}".format(e,log_timestamp,message))
+                # p.print("ERROR log: {}  @ {} -> {}".format(e,log_timestamp,message))
+                p.print("ERROR LOG",e,log_entry)
     
     def sync(self):
         if self.file is not None:
@@ -305,6 +308,7 @@ class JSONLogger:
         os.sync()
     
     def close(self):
+        self.sync()
         self.file.close()
     
     def read_logs(self, path=None):

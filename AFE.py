@@ -123,6 +123,14 @@ class AFEDevice:
         self.is_any_error = False
         self.init_after_restart()
 
+    def trim_dict_for_logger(self,executing):
+        trimmed = executing.copy()
+        toTrim = ["frame","callback","callback_error"]
+        for t in toTrim:
+            if t in trimmed:
+                trimmed.pop(t)
+        return trimmed
+
     def begin_configuration(self,timeout_ms = 10000):
         self.is_configuration_started = True
         self.configuration_timeout_ms = timeout_ms
@@ -248,7 +256,10 @@ class AFEDevice:
 
     # Prepare frame payload for the AFE
 
-    def prepare_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms=None, preserve=False, startKeepOutput=False, outputRestart=False, can_timeout_ms=None, callback=None, callback_error=None, **kwargs):
+    def prepare_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms=None,
+                        preserve=False,
+                        # startKeepOutput=False, outputRestart=False,
+                        can_timeout_ms=None, callback=None, callback_error=None, **kwargs):
         """
         Prepares a command to be sent to the AFE device.
 
@@ -296,8 +307,8 @@ class AFEDevice:
             "timeout_ms": self.default_command_timeout_ms if timeout_ms is None else timeout_ms,
             "timestamp_ms": timestamp_ms,
             "timestamp_ms_enqueued": timestamp_ms,
-            "startKeepOutput": startKeepOutput,
-            "outputRestart": outputRestart,
+            # "startKeepOutput": startKeepOutput,
+            # "outputRestart": outputRestart,
             "can_timeout_ms": self.default_can_timeout_ms if can_timeout_ms is None else can_timeout_ms,
             "status": CommandStatus.NONE,
             "preserve": preserve,
@@ -531,11 +542,10 @@ class AFEDevice:
                 self.logger.sync()
 
             elif command == AFECommand.startADC:
-                p.print("ADC started: {}".format(chunk_payload))
+                pass
 
             elif command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
-                p.print("setTemperatureLoopForChannelState_byMask_asStatus: {}".format(
-                    chunk_payload))
+                pass
 
             elif command == AFECommand.getSensorDataSi_last_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
@@ -598,21 +608,22 @@ class AFEDevice:
                         chunk_payload[1:])
 
             elif command == AFECommand.setRegulator_a_dac_byMask:
-                p.print("setRegulator_a_dac_byMask")
+                pass
 
             elif command == AFECommand.setRegulator_b_dac_byMask:
-                p.print("setRegulator_b_dac_byMask")
+                pass
 
             elif command == AFECommand.setRegulator_dV_dT_byMask:
-                p.print("setRegulator_dV_dT_byMask")
+                pass
 
             elif command == AFECommand.setRegulator_V_opt_byMask:
-                p.print("setRegulator_V_opt_byMask")
+                pass
+            
             elif command == AFECommand.setRegulator_V_offset_byMask:
-                p.print("setRegulator_V_offset_byMask")
+                pass
 
             elif command == AFECommand.setChannel_period_ms_byMask:
-                p.print("setChannel_period_ms_byMask")
+                pass
 
             # elif command == AFECommand.setSensorDataSi_all_periodic_average:
             #     flag = chunk_payload[0]
@@ -651,7 +662,7 @@ class AFEDevice:
                                     self.periodic_data["last_data"].update(
                                         {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
                 except Exception as e:
-                    p.print("Error getSensorDataSi_periodic: {}: ".format(error))
+                    p.print("Error getSensorDataSi_periodic: {}: ".format(e))
 
             elif command == AFECommand.getSensorDataSiAndTimestamp_average_byMask:
                 channel = chunk_payload[0]
@@ -664,42 +675,25 @@ class AFEDevice:
                         "average_timestamp_ms", value, channel)
 
             elif command == AFECommand.writeGPIO:
-                # self.blink_is_enabled = True
-                p.print("GPIO {}".format(chunk_payload))
+                pass
+                # p.print("GPIO {}".format(chunk_payload))
 
-            # elif command == AFECommand.setTemperatureLoopForChannelState_bySubdevice:
-            #     # p.print("Subdevice")
-            #     channel = chunk_payload[0]
-            #     status = chunk_payload[1]
-            #     channel_name = "?"
-            #     status_status = True if status == 1 else False
-            #     if channel == 1:
-            #         self.temperatureLoop_master_is_enabled = status_status
-            #         channel_name = "master"
-            #     elif channel == 2:
-            #         self.temperatureLoop_slave_is_enabled = status_status
-            #         channel_name = "slave"
-            #     elif channel == 3:
-            #         self.temperatureLoop_master_is_enabled = status_status
-            #         self.temperatureLoop_slave_is_enabled = status_status
-            #         channel_name = "master+slave"
-            #     p.print("TemperatureLoop for {} is {}".format(
-            #         channel_name, "enabled" if status == 1 else "disabled"
-            #     ))
             elif command == 0xD4:
                 pass
 
             elif command == AFECommand.setDACValueRaw_bySubdeviceMask:
-                p.print("setDACValueRaw_bySubdeviceMask:{}".format(chunk_payload))
+                pass
 
             elif command == AFECommand.setDAC_bySubdeviceMask:
-                p.print("setDAC_bySubdeviceMask: {}".format(chunk_payload))
+                # p.print("setDAC_bySubdeviceMask: {}".format(chunk_payload))
                 for uch in self.unmask_channel(chunk_payload[0]):
                     if chunk_payload[2] & (1 << uch):
-                        p.print("DAC{} is {}".format(uch, "ERROR"))
+                        # p.print("DAC{} is {}".format(uch, "ERROR"))
+                        pass
                     else:
-                        p.print("DAC{} is {}".format(
-                            uch, "ON" if chunk_payload[1] else "OFF"))
+                        pass
+                        # p.print("DAC{} is {}".format(
+                        #     uch, "ON" if chunk_payload[1] else "OFF"))
 
             elif command == AFECommand.debug_machine_control:
                 channel = chunk_payload[0]
@@ -717,7 +711,7 @@ class AFEDevice:
                 if chunk_id == 4:
                     value = self.bytes_to_u32(chunk_payload[1:])
                     self.debug_machine_control_msg[channel]["timestamp_ms"] = value
-                    p.print(self.debug_machine_control_msg[channel])
+                    # p.print(self.debug_machine_control_msg[channel])
 
             elif command == 0xF9:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
@@ -789,7 +783,8 @@ class AFEDevice:
                         if self.executing.get("preserve") == True:
                             self.executed.append(self.executing.copy())
                             self.logger.log(
-                                VerbosityLevel["MEASUREMENT"], self.executing)
+                                VerbosityLevel["MEASUREMENT"], 
+                                self.trim_dict_for_logger(self.executing))
                             # self.logger.log(VerbosityLevel["DEBUG"],self.executing)
                             p.print(self.executing)
                         self.executing = None
@@ -799,7 +794,7 @@ class AFEDevice:
                             "device_id": self.device_id,
                             "timestamp_ms": millis(),
                             "command": AFECommand.AFECommand_getSensorDataSi_periodic,
-                            "retval": self.periodic_data,
+                            "retval": self.trim_dict_for_logger(self.periodic_data),
                         }
                         self.periodic_data = {}
                         self.logger.log(VerbosityLevel["MEASUREMENT"], toLog)
@@ -808,7 +803,7 @@ class AFEDevice:
                         toLog = {
                             "device_id": self.device_id,
                             "command": AFECommand.debug_machine_control,
-                            "retval": self.debug_machine_control_msg[subdev],
+                            "retval": self.trim_dict_for_logger(self.debug_machine_control_msg[subdev]),
                             "timestamp_ms": millis(),
                         }
                         self.debug_machine_control_msg[subdev] = {}
@@ -852,9 +847,13 @@ class AFEDevice:
         if self.executing is not None:
             # p.print(self.executing)
             if (millis() - self.executing["timestamp_ms"]) > self.executing["timeout_ms"]:
-                self.logger.log(VerbosityLevel["WARNING"], "AFE:manage_state:0x{:02X} TIMEOUT -> {}".format(
-                    self.executing["command"], list(self.executing["frame"])))
+                # self.logger.log(VerbosityLevel["WARNING"], "AFE:manage_state:0x{:02X} TIMEOUT -> {}".format(
+                #     self.executing["command"], list(self.executing["frame"])))
                 self.executing["status"] = CommandStatus.ERROR
+                toAppend =  self.trim_dict_for_logger(self.executing)
+                toAppend["info"] = "TIMEOUT"
+                toAppend["device_id"] = self.device_id
+                self.logger.log(VerbosityLevel["ERROR"],toAppend)
                 if self.executing.get("preserve") == True:
                     self.executed.append(self.executing.copy())
                 if "callback_error" in self.executing:
@@ -866,7 +865,6 @@ class AFEDevice:
                                 {"afe": self, "afe_id": self.device_id, "executing": self.executing})
                     except Exception as e:
                         print("AFE manage_state callback_error: {}".format(e))
-                        pyb.delay(5000)
                 self.executing = None
             return
         
