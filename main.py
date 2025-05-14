@@ -18,6 +18,7 @@ from my_utilities import wdt
 # from my_utilities import lock
 import time
 
+pyb.delay(100)
 
 # from machine import WDT
 # wdt = WDT(timeout=2000)  # enable it with a timeout of 2s

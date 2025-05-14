@@ -63,6 +63,7 @@ class AFECommand:
     getVersion = 0x1
     resetAll = 0x3
     startADC = 0x4
+    getTimestamp = 0x5
     getSensorDataSi_last_byMask = 0x30
     getSensorDataSi_average_byMask = 0x31
     getSensorDataSiAndTimestamp_average_byMask = 0x3b
@@ -74,6 +75,7 @@ class AFECommand:
     transmitSPIData = 0xa0
     setAD8402Value_byte_byMask = 0xa1
     writeGPIO = 0xa2
+    setCanMsgBurstDelay_ms = 0xa3
     setTemperatureLoopForChannelState_byMask_asStatus = 0xc1
     setDACValueRaw_bySubdeviceMask = 0xc2
     setDACValueSi_bySubdeviceMask = 0xc3
@@ -159,6 +161,15 @@ ResetReason: dict[int, str] = {
     7: "RESET_LOW_POWER"
 }
 
+VerbosityLevel = {
+    "DEBUG":4,
+    "INFO":3,
+    "WARNING":2,
+    "ERROR":1,
+    "CRITICAL":0,
+    "MEASUREMENT":-1
+}
+
 class CommandStatus:
     NONE = 0x000
     IDLE = 0x001
@@ -212,16 +223,7 @@ class SensorChannel:
         # Measurement download settings
         self.periodic_interval_ms = kwargs.get("periodic_interval_ms", 0)
         self.periodic_sending_is_enabled = False
-
-VerbosityLevel = {
-    "DEBUG":4,
-    "INFO":3,
-    "WARNING":2,
-    "ERROR":1,
-    "CRITICAL":0,
-    "MEASUREMENT":-1
-}
-            
+   
 class EmptyLogger:
     def __init__(self,verbosity_level: int = VerbosityLevel["INFO"],**kwargs):
         self.verbosity_level = verbosity_level
@@ -251,6 +253,8 @@ class JSONLogger:
         self.filename_org = filename
         self.file = None
         self.print_verbosity_level = VerbosityLevel["INFO"]
+        self.last_sync = 0
+        self.sync_every_ms = 1000
         self.new_file()
         
     def _ensure_directory(self):
@@ -292,20 +296,25 @@ class JSONLogger:
             self.new_file()
         if self._should_log(level):
             log_timestamp = millis()
-            try:
-                log_entry = {"timestamp": log_timestamp, "level": level, "message": message}
-                self.file.write(json.dumps(log_entry) + "\n")  # Append log as a new line
-                # self.file.flush()  # Ensure data is written immediately
-                if level >= self.print_verbosity_level:
-                    p.print("LOG:",log_entry)
-            except Exception as e:
-                # p.print("ERROR log: {}  @ {} -> {}".format(e,log_timestamp,message))
-                p.print("ERROR LOG",e,log_entry)
+            # try:
+            log_entry = {"timestamp": log_timestamp, "level": level, "message": message}
+            self.file.write(json.dumps(log_entry) + "\n")  # Append log as a new line
+            # self.file.flush()  # Ensure data is written immediately
+            if level >= self.print_verbosity_level:
+                p.print("LOG:",log_entry)
+            # except Exception as e:
+            #     # p.print("ERROR log: {}  @ {} -> {}".format(e,log_timestamp,message))
+            #     p.print("ERROR LOG",e,log_entry)
     
     def sync(self):
         if self.file is not None:
             self.file.flush()
         os.sync()
+        
+    def sync_process(self):
+        if (millis() - self.last_sync) > self.sync_every_ms:
+            self.sync()
+            self.last_sync = millis()
     
     def close(self):
         self.sync()

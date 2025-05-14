@@ -66,6 +66,8 @@ class AFEDevice:
         self.logger = logger
         self.config_path = config_path  # Path to the config file
 
+        self.last_sync_afe_timestamp_ms = None
+
         self.use_any_error_restart = True
 
         # Use this if communication is faster than the AFE
@@ -102,7 +104,7 @@ class AFEDevice:
         # self.keep_output = False
         # self.output = {}
         self.executing = None
-        self.executed = []
+        # self.executed = []
 
         self.executed_max_len = 100
         self.save_periodic_data = True
@@ -119,36 +121,35 @@ class AFEDevice:
         self.AFEGPIO_blink = AFECommandGPIO(port="PORTA", pin=9)
 
         self.afe_config = None
-        self.is_fired = False
+        # self.is_fired = False
         self.is_any_error = False
         self.init_after_restart()
 
-    def trim_dict_for_logger(self,executing):
+    def trim_dict_for_logger(self, executing):
         trimmed = executing.copy()
-        toTrim = ["frame","callback","callback_error"]
-        for t in toTrim:
-            if t in trimmed:
-                trimmed.pop(t)
+        keys_to_trim = ["frame", "callback", "callback_error"]
+        for key in keys_to_trim:
+            trimmed.pop(key, None)
         return trimmed
 
-    def begin_configuration(self,timeout_ms = 10000):
+    def begin_configuration(self, timeout_ms=10000):
         self.is_configuration_started = True
         self.configuration_timeout_ms = timeout_ms
         self.configuration_start_timestamp_ms = millis()
-        
-    def end_configuration(self,success=True):
+
+    def end_configuration(self, success=True):
         self.is_configured = success
 
     def callback_is_configured(self, kwargs=None):
         self.end_configuration(success=True)
         self.logger.log(
             VerbosityLevel["INFO"], {
-                "device_id":self.device_id,
-                "timestamp_ms":millis(),
-                "info":"configured"})
+                "device_id": self.device_id,
+                "timestamp_ms": millis(),
+                "info": "configured"})
 
     def init_after_restart(self):
-        self.is_fired = False
+        # self.is_fired = False
         self.afe_config = None
         for c in AFE_Config:
             if c["afe_id"] == self.device_id:
@@ -525,7 +526,9 @@ class AFEDevice:
                         "{:08X}".format(b) for b in self.unique_id)
                     # self.update_last_msg("UID",self.unique_id_str)
                     self.logger.log(VerbosityLevel["INFO"], {
-                                    "AFE": self.device_id, "UID": self.unique_id_str})
+                        "device_id": self.device_id,
+                        "timestamp_ms": millis(),
+                        "info": {"UID": self.unique_id_str}})
                     parsed_data.update({"unique_id_str": self.unique_id_str})
 
             elif command == AFECommand.getVersion:
@@ -537,11 +540,25 @@ class AFEDevice:
             elif command == AFECommand.resetAll:
                 self.init_after_restart()
                 # self.is_online = False
-                self.logger.log(VerbosityLevel["ERROR"], "AFE {} was restared! Reason {}".format(
-                    device_id, ResetReason[chunk_payload[0]]))
+                self.logger.log(VerbosityLevel["ERROR"],
+                                {
+                                    "device_id": self.device_id,
+                                    "timestamp_ms": millis(),
+                                    "error": "AFE {} was restared! Reason {}".format(device_id, ResetReason[chunk_payload[0]])})
                 self.logger.sync()
 
             elif command == AFECommand.startADC:
+                pass
+
+            elif command == AFECommand.getTimestamp:
+                timestamp_ms = millis()
+                self.last_sync_afe_timestamp_ms = self.bytes_to_u32(
+                    chunk_payload[1:])
+                self.logger.log(VerbosityLevel["INFO"], {
+                    "device_id": self.device_id,
+                    "timestamp_ms": timestamp_ms,
+                    "info": "SYNC at {} on AFE {} at {}".format(timestamp_ms, self.device_id, self.last_sync_afe_timestamp_ms)
+                })
                 pass
 
             elif command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
@@ -618,7 +635,7 @@ class AFEDevice:
 
             elif command == AFECommand.setRegulator_V_opt_byMask:
                 pass
-            
+
             elif command == AFECommand.setRegulator_V_offset_byMask:
                 pass
 
@@ -677,7 +694,14 @@ class AFEDevice:
             elif command == AFECommand.writeGPIO:
                 pass
                 # p.print("GPIO {}".format(chunk_payload))
-
+            elif command == AFECommand.setCanMsgBurstDelay_ms:
+                self.logger.log(VerbosityLevel["INFO"], {
+                    "device_id": self.device_id,
+                    "timestamp_ms": millis(),
+                    "info": "Changed CanMsgBurstDelay_ms on AFE to {}".format(
+                        self.bytes_to_u32(chunk_payload[1:]))
+                })
+                pass
             elif command == 0xD4:
                 pass
 
@@ -772,21 +796,28 @@ class AFEDevice:
                     if command == self.executing["command"]:
                         self.executing["status"] = CommandStatus.RECIEVED
                         self.logger.log(
-                            VerbosityLevel["DEBUG"], "END: {}".format(self.executing))
+                            VerbosityLevel["DEBUG"], {
+                                "device_id": self.device_id,
+                                "timestamp_ms": millis(),
+                                "debug": "END 0x{:02X}".format(command)})
                         try:
                             if "callback" in self.executing and callable(self.executing["callback"]):
                                 self.executing["callback"](self.executing)
                         except:
                             self.logger.log(
-                                VerbosityLevel["ERROR"], "{{CALLBACK ERROR: {}}}".format(self.executing))
+                                VerbosityLevel["ERROR"],
+                                {"device_id": self.device_id,
+                                 "timestamp_ms": millis(),
+                                 "info": self.trim_dict_for_logger(self.executing),
+                                 "error": "callback error"})
                             pass
                         if self.executing.get("preserve") == True:
-                            self.executed.append(self.executing.copy())
+                            # self.executed.append(self.executing.copy())
                             self.logger.log(
-                                VerbosityLevel["MEASUREMENT"], 
+                                VerbosityLevel["MEASUREMENT"],
                                 self.trim_dict_for_logger(self.executing))
                             # self.logger.log(VerbosityLevel["DEBUG"],self.executing)
-                            p.print(self.executing)
+                            # p.print(self.executing)
                         self.executing = None
                 if self.save_periodic_data is True:
                     if self.periodic_data.get("timestamp_ms"):
@@ -808,7 +839,7 @@ class AFEDevice:
                         }
                         self.debug_machine_control_msg[subdev] = {}
                         self.logger.log(VerbosityLevel["INFO"], toLog)
-                        p.print(toLog)
+                        # p.print(toLog)
 
             received_data = None
         # except Exception as error:
@@ -841,8 +872,16 @@ class AFEDevice:
     # AFE state management
     def manage_state(self):
         # keep memory limits
-        while len(self.executed) > self.executed_max_len:
-            self.executed.pop(0)
+        # while len(self.executed) > self.executed_max_len:
+        #     self.executed.pop(0)
+
+        if not self.is_configured:
+            if self.is_configuration_started is True:
+                timestamp_ms = millis()
+                if (millis() - self.configuration_start_timestamp_ms) > self.configuration_timeout_ms:
+                    self.logger.log(VerbosityLevel["ERROR"], {
+                                    "device_id": self.device_id, "error": "configuration timeout", "timestamp_ms": millis()})
+                    self.restart_device()
 
         if self.executing is not None:
             # p.print(self.executing)
@@ -850,12 +889,15 @@ class AFEDevice:
                 # self.logger.log(VerbosityLevel["WARNING"], "AFE:manage_state:0x{:02X} TIMEOUT -> {}".format(
                 #     self.executing["command"], list(self.executing["frame"])))
                 self.executing["status"] = CommandStatus.ERROR
-                toAppend =  self.trim_dict_for_logger(self.executing)
-                toAppend["info"] = "TIMEOUT"
-                toAppend["device_id"] = self.device_id
-                self.logger.log(VerbosityLevel["ERROR"],toAppend)
-                if self.executing.get("preserve") == True:
-                    self.executed.append(self.executing.copy())
+                self.logger.log(VerbosityLevel["ERROR"],
+                                {
+                                    "device_id": self.device_id,
+                                    "timestamp_ms": millis(),
+                                    "error": "TIMEOUT",
+                                    "executing": self.trim_dict_for_logger(self.executing)
+                })
+                # if self.executing.get("preserve") == True:
+                #     self.executed.append(self.executing.copy())
                 if "callback_error" in self.executing:
                     try:
                         if not self.executing["callback_error"] is None:
@@ -867,11 +909,6 @@ class AFEDevice:
                         print("AFE manage_state callback_error: {}".format(e))
                 self.executing = None
             return
-        
-        if not self.is_configured:
-            if self.is_configuration_started is True:
-                if (millis() - self.configuration_start_timestamp_ms) > self.configuration_timeout_ms:
-                    self.restart_device()
 
         # Try send commands
         if self.use_tx_delay:

@@ -83,29 +83,43 @@ class HUBDevice:
         self.curent_function_retval = None
 
         self.afecmd = AFECommand()
-        
+
         self.afe0: AFEDevice = None
-        
+
         self.msg_to_process = None
+        
+        self.logger_sync_active = True
 
     def powerOn(self):
+        self.logger.log(VerbosityLevel["INFO"],
+                       {
+                           "device_id": 0,
+                           "timestamp_ms": millis(),
+                           "info": "powerOn"
+        })
         pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
         pyb.Pin.cpu.E12.value(1)
-        p.print("HV is on")
 
     def powerOff(self):
+        self.logger.log(VerbosityLevel["INFO"],
+                       {
+                           "device_id": 0,
+                           "timestamp_ms": millis(),
+                           "info": "powerOff"
+        })
         pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
         pyb.Pin.cpu.E12.value(0)
-        p.print("HV is off")
 
     def reset_all(self):
         self.stop_discovery()
         self.afe_devices = []
         self.message_queue = []
         self.current_discovery_id = 1
-        
+
     def close_all(self):
-        self.logger.log(VerbosityLevel["INFO"],{"info":"END","timestamp_ms":millis()})
+        self.logger.log(VerbosityLevel["INFO"], {
+            "device_id":0,
+                        "info": "CLOSE ALL", "timestamp_ms": millis()})
         self.logger.sync()
         # self.logger.close()
         self.logger.new_file()
@@ -120,14 +134,16 @@ class HUBDevice:
                 os.remove("/sd/logs/" + filename)
         except Exception as e:
             p.print("Error clearing logs: {}".format(e))
-            
+
     def _queue_message_copy(self, msg_copy):
         self.message_queue.append(msg_copy)
-        
+
     def _dequeue_message_copy(self, _):
+        while len(self.message_queue) > self.message_queue_max:
+            self.message_queue.pop(0)
         if len(self.message_queue):
             self.msg_to_process = self.message_queue.pop(0)
-    
+
     def _message_queue_len(self):
         return len(self.message_queue)
 
@@ -139,16 +155,16 @@ class HUBDevice:
             # bus.recv(0, self.rx_message, timeout=self.rx_timeout_ms)
             bus.recv(0, self.rx_message, timeout=self.rx_timeout_ms)
             # if self.rx_message[0]:
-            
+
             # print(list(bytes(self.rx_message[3])))
             # self.message_queue.append(self.rx_message[:])  # Copy to avoid mutation
-            self.message_queue.append(self.rx_message)  # Copy to avoid mutation
+            # Copy to avoid mutation
+            self.message_queue.append(self.rx_message)
         # micropython.schedule(self._queue_message_copy, self.rx_message[:])
         except Exception as e:
             # Optionally log or handle error
             print("CAN RX error:", e, self.rx_message)
         #     bus.restart()
-
 
     def handle_can_rx_polling(self):
         if self.can_bus.any(0):
@@ -196,22 +212,22 @@ class HUBDevice:
             return
         message = self.msg_to_process[:]
         self.msg_to_process = None
-        try:
-            if message is None:
-                return
-            afe_id = (message[0] >> 2) & 0xFF  # unmask the AFE ID
-            afe = self.get_afe_by_id(afe_id)
-            if afe is None:  # Add new discovered AFE
-                # Create a new AFE device instance with the discovered ID
-                afe = AFEDevice(self.can_bus, afe_id, logger=self.logger)
-                # Add the new AFE device to the list of known devices
-                self.afe_devices.append(afe)
-                if afe_id == 35:
-                    self.afe0 = afe
-            # Process the received data using the AFE device's method
-            afe.process_received_data(message)
-        except Exception as e:
-            p.print("process_received_messages: {}".format(e))
+        # try:
+        if message is None:
+            return
+        afe_id = (message[0] >> 2) & 0xFF  # unmask the AFE ID
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:  # Add new discovered AFE
+            # Create a new AFE device instance with the discovered ID
+            afe = AFEDevice(self.can_bus, afe_id, logger=self.logger)
+            # Add the new AFE device to the list of known devices
+            self.afe_devices.append(afe)
+            if afe_id == 35:
+                self.afe0 = afe
+        # Process the received data using the AFE device's method
+        afe.process_received_data(message)
+        # except Exception as e:
+        #     p.print("process_received_messages: {}".format(e))
 
     def discover_devices(self, timer=None):
         """ Periodically discover AFEs on the CAN bus. """
@@ -266,7 +282,6 @@ class HUBDevice:
         """ Stop the device discovery process. """
         self.discovery_active = False
         p.print("STOP DISCOVERY")
-
 
     def get_afe_by_id(self, afe_id) -> AFEDevice:
         if len(self.afe_devices) == 0:
@@ -389,12 +404,18 @@ class HUBDevice:
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
+        afe.logger.log(VerbosityLevel["INFO"],
+                       {
+                           "device_id": afe.device_id,
+                           "timestamp_ms": millis(),
+                           "info": "default_set_dac"
+        })
         commandKwargs = {"timeout_ms": 10220,
                          "preserve": False, "timeout_start_on_send_ms": 2000}
 
         def get_subdevice_ch_id(g):
             return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
-        p.print("Set DAC for {}".format(afe_id))
+        # p.print("Set DAC for {}".format(afe_id))
         if True:
             for g in ["M", "S"]:
                 afe.enqueue_u16_for_channel(AFECommand.setDACValueRaw_bySubdeviceMask, get_subdevice_ch_id(
@@ -421,12 +442,18 @@ class HUBDevice:
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
+        afe.logger.log(VerbosityLevel["INFO"],
+                       {
+                           "device_id": afe.device_id,
+                           "timestamp_ms": millis(),
+                           "info": "default_start_temperature_loop"
+        })
         commandKwargs = {"timeout_ms": 10220,
                          "preserve": True, "timeout_start_on_send_ms": 2000}
 
         def get_subdevice_ch_id(g):
             return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
-        p.print("Set DAC for {}".format(afe_id))
+        # p.print("Set DAC for {}".format(afe_id))
         if True:
             for g in ["M", "S"]:
                 afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus, [
@@ -452,6 +479,23 @@ class HUBDevice:
         afe.enqueue_u32_for_channel(
             AFECommand.setChannel_period_ms_byMask, 0xFF, ms, **commandKwargs)
 
+    def default_setCanMsgBurstDelay_ms(self, afe_id=35, ms=10):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        afe.logger.log(VerbosityLevel["INFO"],
+                       {
+                           "device_id": afe.device_id,
+                           "timestamp_ms": millis(),
+                           "info": "default_setCanMsgBurstDelay_ms"
+        })
+        commandKwargs = {"timeout_ms": 10220,
+                         "preserve": True,
+                         "timeout_start_on_send_ms": 2000,
+                         "error_callback": self.callback_afe_error}
+        afe.enqueue_u32_for_channel(
+            AFECommand.setCanMsgBurstDelay_ms, 0x00, ms, **commandKwargs)
+
     def default_accept(self, afe_id=35):
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
@@ -461,16 +505,16 @@ class HUBDevice:
                          "timeout_start_on_send_ms": 2000,
                          "error_callback": self.callback_afe_error,
                          "callback": afe.callback_is_configured}
-        r = afe.enqueue_command(AFECommand.startADC, [0xFF, 0xFF], **commandKwargs)
-        print(r)
+        afe.enqueue_command(AFECommand.getTimestamp, None, **commandKwargs)
 
     def default_full(self, afe_id=35):
         self.powerOn()
+        self.default_setCanMsgBurstDelay_ms(afe_id,100)
         self.default_procedure(afe_id)
         self.default_set_dac(afe_id)
         self.default_start_temperature_loop(afe_id)
-        self.default_get_measurement(afe_id)
         self.default_accept(afe_id)
+        # self.default_get_measurement(afe_id)
         # self.default_periodic_measurement_download_all(afe_id)
 
     def reset(self, afe_id=35):
@@ -556,9 +600,16 @@ class HUBDevice:
         if afe is None:
             return
         callib = self.get_configuration_from_files(afe_id)
-        p.print("### DEFAULT PROCEDURE ###")
-        p.print(str(callib).replace("'", '"'))
-        p.print("#########################")
+        # p.print("### DEFAULT PROCEDURE ###")
+        # p.print(str(callib).replace("'", '"'))
+        # p.print("#########################")
+        afe.logger.log(VerbosityLevel["INFO"],
+                       {
+                           "device_id": afe.device_id,
+                           "timestamp_ms": millis(),
+                           "info": "callibration",
+                           "msg": callib
+        })
         afe.callback_1 = self.callback_1
         afe.begin_configuration()
         # timeoutForCommand_ms = 10000
@@ -628,8 +679,12 @@ class HUBDevice:
                     else:
                         continue
                     for uch in afe.unmask_channel(ch_id):
-                        self.logger.log(VerbosityLevel["INFO"], "AFE {} {} Loading {} (CH{} ? {}) value {}".format(
-                            afe_id, g, k, uch, e_ADC_CHANNEL[uch], v))
+                        self.logger.log(VerbosityLevel["DEBUG"], {
+                                        "device_id": afe.device_id,
+                                        "timestamp_ms": millis(),
+                                        "debug": "AFE {} {} Loading {} (CH{} ? {}) value {}".format(
+                                            afe_id, g, k, uch, e_ADC_CHANNEL[uch], v)
+                                        })
 
         else:
             afe.enqueue_u16_for_channel(AFECommand.setAD8402Value_byte_byMask,
@@ -648,7 +703,8 @@ class HUBDevice:
             AFECommand.setChannel_multiplicator_byMask, 0xFF, 1.0, **commandKwargs)
         afe.enqueue_float_for_channel(
             AFECommand.setAveragingAlpha_byMask, 0xFF, 1.0/(1000*100.0), **commandKwargs)
-
+        afe.enqueue_command(AFECommand.startADC, [
+                                0xFF, 0xFF], **commandKwargs)
     def parse(self, msg):
         p.print("Parsed: {}".format(msg))
 
@@ -667,7 +723,7 @@ class HUBDevice:
         p.print("Send back: {}".format(json.dumps(toSend)))
 
     def main_process(self, timer=None):
-        micropython.schedule(self._dequeue_message_copy,0)
+        micropython.schedule(self._dequeue_message_copy, 0)
         if not self.use_rxcallback:
             self.handle_can_rx_polling()
         self.discover_devices()
@@ -680,8 +736,9 @@ class HUBDevice:
                 if self.use_automatic_restart:
                     # TODO Update this
                     if not afe.is_configured:
-                        if not afe.is_fired:
-                            afe.is_fired = True
+                        if not afe.is_configuration_started:
+                            afe.is_configuration_started = True
+                            afe.begin_configuration()
                             self.default_full(afe_id=afe.device_id)
                             self.default_periodic_measurement_download_all(
                                 afe_id=afe.device_id, ms=10000)
@@ -691,6 +748,8 @@ class HUBDevice:
             if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
                 self.curent_function = None
                 self.curent_function_retval = "timeout"
+        if self.logger_sync_active:
+            self.logger.sync_process()
         # except Exception as e:
         #     p.print("main_process: HUB Error: {}".format(e))
 
