@@ -344,6 +344,9 @@ class JSONLogger:
                     p.print(line.strip())  # Print each line
         except OSError:
             p.print("Error: Cannot read JSON log file.")
+    
+    
+    
 
 cmndavrg = AFECommandAverage()
 AFE_Config = [

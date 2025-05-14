@@ -52,6 +52,11 @@ class HUBDevice:
         self.rx_buffer = bytearray(8)  # Pre-allocate memory
         # Use memoryview to reduce heap allocations
         self.rx_message = [0, 0, 0, memoryview(self.rx_buffer)]
+        self.rx_message_buffer_max_len = 32
+        self.rx_message_buffer_head = 0
+        self.rx_message_buffer_tail = 0
+        self.rx_message_buffer = [
+            [0, 0, 0, memoryview(self.rx_buffer)] for x in range(self.rx_message_buffer_max_len)]
         while self.handle_can_rx_polling():
             pass
         self.use_rxcallback = use_rxcallback
@@ -139,32 +144,66 @@ class HUBDevice:
         self.message_queue.append(msg_copy)
 
     def _dequeue_message_copy(self, _):
-        while len(self.message_queue) > self.message_queue_max:
-            self.message_queue.pop(0)
-        if len(self.message_queue):
-            self.msg_to_process = self.message_queue.pop(0)
+        # while len(self.message_queue) > self.message_queue_max:
+        #     self.message_queue.pop(0)
+        # if len(self.message_queue):
+        #     self.msg_to_process = self.message_queue.pop(0)
+        self.msg_to_process = self._get()
 
     def _message_queue_len(self):
         return len(self.message_queue)
 
+    def _get(self):
+        if self.rx_message_buffer_head == self.rx_message_buffer_tail:
+            return None
+        tmp = self.rx_message_buffer[self.rx_message_buffer_tail]
+        self.rx_message_buffer_tail += 1
+        if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
+            self.rx_message_buffer_tail = 0
+        return tmp
+    def _inc(self):
+        self.rx_message_buffer_head += 1
+        if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
+            self.rx_message_buffer_head = 0
+        if self.rx_message_buffer_head == self.rx_message_buffer_tail:
+            self.rx_message_buffer_tail += 1
+            if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
+                self.rx_message_buffer_tail = 0
+    def _add(self,msg):
+        self.rx_message_buffer[self.rx_message_buffer_head] = msg
+        self.rx_message_buffer_head += 1
+        if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
+            self.rx_message_buffer_head = 0
+        if self.rx_message_buffer_head == self.rx_message_buffer_tail:
+            self.rx_message_buffer_tail += 1
+            if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
+                self.rx_message_buffer_tail = 0
+
     def handle_can_rx(self, bus: pyb.CAN, reason=None):
         """ Callback function to handle received CAN messages. """
-        try:
-            #     if bus.any(0):
-            # rx_message = [0, 0, 0, memoryview(self.rx_buffer)]
-            # bus.recv(0, self.rx_message, timeout=self.rx_timeout_ms)
-            bus.recv(0, self.rx_message, timeout=self.rx_timeout_ms)
-            # if self.rx_message[0]:
+        # try:
+        #     if bus.any(0):
+        # rx_message = [0, 0, 0, memoryview(self.rx_buffer)]
+        # bus.recv(0, self.rx_message, timeout=self.rx_timeout_ms)
+        # bus.recv(0, self.rx_message, timeout=self.rx_timeout_ms)
+        # if bus.any(0):
+        # m = bytearray(8)
+        # tmp = [0, 0, 0, bytearray(8)]
+        bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
+        self._inc()
+        # print(tmp)
+        # tmp = self.rx_message[:]
+        # if self.rx_message[0]:
 
-            # print(list(bytes(self.rx_message[3])))
-            # self.message_queue.append(self.rx_message[:])  # Copy to avoid mutation
-            # Copy to avoid mutation
-            self.message_queue.append(self.rx_message)
+        # print(list(bytes(self.rx_message[3])))
+        # self.message_queue.append(self.rx_message[:])  # Copy to avoid mutation
+        # Copy to avoid mutation
+        # self.message_queue.append(tmp)
         # micropython.schedule(self._queue_message_copy, self.rx_message[:])
-        except Exception as e:
-            # Optionally log or handle error
-            print("CAN RX error:", e, self.rx_message)
-        #     bus.restart()
+        # except Exception as e:
+        #     # Optionally log or handle error
+        #     print("CAN RX error:", e, self.rx_message)
+        # #     bus.restart()
 
     def handle_can_rx_polling(self):
         if self.can_bus.any(0):

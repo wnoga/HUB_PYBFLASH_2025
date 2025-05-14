@@ -820,7 +820,7 @@ class AFEDevice:
                             # p.print(self.executing)
                         self.executing = None
                 if self.save_periodic_data is True:
-                    if self.periodic_data.get("timestamp_ms"):
+                    if "timestamp_ms" in self.periodic_data:
                         toLog = {
                             "device_id": self.device_id,
                             "timestamp_ms": millis(),
@@ -828,7 +828,10 @@ class AFEDevice:
                             "retval": self.trim_dict_for_logger(self.periodic_data),
                         }
                         self.periodic_data = {}
-                        self.logger.log(VerbosityLevel["MEASUREMENT"], toLog)
+                        try:
+                            self.logger.log(VerbosityLevel["MEASUREMENT"], toLog)
+                        except Exception as e:
+                            print("ERROR during save_periodic_data:",e)
                 for subdev in [0, 1]:
                     if self.debug_machine_control_msg[subdev].get("timestamp_ms"):
                         toLog = {
