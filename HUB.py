@@ -813,10 +813,13 @@ class HUBDevice:
                         if not afe.is_configuration_started:
                             # afe.begin_configuration()
                             self.default_full(afe_id=afe.device_id)
-                            self.default_periodic_measurement_download_all(
-                                afe_id=afe.device_id, ms=1000)
                             p.print("AFE {} was restarted".format(
                                 afe.device_id))
+                        if afe.is_configured and afe.periodic_measurement_download_is_enabled is False:
+                            afe.periodic_measurement_download_is_enabled = True
+                            self.default_periodic_measurement_download_all(
+                                afe_id=afe.device_id, ms=1000)
+                            
         if self.curent_function is not None:  # check if function is running
             if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
                 self.curent_function = None
