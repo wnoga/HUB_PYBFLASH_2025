@@ -130,7 +130,7 @@ class HUBDevice:
             pass
         self.logger.sync()
         # self.logger.close()
-        self.logger.req
+        self.logger.request_new_file()
         self.use_automatic_restart = False
         for afe in self.afe_devices:
             afe.restart_device()

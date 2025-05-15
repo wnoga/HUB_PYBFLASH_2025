@@ -397,11 +397,11 @@ class JSONLogger:
         self._requestNewFile = True
         
     def machine(self):
-        self.process_log(0)
-        self.sync_process()
         if self._requestNewFile == True:
             self._requestNewFile = False
             self.new_file()
+        self.process_log(0)
+        self.sync_process()
     
     
 
