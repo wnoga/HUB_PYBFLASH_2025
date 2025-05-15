@@ -13,14 +13,6 @@ from my_utilities import channel_name_xxx, e_ADC_CHANNEL
 from my_utilities import wdt
 from my_utilities import p
 from my_utilities import VerbosityLevel
-# from my_utilities import lock
-
-# logger = EmptyLogger()
-# logger = JSONLogger()
-# logger.log(VerbosityLevel["INFO"],{"test":"test"})
-
-# afe = AFEDevice() # only for autocomplete
-
 
 class HUBDevice:
     """
@@ -44,7 +36,6 @@ class HUBDevice:
         self.use_automatic_restart = use_automatic_restart
 
         self.rx_timeout_ms = 1000
-        self.t = None
         self.run = True
 
         self.logger = logger
@@ -126,11 +117,8 @@ class HUBDevice:
         self.logger.log(VerbosityLevel["INFO"], {
             "device_id":0,
                         "info": "CLOSE ALL", "timestamp_ms": millis()})
-        while self.logger.process_log(0):
-            pass
-        self.logger.sync()
-        # self.logger.close()
         self.logger.request_new_file()
+        self.logger.machine()
         self.use_automatic_restart = False
         for afe in self.afe_devices:
             afe.restart_device()
@@ -147,10 +135,6 @@ class HUBDevice:
         self.message_queue.append(msg_copy)
 
     def _dequeue_message_copy(self, _):
-        # while len(self.message_queue) > self.message_queue_max:
-        #     self.message_queue.pop(0)
-        # if len(self.message_queue):
-        #     self.msg_to_process = self.message_queue.pop(0)
         self.msg_to_process = self._get()
         return self.msg_to_process
 
@@ -165,6 +149,7 @@ class HUBDevice:
         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
             self.rx_message_buffer_tail = 0
         return tmp
+    
     def _inc(self):
         self.rx_message_buffer_head += 1
         if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
@@ -173,21 +158,10 @@ class HUBDevice:
             self.rx_message_buffer_tail += 1
             if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
                 self.rx_message_buffer_tail = 0
-    # def _add(self,msg):
-    #     self.rx_message_buffer[self.rx_message_buffer_head] = msg
-    #     self.rx_message_buffer_head += 1
-    #     if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
-    #         self.rx_message_buffer_head = 0
-    #     if self.rx_message_buffer_head == self.rx_message_buffer_tail:
-    #         self.rx_message_buffer_tail += 1
-    #         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
-    #             self.rx_message_buffer_tail = 0
 
     def handle_can_rx(self, bus: pyb.CAN, reason=None):
         """ Callback function to handle received CAN messages. """
         bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
-        # print(self.rx_message_buffer[self.rx_message_buffer_head])
-        # self._inc()
         self.rx_message_buffer_head += 1
         if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
             self.rx_message_buffer_head = 0
@@ -228,16 +202,6 @@ class HUBDevice:
         # Check if message processing is active
         if not self.rx_process_active:
             return  # Exit early if message processing is not active
-        # if len(self.message_queue):  # Process only if anythong is in the queue
-        #     message = self.message_queue.pop(0)  # get from FIFO
-        # if self._message_queue_len() > 0:
-        #     try:
-        #         message = micropython.schedule(self._dequeue_message_copy)
-        #     except:
-        #         # print("xxxx")
-        #         return
-        # else:
-        #     return
         if self.msg_to_process is None:
             return
         message = self.msg_to_process.copy()
@@ -376,6 +340,10 @@ class HUBDevice:
                         callibration[g][k] = v  # set default value
         return callibration
 
+    def _get_subdevice_ch_id(self, g):
+        return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
+
+
     def default_get_measurement(self, afe_id=35, callback=None):
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
@@ -384,8 +352,6 @@ class HUBDevice:
                          "preserve": True, "timeout_start_on": 5000}
         if callback is not None:
             commandKwargs["callback"] = callback
-        # afe.enqueue_command(AFECommand.getSensorDataSi_average_byMask,[AFECommandChannel.AFECommandChannel_7], timeout_ms=2500)
-        # afe.enqueue_command(AFECommand.getSensorDataSi_average_byMask,[AFECommandChannel.AFECommandChannel_7 | AFECommandChannel.AFECommandChannel_6], timeout_ms=2500)
         afe.enqueue_command(AFECommand.getSensorDataSi_last_byMask, [
                             0xFF], **commandKwargs)
         afe.enqueue_command(AFECommand.getSensorDataSi_average_byMask, [
@@ -446,30 +412,13 @@ class HUBDevice:
         commandKwargs = {"timeout_ms": 10220,
                          "preserve": False, "timeout_start_on_send_ms": 2000}
 
-        def get_subdevice_ch_id(g):
-            return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
-        # p.print("Set DAC for {}".format(afe_id))
-        if True:
-            for g in ["M", "S"]:
-                afe.enqueue_u16_for_channel(AFECommand.setDACValueRaw_bySubdeviceMask, get_subdevice_ch_id(
-                    g), dac_master if g == 'M' else dac_slave, **commandKwargs)
-                afe.enqueue_command(AFECommand.setDAC_bySubdeviceMask, [
-                                    get_subdevice_ch_id(g), 1], **commandKwargs)
-                afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g ==
-                                     'M' else afe.AFEGPIO_EN_HV1, 1, **commandKwargs)
-                # afe.enqueue_gpio_set(afe.AFEGPIO_EN_CAL_IN0 if g ==
-                #                     'M' else afe.AFEGPIO_EN_CAL_IN1, 1,**commandKwargs)
-                # afe.enqueue_gpio_set(afe.AFEGPIO_blink, 1, **commandKwargs)
-                # afe.enqueue_gpio_set(afe.AFEGPIO_blink, 0, **commandKwargs)
-        else:
-            afe.enqueue_command(
-                AFECommand.setDAC_bySubdeviceMask_asMask, [3, 3])
-            afe.enqueue_command(
-                AFECommand.setDACValueRaw_bySubdeviceMask, dac_master)
-            afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0, 0)
-            afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV1, 0)
-            afe.enqueue_gpio_set(afe.AFEGPIO_blink, 1)
-            afe.enqueue_gpio_set(afe.AFEGPIO_blink, 0)
+        for g in ["M", "S"]:
+            afe.enqueue_u16_for_channel(AFECommand.setDACValueRaw_bySubdeviceMask, self._get_subdevice_ch_id(
+                g), dac_master if g == 'M' else dac_slave, **commandKwargs)
+            afe.enqueue_command(AFECommand.setDAC_bySubdeviceMask, [
+                                self._get_subdevice_ch_id(g), 1], **commandKwargs)
+            afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g ==
+                                    'M' else afe.AFEGPIO_EN_HV1, 1, **commandKwargs)
 
     def default_start_temperature_loop(self, afe_id=35):
         afe = self.get_afe_by_id(afe_id)
@@ -484,15 +433,10 @@ class HUBDevice:
         commandKwargs = {"timeout_ms": 10220,
                          "preserve": True, "timeout_start_on_send_ms": 2000}
 
-        def get_subdevice_ch_id(g):
-            return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
-        # p.print("Set DAC for {}".format(afe_id))
-        if True:
-            for g in ["M", "S"]:
-                afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus, [
-                                    get_subdevice_ch_id(g), 1], **commandKwargs)
-        else:
-            pass
+        for g in ["M", "S"]:
+            afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus, [
+                                self._get_subdevice_ch_id(g), 1], **commandKwargs)
+
 
     def default_manual_blocking_measurement_loop(self, afe_id=35):
         afe = self.get_afe_by_id(afe_id)
@@ -561,7 +505,6 @@ class HUBDevice:
                          "timeout_start_on_send_ms": 2000,
                          "error_callback": self.callback_afe_error,
                          "callback": afe.callback_is_configured}
-        # print("default_accept",afe_id)
         afe.enqueue_command(AFECommand.getTimestamp, None, **commandKwargs)
         
     def default_get_UID(self, afe_id=35):
@@ -581,15 +524,11 @@ class HUBDevice:
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        # afe.restart_device()
         afe.begin_configuration(timeout_ms=20000)
-        # self.default_get_UID(afe_id)
         self.default_procedure(afe_id)
         self.default_set_dac(afe_id)
         self.default_start_temperature_loop(afe_id)
         self.default_accept(afe_id)
-        # self.default_get_measurement(afe_id)
-        # self.default_periodic_measurement_download_all(afe_id)
 
     def reset(self, afe_id=35):
         for afe in self.afe_devices:
@@ -600,21 +539,18 @@ class HUBDevice:
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        # afe.enqueue_float_for_channel(0xF8,0,21.37)
         afe.enqueue_command(command)
 
     def test2(self, afe_id=35, command=0xF9):
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        # afe.enqueue_float_for_channel(0xF8,0,21.37)
         afe.enqueue_command(command, preserve=True)
 
     def test3(self, afe_id=35, command=0xF7, mask=0xFF):
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        # afe.enqueue_float_for_channel(0xF8,0,21.37)
         afe.enqueue_command(command, [mask], preserve=True)
 
     def test4(self, afe_id=35):
@@ -640,9 +576,6 @@ class HUBDevice:
         p.print("callback_afe_error: {}".format(kwargs))
         afe: AFEDevice = kwargs["afe"]
         afe.restart_device()
-        afe.is_any_error = True
-        # self.afe_devices.remove(afe)
-        # print(kwargs)
 
     def default_procedure(self, afe_id=35):
         """
@@ -658,9 +591,6 @@ class HUBDevice:
                 Defaults to 35.
         """
 
-        def get_subdevice_ch_id(g):
-            return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
-
         def get_T_measured_ch_id(g):
             return AFECommandChannel.AFECommandChannel_7 if g == 'M' else AFECommandChannel.AFECommandChannel_6
 
@@ -674,9 +604,6 @@ class HUBDevice:
         if afe is None:
             return
         callib = self.get_configuration_from_files(afe_id)
-        # p.print("### DEFAULT PROCEDURE ###")
-        # p.print(str(callib).replace("'", '"'))
-        # p.print("#########################")
         afe.logger.log(VerbosityLevel["INFO"],
                        {
                            "device_id": afe.device_id,
@@ -685,87 +612,70 @@ class HUBDevice:
                            "msg": callib
         })
         afe.callback_1 = self.callback_1
-        # timeoutForCommand_ms = 10000
         commandKwargs = {"timeout_ms": 10220,
                          "preserve": False,
                          "timeout_start_on_send_ms": 1000,
                          "callback_error": self.callback_afe_error}
-        # afe.enqueue_float_for_channel(AFECommand.setAveragingAlpha_byMask,AFECommandChannel.AFECommandChannel_7,1.0/100.0,timeout_ms=4135)
-        # afe.enqueue_command(AFECommand.setAveragingMode_byMask,[channels.AFECommandChannel_6,averages.STANDARD],timeout_ms=5000)
-        # afe.enqueue_command(AFECommand.getVersion,callback=self.callback_1)
-        # afe.enqueue_command(AFECommand.getVersion,preserve=True)
-        # afe.enqueue_command(AFECommand.setAveragingMode_byMask,[0x01,1],**commandKwargs)
-        # return
-        # r = None
-        if True:
-            for g in ["M", "S"]:
-                # subdevice = AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
-                # ch_id = channels.AFECommandChannel_6 if g=='M' else channels.AFECommandChannel_7 # select proper channel id
-                ch_id = None
-                for k, v in callib[g].items():
-                    ch_id = 0x00
-                    ks = k.split(" ")[0]
-                    if ks == "T_measured_a":
-                        ch_id = get_T_measured_ch_id(g)
-                        afe.enqueue_float_for_channel(
-                            AFECommand.setChannel_a_byMask, ch_id, v, **commandKwargs)
-                    elif ks == "T_measured_b":
-                        ch_id = get_T_measured_ch_id(g)
-                        afe.enqueue_float_for_channel(
-                            AFECommand.setChannel_b_byMask, ch_id, v, **commandKwargs)
-                    elif ks == "offset":
-                        ch_id = get_subdevice_ch_id(g)
-                        afe.enqueue_u16_for_channel(
-                            AFECommand.setAD8402Value_byte_byMask, ch_id, int(v), **commandKwargs)
-                    elif ks == "U_measured_a":
-                        ch_id = get_U_measured_ch_id(g)
-                        afe.enqueue_float_for_channel(
-                            AFECommand.setChannel_a_byMask, ch_id, v, **commandKwargs)
-                    elif ks == "U_measured_b":
-                        ch_id = get_U_measured_ch_id(g)
-                        afe.enqueue_float_for_channel(
-                            AFECommand.setChannel_b_byMask, ch_id, v, **commandKwargs)
-                    elif ks == "I_measured_a":
-                        ch_id = get_I_measured_ch_id(g)
-                        afe.enqueue_float_for_channel(
-                            AFECommand.setChannel_a_byMask, ch_id, v, **commandKwargs)
-                    elif ks == "I_measured_b":
-                        ch_id = get_I_measured_ch_id(g)
-                        afe.enqueue_float_for_channel(
-                            AFECommand.setChannel_b_byMask, ch_id, v, **commandKwargs)
-                    elif ks == "U_set_a":
-                        ch_id = get_subdevice_ch_id(g)
-                        afe.enqueue_float_for_channel(
-                            AFECommand.setRegulator_a_dac_byMask, ch_id, v, **commandKwargs)
-                    elif ks == "U_set_b":
-                        ch_id = get_subdevice_ch_id(g)
-                        afe.enqueue_float_for_channel(
-                            AFECommand.setRegulator_b_dac_byMask, ch_id, v, **commandKwargs)
-                    elif ks == "V_opt":
-                        ch_id = get_subdevice_ch_id(g)
-                        afe.enqueue_float_for_channel(
-                            AFECommand.setRegulator_V_opt_byMask, ch_id, v, **commandKwargs)
-                    elif ks == "dV/dT":
-                        ch_id = get_subdevice_ch_id(g)
-                        afe.enqueue_float_for_channel(
-                            AFECommand.setRegulator_dV_dT_byMask, ch_id, v, **commandKwargs)
-                    else:
-                        continue
-                    for uch in afe.unmask_channel(ch_id):
-                        self.logger.log(VerbosityLevel["DEBUG"], {
-                                        "device_id": afe.device_id,
-                                        "timestamp_ms": millis(),
-                                        "debug": "AFE {} {} Loading {} (CH{} ? {}) value {}".format(
-                                            afe_id, g, k, uch, e_ADC_CHANNEL[uch], v)
-                                        })
 
-        else:
-            afe.enqueue_u16_for_channel(AFECommand.setAD8402Value_byte_byMask,
-                                        AFECommandSubdevice.AFECommandSubdevice_master | AFECommandSubdevice.AFECommandSubdevice_slave, int(200))
-            afe.enqueue_float_for_channel(
-                AFECommand.setChannel_a_byMask, 0xFF, 1.0)
-            afe.enqueue_float_for_channel(
-                AFECommand.setChannel_b_byMask, 0xFF, 0.0)
+        for g in ["M", "S"]:
+            ch_id = None
+            for k, v in callib[g].items():
+                ch_id = 0x00
+                ks = k.split(" ")[0]
+                if ks == "T_measured_a":
+                    ch_id = get_T_measured_ch_id(g)
+                    afe.enqueue_float_for_channel(
+                        AFECommand.setChannel_a_byMask, ch_id, v, **commandKwargs)
+                elif ks == "T_measured_b":
+                    ch_id = get_T_measured_ch_id(g)
+                    afe.enqueue_float_for_channel(
+                        AFECommand.setChannel_b_byMask, ch_id, v, **commandKwargs)
+                elif ks == "offset":
+                    ch_id = self._get_subdevice_ch_id(g)
+                    afe.enqueue_u16_for_channel(
+                        AFECommand.setAD8402Value_byte_byMask, ch_id, int(v), **commandKwargs)
+                elif ks == "U_measured_a":
+                    ch_id = get_U_measured_ch_id(g)
+                    afe.enqueue_float_for_channel(
+                        AFECommand.setChannel_a_byMask, ch_id, v, **commandKwargs)
+                elif ks == "U_measured_b":
+                    ch_id = get_U_measured_ch_id(g)
+                    afe.enqueue_float_for_channel(
+                        AFECommand.setChannel_b_byMask, ch_id, v, **commandKwargs)
+                elif ks == "I_measured_a":
+                    ch_id = get_I_measured_ch_id(g)
+                    afe.enqueue_float_for_channel(
+                        AFECommand.setChannel_a_byMask, ch_id, v, **commandKwargs)
+                elif ks == "I_measured_b":
+                    ch_id = get_I_measured_ch_id(g)
+                    afe.enqueue_float_for_channel(
+                        AFECommand.setChannel_b_byMask, ch_id, v, **commandKwargs)
+                elif ks == "U_set_a":
+                    ch_id = self._get_subdevice_ch_id(g)
+                    afe.enqueue_float_for_channel(
+                        AFECommand.setRegulator_a_dac_byMask, ch_id, v, **commandKwargs)
+                elif ks == "U_set_b":
+                    ch_id = self._get_subdevice_ch_id(g)
+                    afe.enqueue_float_for_channel(
+                        AFECommand.setRegulator_b_dac_byMask, ch_id, v, **commandKwargs)
+                elif ks == "V_opt":
+                    ch_id = self._get_subdevice_ch_id(g)
+                    afe.enqueue_float_for_channel(
+                        AFECommand.setRegulator_V_opt_byMask, ch_id, v, **commandKwargs)
+                elif ks == "dV/dT":
+                    ch_id = self._get_subdevice_ch_id(g)
+                    afe.enqueue_float_for_channel(
+                        AFECommand.setRegulator_dV_dT_byMask, ch_id, v, **commandKwargs)
+                else:
+                    continue
+                for uch in afe.unmask_channel(ch_id):
+                    self.logger.log(VerbosityLevel["DEBUG"], {
+                                    "device_id": afe.device_id,
+                                    "timestamp_ms": millis(),
+                                    "debug": "AFE {} {} Loading {} (CH{} ? {}) value {}".format(
+                                        afe_id, g, k, uch, e_ADC_CHANNEL[uch], v)
+                                    })
+
         afe.enqueue_u32_for_channel(
             AFECommand.setChannel_dt_ms_byMask, 0xFF, 1000, **commandKwargs)
         afe.enqueue_u32_for_channel(
@@ -797,7 +707,6 @@ class HUBDevice:
 
     def main_process(self, timer=None):
         micropython.schedule(self._dequeue_message_copy, 0)
-        # self._dequeue_message_copy(0)
         if not self.use_rxcallback:
             self.handle_can_rx_polling()
         self.discover_devices()
@@ -805,13 +714,9 @@ class HUBDevice:
             self.process_received_messages()
         if self.afe_manage_active:
             for afe in self.afe_devices:
-                # if afe.is_online:
                 afe.manage_state()
                 if self.use_automatic_restart:
-                    # TODO Update this
-                    # if not afe.is_online:
                         if not afe.is_configuration_started:
-                            # afe.begin_configuration()
                             self.default_full(afe_id=afe.device_id)
                             p.print("AFE {} was restarted".format(
                                 afe.device_id))
@@ -824,40 +729,24 @@ class HUBDevice:
             if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
                 self.curent_function = None
                 self.curent_function_retval = "timeout"
-        # if self.logger_sync_active:
-        #     self.logger.sync_process()
-        # micropython.schedule(self.logger.process_log, 0)
         self.logger.machine()
-        # self.logger.process_log(0)
-        # self.logger.process_log()
-        # except Exception as e:
-        #     p.print("main_process: HUB Error: {}".format(e))
 
     def main_loop(self):
         while self.run:
-            # try:
             self.main_process()
-            # except Exception as e:
-            #     print("ERROR in main_loop:",e)
-            # time.sleep_us(10)
 
 
 def initialize_can_hub(can_bus:pyb.CAN, logger,use_rxcallback=True, **kwargs):
     """ Initialize the CAN bus and HUB. """
-    # can_bus = pyb.CAN(1)
     can_bus.init(pyb.CAN.NORMAL, extframe=False, prescaler=54,
                  sjw=1, bs1=7, bs2=2, auto_restart=True)
     # can_bus.setfilter(0, can_bus.MASK32, 0, (0, 0))
     can_bus.setfilter(0, can_bus.MASK16, 0, (0, 0, 0, 0))
 
-    # p.print(str(callib_data[0]).replace("'",'"'))
-    # return
     p.print("CAN Bus Initialized")
-    # logger.verbosity_level = "DEBUG"
     logger.verbosity_level = VerbosityLevel["INFO"]
     logger.print_verbosity_level = VerbosityLevel["CRITICAL"]
     hub = HUBDevice(can_bus, logger=logger,
                     use_rxcallback=use_rxcallback, **kwargs)
-    # hub.t = _thread.start_new_thread(hub.main_loop,())
 
     return can_bus, hub

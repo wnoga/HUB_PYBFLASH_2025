@@ -307,10 +307,7 @@ class JSONLogger:
         self.burst_timestamp_ms = millis()
         if self.file is None:
             self.new_file()
-        # if self._should_log(level):
-        # print(message)
         log_timestamp = millis()
-        # try:
         log_entry = {"timestamp": log_timestamp, "level": level, "message": message}
         try:
             toLog = json.dumps(log_entry)
@@ -324,20 +321,16 @@ class JSONLogger:
             except:
                 pass
             return
-        
-        # self.file.flush()  # Ensure data is written immediately
+
         if level >= self.print_verbosity_level:
             p.print("LOG:",toLog)
-        # except Exception as e:
-        #     # p.print("ERROR log: {}  @ {} -> {}".format(e,log_timestamp,message))
-        #     p.print("ERROR LOG",e,log_entry)
+
     def process_log(self, _):
         if self.file is None:
             return False
         if len(self.buffer) == 0:
             return None
         toLog = self.buffer[0].copy()
-        # print(toLog)
         self.buffer.pop(0)
         self._log(toLog[0],toLog[1])
         return True
@@ -345,9 +338,6 @@ class JSONLogger:
     def log(self, level: int, message):
         if self._should_log(level):
             self.buffer.append([level,message])
-        # print("TRY LOG",message)
-        # self._log(level,message)
-        # self.process_log(None)
         
     def sync(self):
         if self.file is not None:
@@ -399,6 +389,9 @@ class JSONLogger:
     def machine(self):
         if self._requestNewFile == True:
             self._requestNewFile = False
+            while self.process_log(0):
+                pass
+            self.sync()
             self.new_file()
         self.process_log(0)
         self.sync_process()
