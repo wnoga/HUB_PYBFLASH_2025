@@ -124,6 +124,7 @@ class AFEDevice:
         self.afe_config = None
         # self.is_fired = False
         # self.is_any_error = False
+        self.afe_first_configured = None
 
         self.use_afe_can_watchdog = True
         self.afe_can_watchdog_timestamp_ms = 0
@@ -153,6 +154,10 @@ class AFEDevice:
         self.is_configured = success
 
     def callback_is_configured(self, kwargs=None):
+        self.afe_first_configured = {
+            "AFE_timestamp_ms": self.last_sync_afe_timestamp_ms,
+            "HUB_timestamp_ms": millis()
+        }
         self.end_configuration(success=True)
         self.logger.log(
             VerbosityLevel["INFO"], {
@@ -162,6 +167,7 @@ class AFEDevice:
 
     def init_after_restart(self):
         # self.is_fired = False
+        # self.is_online = False
         self.afe_config = None
         for c in AFE_Config:
             if c["afe_id"] == self.device_id:
@@ -579,11 +585,11 @@ class AFEDevice:
                 timestamp_ms = millis()
                 self.last_sync_afe_timestamp_ms = self.bytes_to_u32(
                     chunk_payload[1:])
-                self.logger.log(VerbosityLevel["INFO"], {
-                    "device_id": self.device_id,
-                    "timestamp_ms": timestamp_ms,
-                    "info": "SYNC at {} on AFE {} at {}".format(timestamp_ms, self.device_id, self.last_sync_afe_timestamp_ms)
-                })
+                # self.logger.log(VerbosityLevel["INFO"], {
+                #     "device_id": self.device_id,
+                #     "timestamp_ms": timestamp_ms,
+                #     "info": "SYNC at {} on AFE {} at {}".format(timestamp_ms, self.device_id, self.last_sync_afe_timestamp_ms)
+                # })
                 pass
 
             elif command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
@@ -731,7 +737,7 @@ class AFEDevice:
             elif command == AFECommand.setAfe_can_watchdog_timeout_ms:
                 self.afe_can_watchdog_timeout_ms = self.bytes_to_u32(
                     chunk_payload[1:])
-                
+
             elif command == AFECommand.setAveraging_max_dt_ms_byMask:
                 pass
 

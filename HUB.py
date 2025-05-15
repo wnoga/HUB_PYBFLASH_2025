@@ -126,9 +126,11 @@ class HUBDevice:
         self.logger.log(VerbosityLevel["INFO"], {
             "device_id":0,
                         "info": "CLOSE ALL", "timestamp_ms": millis()})
+        while self.logger.process_log(0):
+            pass
         self.logger.sync()
         # self.logger.close()
-        self.logger.new_file()
+        self.logger.req
         self.use_automatic_restart = False
         for afe in self.afe_devices:
             afe.restart_device()
@@ -575,7 +577,7 @@ class HUBDevice:
     def default_full(self, afe_id=35):
         self.powerOn()
         self.default_setCanMsgBurstDelay_ms(afe_id,10)
-        self.default_setAfe_can_watchdog_timeout_ms(afe_id,1000)
+        self.default_setAfe_can_watchdog_timeout_ms(afe_id,10000)
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
@@ -807,7 +809,7 @@ class HUBDevice:
                 afe.manage_state()
                 if self.use_automatic_restart:
                     # TODO Update this
-                    if not afe.is_online:
+                    # if not afe.is_online:
                         if not afe.is_configuration_started:
                             # afe.begin_configuration()
                             self.default_full(afe_id=afe.device_id)
@@ -819,9 +821,10 @@ class HUBDevice:
             if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
                 self.curent_function = None
                 self.curent_function_retval = "timeout"
-        if self.logger_sync_active:
-            self.logger.sync_process()
-        micropython.schedule(self.logger.process_log, 0)
+        # if self.logger_sync_active:
+        #     self.logger.sync_process()
+        # micropython.schedule(self.logger.process_log, 0)
+        self.logger.machine()
         # self.logger.process_log(0)
         # self.logger.process_log()
         # except Exception as e:
@@ -829,10 +832,10 @@ class HUBDevice:
 
     def main_loop(self):
         while self.run:
-            try:
-                self.main_process()
-            except Exception as e:
-                print("ERROR in main_loop:",e)
+            # try:
+            self.main_process()
+            # except Exception as e:
+            #     print("ERROR in main_loop:",e)
             # time.sleep_us(10)
 
 

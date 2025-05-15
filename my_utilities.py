@@ -7,6 +7,7 @@ import os
 
 try:
     import _thread
+    import micropython
     # lock = _thread.allocate_lock()
 except:
     pass
@@ -260,6 +261,8 @@ class JSONLogger:
         self.buffer = []
         self.burst_delay_ms = 10
         self.burst_timestamp_ms = 0
+        self._requestNewFile = False
+        self.file_rows = 0
         self.new_file()
         
     def _ensure_directory(self):
@@ -312,10 +315,14 @@ class JSONLogger:
         try:
             toLog = json.dumps(log_entry)
             self.file.write(str(toLog) + "\n")  # Append log as a new line
+            self.file_rows += 1
         except Exception as e:
             print("ERROR in _log: {} -> {}".format(e,log_entry))
             self.new_file()
-            self._log(level, message)
+            try:
+                self._log(level, message)
+            except:
+                pass
             return
         
         # self.file.flush()  # Ensure data is written immediately
@@ -325,6 +332,8 @@ class JSONLogger:
         #     # p.print("ERROR log: {}  @ {} -> {}".format(e,log_timestamp,message))
         #     p.print("ERROR LOG",e,log_entry)
     def process_log(self, _):
+        if self.file is None:
+            return False
         if len(self.buffer) == 0:
             return None
         toLog = self.buffer[0].copy()
@@ -354,18 +363,6 @@ class JSONLogger:
         self.file.close()
         self.file = None
     
-    def read_logs(self, path=None):
-        # self.file.close()  # Close before reading
-        logs = []
-        try:
-            with open(path or self.filename, "r") as file:
-                for line in file:
-                    logs.append(json.loads(line))
-        except (OSError, ValueError):
-            pass
-        # self.file = open(self.filename, "a")  # Reopen file for appending
-        return logs
-    
     def clear_logs(self):
         self.file.close()
         os.unlink(self.filename)  # Remove JSON file
@@ -373,12 +370,38 @@ class JSONLogger:
         
     def print_lines(self, path=None):
         try:
+            if path is None:
+                self.sync()
             with open(path or self.filename, "r") as file:
                 for line in file:
                     p.print(line.strip())  # Print each line
         except OSError:
             p.print("Error: Cannot read JSON log file.")
     
+    def print_last_lines(self, N=10, path=None):
+        try:
+            if path is None:
+                self.sync()
+            with open(path or self.filename, "r") as file:
+                for _ in range(self.file_rows - N):
+                    file.readline()
+                while True:
+                    line = file.readline()
+                    if not line:
+                        break
+                    p.print(line.strip())
+        except OSError:
+            p.print("Error: Cannot read JSON log file.")
+    
+    def request_new_file(self):
+        self._requestNewFile = True
+        
+    def machine(self):
+        self.process_log(0)
+        self.sync_process()
+        if self._requestNewFile == True:
+            self._requestNewFile = False
+            self.new_file()
     
     
 
