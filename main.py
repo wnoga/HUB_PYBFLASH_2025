@@ -12,13 +12,17 @@ import _thread
 # import micropython
 # micropython.alloc_emergency_exception_buf(100)
 from my_utilities import p
-
+from my_utilities import JSONLogger
 
 from my_utilities import wdt
 # from my_utilities import lock
 import time
 
-pyb.delay(100)
+print("RESTART")
+
+logger = JSONLogger()
+can_bus = pyb.CAN(1)
+# pyb.delay(500)
 
 # from machine import WDT
 # wdt = WDT(timeout=2000)  # enable it with a timeout of 2s
@@ -64,7 +68,11 @@ if True:
     # from my_server import MyServer
     from my_simple_server import MySimpleServer
 
-    can, hub = initialize_can_hub(use_rxcallback=True,use_automatic_restart=True)
+    can, hub = initialize_can_hub(
+        can_bus=can_bus,
+        logger=logger,
+        use_rxcallback=True,
+        use_automatic_restart=True)
     hub.afe_devices_max = 1
 
     server = MySimpleServer(hub)
@@ -75,7 +83,9 @@ if True:
     hub.rx_process_active = True
     hub.use_tx_delay = True
     hub.afe_manage_active = True
-    hub.tx_delay_ms = 10000
+    hub.tx_delay_ms = 100
+    hub.afe_id_min = 35
+    hub.afe_id_max = 36
     # # h = _thread.start_new_thread(hub.main_loop,())
     # # Start threads
     try:

@@ -8,7 +8,7 @@ import _thread
 import micropython
 
 from AFE import AFEDevice, AFECommand, millis, SensorChannel, SensorReading
-from my_utilities import JSONLogger, EmptyLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, AFE_Config, read_callibration_csv
+from my_utilities import JSONLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, AFE_Config, read_callibration_csv
 from my_utilities import channel_name_xxx, e_ADC_CHANNEL
 from my_utilities import wdt
 from my_utilities import p
@@ -16,7 +16,7 @@ from my_utilities import VerbosityLevel
 # from my_utilities import lock
 
 # logger = EmptyLogger()
-logger = JSONLogger()
+# logger = JSONLogger()
 # logger.log(VerbosityLevel["INFO"],{"test":"test"})
 
 # afe = AFEDevice() # only for autocomplete
@@ -37,7 +37,7 @@ class HUBDevice:
         use_rxcallback (bool): Flag to enable or disable CAN RX callback.
     """
 
-    def __init__(self, can_bus, logger=EmptyLogger(), use_rxcallback=True, use_automatic_restart=False):
+    def __init__(self, can_bus: pyb.CAN, logger, use_rxcallback=True, use_automatic_restart=False):
         self.can_bus = can_bus
         self.afe_devices: list[AFEDevice] = []
         self.afe_devices_max = 8
@@ -55,8 +55,9 @@ class HUBDevice:
         self.rx_message_buffer_max_len = 32
         self.rx_message_buffer_head = 0
         self.rx_message_buffer_tail = 0
+        self.rx_buffer_arr = [bytearray(8) for x in range(self.rx_message_buffer_max_len)]  # Pre-allocate memory
         self.rx_message_buffer = [
-            [0, 0, 0, memoryview(self.rx_buffer)] for x in range(self.rx_message_buffer_max_len)]
+            [0, 0, 0, memoryview(self.rx_buffer_arr[x])] for x in range(self.rx_message_buffer_max_len)]
         while self.handle_can_rx_polling():
             pass
         self.use_rxcallback = use_rxcallback
@@ -71,7 +72,7 @@ class HUBDevice:
         self.afe_manage_active = False  # enable management of the AFEs
         self.rx_process_active = False
 
-        self.afe_id_min = 35
+        self.afe_id_min = 1
         self.afe_id_max = 255
         self.current_discovery_id = self.afe_id_min
 
@@ -149,6 +150,7 @@ class HUBDevice:
         # if len(self.message_queue):
         #     self.msg_to_process = self.message_queue.pop(0)
         self.msg_to_process = self._get()
+        return self.msg_to_process
 
     def _message_queue_len(self):
         return len(self.message_queue)
@@ -156,7 +158,7 @@ class HUBDevice:
     def _get(self):
         if self.rx_message_buffer_head == self.rx_message_buffer_tail:
             return None
-        tmp = self.rx_message_buffer[self.rx_message_buffer_tail]
+        tmp = self.rx_message_buffer[self.rx_message_buffer_tail].copy()
         self.rx_message_buffer_tail += 1
         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
             self.rx_message_buffer_tail = 0
@@ -169,8 +171,21 @@ class HUBDevice:
             self.rx_message_buffer_tail += 1
             if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
                 self.rx_message_buffer_tail = 0
-    def _add(self,msg):
-        self.rx_message_buffer[self.rx_message_buffer_head] = msg
+    # def _add(self,msg):
+    #     self.rx_message_buffer[self.rx_message_buffer_head] = msg
+    #     self.rx_message_buffer_head += 1
+    #     if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
+    #         self.rx_message_buffer_head = 0
+    #     if self.rx_message_buffer_head == self.rx_message_buffer_tail:
+    #         self.rx_message_buffer_tail += 1
+    #         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
+    #             self.rx_message_buffer_tail = 0
+
+    def handle_can_rx(self, bus: pyb.CAN, reason=None):
+        """ Callback function to handle received CAN messages. """
+        bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
+        # print(self.rx_message_buffer[self.rx_message_buffer_head])
+        # self._inc()
         self.rx_message_buffer_head += 1
         if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
             self.rx_message_buffer_head = 0
@@ -178,32 +193,6 @@ class HUBDevice:
             self.rx_message_buffer_tail += 1
             if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
                 self.rx_message_buffer_tail = 0
-
-    def handle_can_rx(self, bus: pyb.CAN, reason=None):
-        """ Callback function to handle received CAN messages. """
-        # try:
-        #     if bus.any(0):
-        # rx_message = [0, 0, 0, memoryview(self.rx_buffer)]
-        # bus.recv(0, self.rx_message, timeout=self.rx_timeout_ms)
-        # bus.recv(0, self.rx_message, timeout=self.rx_timeout_ms)
-        # if bus.any(0):
-        # m = bytearray(8)
-        # tmp = [0, 0, 0, bytearray(8)]
-        bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
-        self._inc()
-        # print(tmp)
-        # tmp = self.rx_message[:]
-        # if self.rx_message[0]:
-
-        # print(list(bytes(self.rx_message[3])))
-        # self.message_queue.append(self.rx_message[:])  # Copy to avoid mutation
-        # Copy to avoid mutation
-        # self.message_queue.append(tmp)
-        # micropython.schedule(self._queue_message_copy, self.rx_message[:])
-        # except Exception as e:
-        #     # Optionally log or handle error
-        #     print("CAN RX error:", e, self.rx_message)
-        # #     bus.restart()
 
     def handle_can_rx_polling(self):
         if self.can_bus.any(0):
@@ -249,7 +238,8 @@ class HUBDevice:
         #     return
         if self.msg_to_process is None:
             return
-        message = self.msg_to_process[:]
+        message = self.msg_to_process.copy()
+        # print(message)
         self.msg_to_process = None
         # try:
         if message is None:
@@ -259,6 +249,12 @@ class HUBDevice:
         if afe is None:  # Add new discovered AFE
             # Create a new AFE device instance with the discovered ID
             afe = AFEDevice(self.can_bus, afe_id, logger=self.logger)
+            self.logger.log(VerbosityLevel["INFO"],
+                            {
+                                "device_id":0,
+                                "timestamp_ms":millis(),
+                                "info": "found new AFE {}".format(afe_id)
+                            })
             # Add the new AFE device to the list of known devices
             self.afe_devices.append(afe)
             if afe_id == 35:
@@ -270,11 +266,6 @@ class HUBDevice:
 
     def discover_devices(self, timer=None):
         """ Periodically discover AFEs on the CAN bus. """
-
-        # Check if there are any AFE devices
-        if not self.discovery_active:
-            return
-
         # Check if discovery is active
         if not self.discovery_active:
             return  # Exit early if discovery is not active
@@ -283,6 +274,7 @@ class HUBDevice:
         if len(self.afe_devices) == self.afe_devices_max:
             self.stop_discovery()
             return
+        
         if self.use_tx_delay:
             if (millis() - self.last_tx_time) < self.tx_delay_ms:
                 return
@@ -465,8 +457,8 @@ class HUBDevice:
                                      'M' else afe.AFEGPIO_EN_HV1, 1, **commandKwargs)
                 # afe.enqueue_gpio_set(afe.AFEGPIO_EN_CAL_IN0 if g ==
                 #                     'M' else afe.AFEGPIO_EN_CAL_IN1, 1,**commandKwargs)
-                afe.enqueue_gpio_set(afe.AFEGPIO_blink, 1, **commandKwargs)
-                afe.enqueue_gpio_set(afe.AFEGPIO_blink, 0, **commandKwargs)
+                # afe.enqueue_gpio_set(afe.AFEGPIO_blink, 1, **commandKwargs)
+                # afe.enqueue_gpio_set(afe.AFEGPIO_blink, 0, **commandKwargs)
         else:
             afe.enqueue_command(
                 AFECommand.setDAC_bySubdeviceMask_asMask, [3, 3])
@@ -513,6 +505,12 @@ class HUBDevice:
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
+        afe.logger.log(VerbosityLevel["INFO"],
+                       {
+                           "device_id": afe.device_id,
+                           "timestamp_ms": millis(),
+                           "info": "default_periodic_measurement_download_all"
+        })
         commandKwargs = {"timeout_ms": 10220,
                          "preserve": True, "timeout_start_on_send_ms": 2000}
         afe.enqueue_u32_for_channel(
@@ -534,6 +532,23 @@ class HUBDevice:
                          "error_callback": self.callback_afe_error}
         afe.enqueue_u32_for_channel(
             AFECommand.setCanMsgBurstDelay_ms, 0x00, ms, **commandKwargs)
+        
+    def default_setAfe_can_watchdog_timeout_ms(self, afe_id=35, ms=60000):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        afe.logger.log(VerbosityLevel["INFO"],
+                       {
+                           "device_id": afe.device_id,
+                           "timestamp_ms": millis(),
+                           "info": "default_setAfe_can_watchdog_timeout_ms"
+        })
+        commandKwargs = {"timeout_ms": 10220,
+                         "preserve": True,
+                         "timeout_start_on_send_ms": 2000,
+                         "error_callback": self.callback_afe_error}
+        afe.enqueue_u32_for_channel(
+            AFECommand.setAfe_can_watchdog_timeout_ms, 0x00, ms, **commandKwargs)
 
     def default_accept(self, afe_id=35):
         afe = self.get_afe_by_id(afe_id)
@@ -544,11 +559,29 @@ class HUBDevice:
                          "timeout_start_on_send_ms": 2000,
                          "error_callback": self.callback_afe_error,
                          "callback": afe.callback_is_configured}
+        # print("default_accept",afe_id)
         afe.enqueue_command(AFECommand.getTimestamp, None, **commandKwargs)
+        
+    def default_get_UID(self, afe_id=35):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        commandKwargs = {"timeout_ms": 10220,
+                         "preserve": True,
+                         "error_callback": self.callback_afe_error
+                        }
+        afe.enqueue_command(AFECommand.getSerialNumber, None, **commandKwargs)
 
     def default_full(self, afe_id=35):
         self.powerOn()
-        self.default_setCanMsgBurstDelay_ms(afe_id,100)
+        self.default_setCanMsgBurstDelay_ms(afe_id,10)
+        self.default_setAfe_can_watchdog_timeout_ms(afe_id,1000)
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        # afe.restart_device()
+        afe.begin_configuration(timeout_ms=20000)
+        # self.default_get_UID(afe_id)
         self.default_procedure(afe_id)
         self.default_set_dac(afe_id)
         self.default_start_temperature_loop(afe_id)
@@ -646,11 +679,10 @@ class HUBDevice:
                        {
                            "device_id": afe.device_id,
                            "timestamp_ms": millis(),
-                           "info": "callibration",
+                           "info": "default_procedure",
                            "msg": callib
         })
         afe.callback_1 = self.callback_1
-        afe.begin_configuration()
         # timeoutForCommand_ms = 10000
         commandKwargs = {"timeout_ms": 10220,
                          "preserve": False,
@@ -662,10 +694,10 @@ class HUBDevice:
         # afe.enqueue_command(AFECommand.getVersion,preserve=True)
         # afe.enqueue_command(AFECommand.setAveragingMode_byMask,[0x01,1],**commandKwargs)
         # return
-        r = None
+        # r = None
         if True:
             for g in ["M", "S"]:
-                subdevice = AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
+                # subdevice = AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
                 # ch_id = channels.AFECommandChannel_6 if g=='M' else channels.AFECommandChannel_7 # select proper channel id
                 ch_id = None
                 for k, v in callib[g].items():
@@ -673,15 +705,15 @@ class HUBDevice:
                     ks = k.split(" ")[0]
                     if ks == "T_measured_a":
                         ch_id = get_T_measured_ch_id(g)
-                        r = afe.enqueue_float_for_channel(
+                        afe.enqueue_float_for_channel(
                             AFECommand.setChannel_a_byMask, ch_id, v, **commandKwargs)
                     elif ks == "T_measured_b":
                         ch_id = get_T_measured_ch_id(g)
-                        r = afe.enqueue_float_for_channel(
+                        afe.enqueue_float_for_channel(
                             AFECommand.setChannel_b_byMask, ch_id, v, **commandKwargs)
                     elif ks == "offset":
                         ch_id = get_subdevice_ch_id(g)
-                        r = afe.enqueue_u16_for_channel(
+                        afe.enqueue_u16_for_channel(
                             AFECommand.setAD8402Value_byte_byMask, ch_id, int(v), **commandKwargs)
                     elif ks == "U_measured_a":
                         ch_id = get_U_measured_ch_id(g)
@@ -763,6 +795,7 @@ class HUBDevice:
 
     def main_process(self, timer=None):
         micropython.schedule(self._dequeue_message_copy, 0)
+        # self._dequeue_message_copy(0)
         if not self.use_rxcallback:
             self.handle_can_rx_polling()
         self.discover_devices()
@@ -770,17 +803,16 @@ class HUBDevice:
             self.process_received_messages()
         if self.afe_manage_active:
             for afe in self.afe_devices:
-                if afe.is_online:
-                    afe.manage_state()
+                # if afe.is_online:
+                afe.manage_state()
                 if self.use_automatic_restart:
                     # TODO Update this
-                    if not afe.is_configured:
+                    if not afe.is_online:
                         if not afe.is_configuration_started:
-                            afe.is_configuration_started = True
-                            afe.begin_configuration()
+                            # afe.begin_configuration()
                             self.default_full(afe_id=afe.device_id)
                             self.default_periodic_measurement_download_all(
-                                afe_id=afe.device_id, ms=10000)
+                                afe_id=afe.device_id, ms=1000)
                             p.print("AFE {} was restarted".format(
                                 afe.device_id))
         if self.curent_function is not None:  # check if function is running
@@ -789,18 +821,24 @@ class HUBDevice:
                 self.curent_function_retval = "timeout"
         if self.logger_sync_active:
             self.logger.sync_process()
+        micropython.schedule(self.logger.process_log, 0)
+        # self.logger.process_log(0)
+        # self.logger.process_log()
         # except Exception as e:
         #     p.print("main_process: HUB Error: {}".format(e))
 
     def main_loop(self):
         while self.run:
-            self.main_process()
-            time.sleep_us(10)
+            try:
+                self.main_process()
+            except Exception as e:
+                print("ERROR in main_loop:",e)
+            # time.sleep_us(10)
 
 
-def initialize_can_hub(use_rxcallback=True, **kwargs):
+def initialize_can_hub(can_bus:pyb.CAN, logger,use_rxcallback=True, **kwargs):
     """ Initialize the CAN bus and HUB. """
-    can_bus = pyb.CAN(1)
+    # can_bus = pyb.CAN(1)
     can_bus.init(pyb.CAN.NORMAL, extframe=False, prescaler=54,
                  sjw=1, bs1=7, bs2=2, auto_restart=True)
     # can_bus.setfilter(0, can_bus.MASK32, 0, (0, 0))
@@ -808,10 +846,10 @@ def initialize_can_hub(use_rxcallback=True, **kwargs):
 
     # p.print(str(callib_data[0]).replace("'",'"'))
     # return
-
     p.print("CAN Bus Initialized")
     # logger.verbosity_level = "DEBUG"
     logger.verbosity_level = VerbosityLevel["INFO"]
+    logger.print_verbosity_level = VerbosityLevel["CRITICAL"]
     hub = HUBDevice(can_bus, logger=logger,
                     use_rxcallback=use_rxcallback, **kwargs)
     # hub.t = _thread.start_new_thread(hub.main_loop,())
