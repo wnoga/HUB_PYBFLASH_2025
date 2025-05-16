@@ -791,7 +791,7 @@ class AFEDevice:
     # AFE state management
     def manage_state(self):
         if self.use_afe_can_watchdog:
-            if (millis() - self.afe_can_watchdog_timestamp_ms) > int(round(self.afe_can_watchdog_timeout_ms*0.75)):
+            if (millis() - self.afe_can_watchdog_timestamp_ms) > int(round(self.afe_can_watchdog_timeout_ms/10.0)):
                 self.afe_can_watchdog_timestamp_ms = millis()
                 commandKwargs = {"timeout_ms": 10220,
                                  "preserve": None,

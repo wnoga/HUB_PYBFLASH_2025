@@ -519,7 +519,7 @@ class HUBDevice:
 
     def default_full(self, afe_id=35):
         self.powerOn()
-        self.default_setCanMsgBurstDelay_ms(afe_id,10)
+        self.default_setCanMsgBurstDelay_ms(afe_id,100)
         self.default_setAfe_can_watchdog_timeout_ms(afe_id,10000)
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
@@ -614,7 +614,7 @@ class HUBDevice:
         afe.callback_1 = self.callback_1
         commandKwargs = {"timeout_ms": 10220,
                          "preserve": False,
-                         "timeout_start_on_send_ms": 1000,
+                         "timeout_start_on_send_ms": 3000,
                          "callback_error": self.callback_afe_error}
 
         for g in ["M", "S"]:
@@ -677,15 +677,15 @@ class HUBDevice:
                                     })
 
         afe.enqueue_u32_for_channel(
-            AFECommand.setChannel_dt_ms_byMask, 0xFF, 1000, **commandKwargs)
+            AFECommand.setChannel_dt_ms_byMask, 0xFF, 60*1000, **commandKwargs)
         afe.enqueue_u32_for_channel(
-            AFECommand.setAveraging_max_dt_ms_byMask, 0xFF, 100*200, **commandKwargs)
+            AFECommand.setAveraging_max_dt_ms_byMask, 0xFF, 1000*60*3, **commandKwargs)
         afe.enqueue_command(AFECommand.setAveragingMode_byMask, [
                             0xFF, AFECommandAverage.WEIGHTED_EXPONENTIAL], **commandKwargs)
         afe.enqueue_float_for_channel(
             AFECommand.setChannel_multiplicator_byMask, 0xFF, 1.0, **commandKwargs)
         afe.enqueue_float_for_channel(
-            AFECommand.setAveragingAlpha_byMask, 0xFF, 1.0/(1000*100.0), **commandKwargs)
+            AFECommand.setAveragingAlpha_byMask, 0xFF, 1.0/(10000*100.0), **commandKwargs)
         afe.enqueue_command(AFECommand.startADC, [
                                 0xFF, 0xFF], **commandKwargs)
     def parse(self, msg):
@@ -723,7 +723,7 @@ class HUBDevice:
                         if afe.is_configured and afe.periodic_measurement_download_is_enabled is False:
                             afe.periodic_measurement_download_is_enabled = True
                             self.default_periodic_measurement_download_all(
-                                afe_id=afe.device_id, ms=1000)
+                                afe_id=afe.device_id, ms=10000)
                             
         if self.curent_function is not None:  # check if function is running
             if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
@@ -734,6 +734,7 @@ class HUBDevice:
     def main_loop(self):
         while self.run:
             self.main_process()
+            time.sleep_us(1)
 
 
 def initialize_can_hub(can_bus:pyb.CAN, logger,use_rxcallback=True, **kwargs):

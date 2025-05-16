@@ -341,8 +341,11 @@ class JSONLogger:
         
     def sync(self):
         if self.file is not None:
-            self.file.flush()
-            self.last_sync = millis()
+            try:
+                self.file.flush()
+                self.last_sync = millis()
+            except:
+                pass
         
     def sync_process(self):
         if (millis() - self.last_sync) > self.sync_every_ms:
