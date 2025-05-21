@@ -69,6 +69,10 @@ class AFEDevice:
         self.use_afe_can_watchdog = True
         self.afe_can_watchdog_timestamp_ms = 0
         self.afe_can_watchdog_timeout_ms = 20*1000
+        
+        self.current_status_last_data = [{"timestamp_ms":None,"value":None} for x in range(self.total_channels)]
+        self.current_status_average_data = [{"timestamp_ms":None,"value":None} for x in range(self.total_channels)]
+      
 
         self.init_after_restart()
 

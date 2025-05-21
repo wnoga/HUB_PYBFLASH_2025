@@ -113,6 +113,11 @@ class AFECommandChannel:
     AFECommandChannel_5 = 0x20
     AFECommandChannel_6 = 0x40
     AFECommandChannel_7 = 0x80
+    
+class AFECommandChannelMask:
+    AFECommandChannel_master = AFECommandChannel.AFECommandChannel_0 | AFECommandChannel.AFECommandChannel_2 | AFECommandChannel.AFECommandChannel_4 | AFECommandChannel.AFECommandChannel_7
+    AFECommandChannel_slave = AFECommandChannel.AFECommandChannel_1 | AFECommandChannel.AFECommandChannel_3 | AFECommandChannel.AFECommandChannel_5 | AFECommandChannel.AFECommandChannel_6
+    
 
 class AFECommandSubdevice:
     AFECommandSubdevice_master = 0x1
@@ -199,6 +204,24 @@ class AFECommandGPIO:
 def millis():
     return pyb.millis()
 
+def extract_bracketed(text):
+    results = []
+    temp = ''
+    inside = False
+
+    for char in text:
+        if char == '[':
+            inside = True
+            temp = ''
+        elif char == ']':
+            if inside:
+                results.append(temp)
+                inside = False
+        elif inside:
+            temp += char
+
+    return results
+
 # Measurement structure
 class SensorReading:
     def __init__(self, timestamp_ms=0, value=0.0):
@@ -263,6 +286,8 @@ class JSONLogger:
         self.burst_timestamp_ms = 0
         self._requestNewFile = False
         self.file_rows = 0
+        self.cursor_position = 0
+        self.cursor_position_last = 0
         self.new_file()
         
     def _ensure_directory(self):
@@ -298,7 +323,13 @@ class JSONLogger:
             pass
         self._ensure_directory()
         self.filename = self._get_unique_filename("{}/{}".format(self.parent_dir, self.filename_org))
-        self.file = open(self.filename, "w")  # Keep JSON log file open for appending
+        try:
+            self.file = open(self.filename, "w")  # Keep JSON log file open for appending
+        except Exception as e:
+            print("ERROR new_file",e)
+        self.cursor_position = 0
+        self.cursor_position_last = 0
+        self.file_rows = 0
         p.print("New logger file", self.filename)
     
     def _log(self, level: int, message):
@@ -310,9 +341,11 @@ class JSONLogger:
         log_timestamp = millis()
         log_entry = {"timestamp": log_timestamp, "level": level, "message": message}
         try:
+            self.cursor_position_last = self.cursor_position
             toLog = json.dumps(log_entry)
             self.file.write(str(toLog) + "\n")  # Append log as a new line
             self.file_rows += 1
+            self.cursor_position = self.file.tell()
         except Exception as e:
             print("ERROR in _log: {} -> {}".format(e,log_entry))
             self.new_file()
@@ -370,6 +403,21 @@ class JSONLogger:
                     p.print(line.strip())  # Print each line
         except OSError:
             p.print("Error: Cannot read JSON log file.")
+    
+    def print_last_line(self, path=None):
+        try:
+            if path is None:
+                self.sync()
+            else:
+                self.print_last_lines(N=1, path=path) # use print_last_lines for external files
+                return 
+            with open(self.filename, "r") as file: # for internal file use cursor position
+                file.seek(self.cursor_position_last)
+                for line in file:
+                    p.print(line.strip())
+        except OSError:
+            p.print("Error: Cannot read JSON log file.")
+
     
     def print_last_lines(self, N=10, path=None):
         try:
@@ -429,7 +477,12 @@ def callibration_reader_csv(csv_file):
                 return value
             return float(value)
         except ValueError:
-            return value
+            try:
+                if value == '':
+                    return ''
+                return value
+            except:
+                return value
 
     with open(csv_file, mode='r', encoding='utf-8') as file:
         lines = file.readlines()
