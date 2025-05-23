@@ -12,6 +12,7 @@ from my_utilities import e_ADC_CHANNEL, CommandStatus, ResetReason
 from my_utilities import p
 from my_utilities import VerbosityLevel
 
+
 class AFEDevice:
     def __init__(self, can_interface: pyb.CAN, device_id, logger, config_path=None):
         self.can_interface = can_interface
@@ -69,10 +70,11 @@ class AFEDevice:
         self.use_afe_can_watchdog = True
         self.afe_can_watchdog_timestamp_ms = 0
         self.afe_can_watchdog_timeout_ms = 20*1000
-        
-        self.current_status_last_data = [{"timestamp_ms":None,"value":None} for x in range(self.total_channels)]
-        self.current_status_average_data = [{"timestamp_ms":None,"value":None} for x in range(self.total_channels)]
-      
+
+        self.current_status_last_data = [
+            {"timestamp_ms": None, "value": None} for x in range(self.total_channels)]
+        self.current_status_average_data = [
+            {"timestamp_ms": None, "value": None} for x in range(self.total_channels)]
 
         self.init_after_restart()
 
@@ -495,10 +497,13 @@ class AFEDevice:
                 pass
 
             elif command == AFECommand.getTimestamp:
-                timestamp_ms = millis()
-                self.last_sync_afe_timestamp_ms = self.bytes_to_u32(
+                HUB_timestamp_ms = millis()
+                AFE_timestamp_ms = self.bytes_to_u32(
                     chunk_payload[1:])
-                pass
+                self.last_sync_afe_timestamp_ms = AFE_timestamp_ms
+                parsed_data["AFE_timestamp_ms"] = AFE_timestamp_ms
+                parsed_data["HUB_timestamp_ms"] = HUB_timestamp_ms
+
 
             elif command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
                 pass
@@ -507,11 +512,11 @@ class AFEDevice:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
                 if not "last_data" in parsed_data:
                     parsed_data["last_data"] = {}
-                for uch in unmasked_channels:
-                    if uch == (1 << 8):
-                        parsed_data["last_data"].update(
-                            {"timestamp_ms".format(uch): self.bytes_to_u32(chunk_payload[1:])})
-                    else:
+                if chunk_id == max_chunks:
+                    parsed_data["last_data"].update(
+                        {"timestamp_ms".format(uch): self.bytes_to_u32(chunk_payload[1:])})
+                else:
+                    for uch in unmasked_channels:
                         parsed_data["last_data"].update(
                             {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
 
@@ -519,11 +524,11 @@ class AFEDevice:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
                 if not "average_data" in parsed_data:
                     parsed_data["average_data"] = {}
-                for uch in unmasked_channels:
-                    if uch == (1 << 8):
-                        parsed_data["average_data"].update(
-                            {"timestamp_ms".format(uch): self.bytes_to_u32(chunk_payload[1:])})
-                    else:
+                if chunk_id == max_chunks:
+                    parsed_data["average_data"].update(
+                        {"timestamp_ms".format(uch): self.bytes_to_u32(chunk_payload[1:])})
+                else:
+                    for uch in unmasked_channels:
                         parsed_data["average_data"].update(
                             {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
             elif command == AFECommand.setAD8402Value_byte_byMask:
@@ -588,30 +593,25 @@ class AFEDevice:
                         self.periodic_data["last_data"] = {}
                     if not "average_data" in self.periodic_data:
                         self.periodic_data["average_data"] = {}
-                    if chunk_id == 1:
+
+                    if chunk_id == 1:  # Last data: data
                         self.periodic_data = {}  # Clear periodic data if new chunk set arrived
                         self.periodic_data["last_data"] = {}
                         self.periodic_data["average_data"] = {}
                         self.periodic_data["timestamp_ms"] = millis()
-
-                    if chunk_id == 1:  # Last data: data
                         for uch in unmasked_channels:
                             self.periodic_data["last_data"].update(
                                 {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
-                    if chunk_id == 2:  # Last data: data timestamp
-                        for uch in unmasked_channels:
-                            if uch == (1 << 8):
-                                self.periodic_data["last_data"].update(
-                                    {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
-                    if chunk_id == 3:  # Average data: data
+                    elif chunk_id == 2:  # Last data: data timestamp
+                        self.periodic_data["last_data"].update(
+                            {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
+                    elif chunk_id == 3:  # Average data: data
                         for uch in unmasked_channels:
                             self.periodic_data["average_data"].update(
                                 {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
-                    if chunk_id == 4:  # Average data: calculation timestamp
-                        for uch in unmasked_channels:
-                            if uch == (1 << 8):
-                                self.periodic_data["average_data"].update(
-                                    {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
+                    elif chunk_id == 4:  # Average data: calculation timestamp
+                        self.periodic_data["average_data"].update(
+                            {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
 
                 except Exception as e:
                     p.print("Error getSensorDataSi_periodic: {}: ".format(e))
@@ -667,29 +667,29 @@ class AFEDevice:
                     value = self.bytes_to_u32(chunk_payload[1:])
                     self.debug_machine_control_msg[channel]["timestamp_ms"] = value
 
-            elif command == 0xF9:
-                unmasked_channels = self.unmask_channel(chunk_payload[0])
-                if not "test_data" in parsed_data:
-                    parsed_data["test_data"] = {}
-                for uch in unmasked_channels:
-                    if uch == (1 << 8):
-                        parsed_data["test_data"].update(
-                            {"timestamp_ms".format(uch): self.bytes_to_u32(chunk_payload[1:])})
-                    else:
-                        parsed_data["test_data"].update(
-                            {"CH{}".format(uch): self.bytes_to_float(chunk_payload[1:])})
+            # elif command == 0xF9:
+            #     unmasked_channels = self.unmask_channel(chunk_payload[0])
+            #     if not "test_data" in parsed_data:
+            #         parsed_data["test_data"] = {}
+            #     for uch in unmasked_channels:
+            #         if uch == (1 << 8):
+            #             parsed_data["test_data"].update(
+            #                 {"timestamp_ms".format(uch): self.bytes_to_u32(chunk_payload[1:])})
+            #         else:
+            #             parsed_data["test_data"].update(
+            #                 {"CH{}".format(uch): self.bytes_to_float(chunk_payload[1:])})
 
-            elif command == 0xF7:
-                unmasked_channels = self.unmask_channel(chunk_payload[0])
-                if not "test_data" in parsed_data:
-                    parsed_data["test_data"] = {}
-                for uch in unmasked_channels:
-                    if uch == (1 << 8):
-                        parsed_data["test_data"].update(
-                            {"timestamp_ms".format(uch): self.bytes_to_u32(chunk_payload[1:])})
-                    else:
-                        parsed_data["test_data"].update(
-                            {"CH{}".format(uch): self.bytes_to_float(chunk_payload[1:])})
+            # elif command == 0xF7:
+            #     unmasked_channels = self.unmask_channel(chunk_payload[0])
+            #     if not "test_data" in parsed_data:
+            #         parsed_data["test_data"] = {}
+            #     for uch in unmasked_channels:
+            #         if uch == (1 << 8):
+            #             parsed_data["test_data"].update(
+            #                 {"timestamp_ms".format(uch): self.bytes_to_u32(chunk_payload[1:])})
+            #         else:
+            #             parsed_data["test_data"].update(
+            #                 {"CH{}".format(uch): self.bytes_to_float(chunk_payload[1:])})
 
             else:
                 p.print("Unknow command: 0x{:02X}: {}".format(
@@ -727,11 +727,15 @@ class AFEDevice:
                                  "timestamp_ms": millis(),
                                  "info": self.trim_dict_for_logger(self.executing),
                                  "error": "callback error"})
-                            pass
                         if self.executing.get("preserve") == True:
+                            toLog = {
+                                "device_id": self.device_id,
+                                "timestamp_ms": millis(),
+                                "command": command,
+                                "retval": self.trim_dict_for_logger(parsed_data),
+                            }
                             self.logger.log(
-                                VerbosityLevel["MEASUREMENT"],
-                                self.trim_dict_for_logger(self.executing))
+                                VerbosityLevel["MEASUREMENT"], toLog)
                         self.executing = None
                     else:
                         pass
@@ -798,7 +802,7 @@ class AFEDevice:
             if (millis() - self.afe_can_watchdog_timestamp_ms) > int(round(self.afe_can_watchdog_timeout_ms/10.0)):
                 self.afe_can_watchdog_timestamp_ms = millis()
                 commandKwargs = {"timeout_ms": 10220,
-                                 "preserve": None,
+                                 "preserve": True,
                                  "timeout_start_on_send_ms": 2000,
                                  "error_callback": None,
                                  "callback": None}

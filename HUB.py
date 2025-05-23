@@ -176,10 +176,16 @@ class HUBDevice:
                 self.rx_message_buffer_tail = 0
 
     def handle_can_rx_polling(self):
-        if self.can_bus.any(0):
-            self.handle_can_rx(self.can_bus)
-            return True
+        try:
+            if self.can_bus.any(0):
+                self.handle_can_rx(self.can_bus)
+                return True
+        except Exception as e:
+            p.print("handle_can_rx_polling: {}".format(e))
         return None
+    
+    def handle_can_rx_polling_schedule(self, _):
+        self.handle_can_rx_polling()
 
     def get_afe_by_id(self, afe_id) -> AFEDevice:
         """
@@ -785,11 +791,8 @@ class HUBDevice:
 
     def main_process(self, timer=None):
         micropython.schedule(self._dequeue_message_copy, 0)
-        # if not self.use_rxcallback:
-        try:
-            self.handle_can_rx_polling()
-        except Exception as e:
-            p.print("main_process: handle_can_rx_polling: {}".format(e))
+        micropython.schedule(self.handle_can_rx_polling_schedule, 0)
+            
         self.discover_devices()
         if self.rx_process_active:
             self.process_received_messages()
@@ -804,7 +807,7 @@ class HUBDevice:
                     if afe.is_configured and afe.periodic_measurement_download_is_enabled is False:
                         afe.periodic_measurement_download_is_enabled = True
                         self.default_periodic_measurement_download_all(
-                            afe_id=afe.device_id, ms=1000)
+                            afe_id=afe.device_id, ms=2000)
 
         if self.curent_function is not None:  # check if function is running
             if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
