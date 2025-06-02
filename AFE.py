@@ -223,7 +223,8 @@ class AFEDevice:
     def prepare_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms=None,
                         preserve=False,
                         # startKeepOutput=False, outputRestart=False,
-                        can_timeout_ms=None, callback=None, callback_error=None, **kwargs):
+                        can_timeout_ms=None, callback=None, callback_error=None,
+                        print=False,**kwargs):
         """
         Prepares a command to be sent to the AFE device.
 
@@ -275,6 +276,7 @@ class AFEDevice:
             "preserve": preserve,
             "timeout_start_on_send_ms": None,  # if not None then timestamp_ms is restarted
             "retval": None,
+            "print": print,
             "callback": callback,
             "callback_error": callback_error
         }
@@ -504,6 +506,17 @@ class AFEDevice:
                 parsed_data["AFE_timestamp_ms"] = AFE_timestamp_ms
                 parsed_data["HUB_timestamp_ms"] = HUB_timestamp_ms
 
+            elif command == AFECommand.getSyncTimestamp:
+                if chunk_id == 1:
+                    HUB_timestamp_ms = millis()
+                    AFE_timestamp_ms = self.bytes_to_u32(
+                        chunk_payload[1:])
+                    self.last_sync_afe_timestamp_ms = AFE_timestamp_ms
+                    parsed_data["AFE_timestamp_ms"] = AFE_timestamp_ms
+                    parsed_data["HUB_timestamp_ms"] = HUB_timestamp_ms
+                elif chunk_id == 2:
+                    parsed_data["msg_recieved_by_AFE_timestamp_ms"] = self.bytes_to_u32(
+                        chunk_payload[1:])
 
             elif command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
                 pass
@@ -514,7 +527,7 @@ class AFEDevice:
                     parsed_data["last_data"] = {}
                 if chunk_id == max_chunks:
                     parsed_data["last_data"].update(
-                        {"timestamp_ms".format(uch): self.bytes_to_u32(chunk_payload[1:])})
+                        {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
                 else:
                     for uch in unmasked_channels:
                         parsed_data["last_data"].update(
@@ -526,7 +539,7 @@ class AFEDevice:
                     parsed_data["average_data"] = {}
                 if chunk_id == max_chunks:
                     parsed_data["average_data"].update(
-                        {"timestamp_ms".format(uch): self.bytes_to_u32(chunk_payload[1:])})
+                        {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
                 else:
                     for uch in unmasked_channels:
                         parsed_data["average_data"].update(
@@ -727,15 +740,29 @@ class AFEDevice:
                                  "timestamp_ms": millis(),
                                  "info": self.trim_dict_for_logger(self.executing),
                                  "error": "callback error"})
+                        toLog = None
+                        def f_toLog():
+                            return {
+                                "device_id": self.device_id,
+                                "timestamp_ms": millis(),
+                                "request_timestamp_ms": self.executing.get("timestamp_ms"),
+                                "command": command,
+                                "retval": self.trim_dict_for_logger(self.executing.get("retval")),
+                            }
                         if self.executing.get("preserve") == True:
                             toLog = {
                                 "device_id": self.device_id,
                                 "timestamp_ms": millis(),
+                                "request_timestamp_ms": self.executing.get("timestamp_ms"),
                                 "command": command,
-                                "retval": self.trim_dict_for_logger(parsed_data),
+                                "retval": self.trim_dict_for_logger(self.executing.get("retval")),
                             }
                             self.logger.log(
                                 VerbosityLevel["MEASUREMENT"], toLog)
+                        if self.executing.get("print") == True:
+                            if toLog is None:
+                                toLog = f_toLog()
+                            p.print(toLog)
                         self.executing = None
                     else:
                         pass

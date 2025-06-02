@@ -51,10 +51,12 @@ class wdt_x:
 
 
 try:
-    wdt = wdt_x()
-    # from machine import WDT
-    # wdt = WDT(timeout=10000)  # enable it with a timeout of 5s
-    # wdt.feed()
+    if True:
+        wdt = wdt_x()
+    else:
+        from machine import WDT
+        wdt = WDT(timeout=10000)  # enable it with a timeout of 5s
+        wdt.feed()
 
 except:
     pass
@@ -65,6 +67,7 @@ class AFECommand:
     resetAll = 0x3
     startADC = 0x4
     getTimestamp = 0x5
+    getSyncTimestamp = 0x6
     getSensorDataSi_last_byMask = 0x30
     getSensorDataSi_average_byMask = 0x31
     getSensorDataSiAndTimestamp_average_byMask = 0x3b
@@ -334,7 +337,7 @@ class JSONLogger:
     
     def _log(self, level: int, message):
         if (millis() - self.burst_timestamp_ms) < self.burst_delay_ms:
-            return
+            return 0 # Zero item saved
         self.burst_timestamp_ms = millis()
         if self.file is None:
             self.new_file()
@@ -350,22 +353,28 @@ class JSONLogger:
             print("ERROR in _log: {} -> {}".format(e,log_entry))
             self.new_file()
             try:
-                self._log(level, message)
+                retval = self._log(level, message)
+                if retval >= 0:
+                    return retval
+                else:
+                    return -1 # Error, skip this row
             except:
-                pass
-            return
-
+                return -1
+            return -1
         if level >= self.print_verbosity_level:
             p.print("LOG:",toLog)
+        return 1 # One item saved
 
     def process_log(self, _):
         if self.file is None:
             return False
         if len(self.buffer) == 0:
-            return None
+            return False
         toLog = self.buffer[0].copy()
-        self.buffer.pop(0)
-        self._log(toLog[0],toLog[1])
+        # print(toLog)
+        # retval = self._log(toLog[0],toLog[1])
+        if 0 != self._log(toLog[0],toLog[1]):
+            self.buffer.pop(0)
         return True
     
     def log(self, level: int, message):

@@ -14,7 +14,7 @@ import _thread
 from my_utilities import p
 from my_utilities import JSONLogger
 
-from my_utilities import wdt
+# from my_utilities import wdt
 # from my_utilities import lock
 import time
 
@@ -71,7 +71,7 @@ if True:
     can, hub = initialize_can_hub(
         can_bus=can_bus,
         logger=logger,
-        use_rxcallback=True,
+        use_rxcallback=False,
         use_automatic_restart=True)
     hub.afe_devices_max = 1
 

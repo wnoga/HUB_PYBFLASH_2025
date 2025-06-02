@@ -358,7 +358,8 @@ class HUBDevice:
         if afe is None:
             return
         commandKwargs = {"timeout_ms": 10220,
-                         "preserve": True, "timeout_start_on": 5000}
+                         "preserve": True, "timeout_start_on": 10000,
+                         "print": True}
         if callback is not None:
             commandKwargs["callback"] = callback
         afe.enqueue_command(AFECommand.getSensorDataSi_last_byMask, [
@@ -373,7 +374,7 @@ class HUBDevice:
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        commandKwargs = {"timeout_ms": 10220,
+        commandKwargs = {"timeout_ms": 10220, "print": True,
                          "preserve": True, "timeout_start_on": 5000}
         if callback is not None:
             commandKwargs["callback"] = callback
@@ -525,10 +526,22 @@ class HUBDevice:
                          }
         afe.enqueue_command(AFECommand.getSerialNumber, None, **commandKwargs)
 
+    def defualt_getSyncTimestamp(self, afe_id=35):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        commandKwargs = {"timeout_ms": 10220,
+                         "preserve": True,
+                         "print": True,
+                         "error_callback": self.callback_afe_error
+                         }
+        afe.enqueue_command(AFECommand.getSyncTimestamp, None, **commandKwargs)
+
+
     def default_full(self, afe_id=35):
         self.powerOn()
-        self.default_setCanMsgBurstDelay_ms(afe_id, 10)
-        self.default_setAfe_can_watchdog_timeout_ms(afe_id, 100000)
+        self.default_setCanMsgBurstDelay_ms(afe_id, 0)
+        self.default_setAfe_can_watchdog_timeout_ms(afe_id, 1000000)
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
@@ -537,6 +550,8 @@ class HUBDevice:
         self.default_set_dac(afe_id)
         self.default_start_temperature_loop(afe_id)
         self.default_accept(afe_id)
+        self.defualt_getSyncTimestamp(afe_id)
+
 
     def reset(self, afe_id=35):
         for afe in self.afe_devices:
@@ -807,7 +822,7 @@ class HUBDevice:
                     if afe.is_configured and afe.periodic_measurement_download_is_enabled is False:
                         afe.periodic_measurement_download_is_enabled = True
                         self.default_periodic_measurement_download_all(
-                            afe_id=afe.device_id, ms=2000)
+                            afe_id=afe.device_id, ms=5000)
 
         if self.curent_function is not None:  # check if function is running
             if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
@@ -818,7 +833,8 @@ class HUBDevice:
     def main_loop(self):
         while self.run:
             self.main_process()
-            time.sleep_us(1)
+            wdt.feed()
+            # time.sleep_us(1)
 
 
 def initialize_can_hub(can_bus: pyb.CAN, logger, use_rxcallback=True, **kwargs):
