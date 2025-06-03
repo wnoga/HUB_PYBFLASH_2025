@@ -71,7 +71,7 @@ if True:
     can, hub = initialize_can_hub(
         can_bus=can_bus,
         logger=logger,
-        use_rxcallback=False,
+        use_rxcallback=True,
         use_automatic_restart=True)
     hub.afe_devices_max = 1
 

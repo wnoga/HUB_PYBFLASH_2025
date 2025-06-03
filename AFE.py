@@ -6,7 +6,7 @@ import pyb
 import machine
 import micropython
 
-from my_utilities import AFECommand, AFECommandGPIO, AFECommandChannel, AFECommandSubdevice
+from my_utilities import AFECommand, AFECommandGPIO, AFECommandChannel, AFECommandSubdevice, JSONLogger
 from my_utilities import millis, SensorChannel, SensorReading, AFE_Config
 from my_utilities import e_ADC_CHANNEL, CommandStatus, ResetReason
 from my_utilities import p
@@ -14,12 +14,12 @@ from my_utilities import VerbosityLevel
 
 
 class AFEDevice:
-    def __init__(self, can_interface: pyb.CAN, device_id, logger, config_path=None):
+    def __init__(self, can_interface: pyb.CAN, device_id, logger: JSONLogger, config_path=None):
         self.can_interface = can_interface
         self.device_id = device_id  # Channel number
         self.unique_id = [0, 0, 0]  # 3*32-bit = 96-bit STM32 Unique ID
         self.unique_id_str = None
-        self.logger = logger
+        self.logger: JSONLogger = logger
         self.config_path = config_path  # Path to the config file
 
         self.last_sync_afe_timestamp_ms = None
@@ -276,7 +276,7 @@ class AFEDevice:
             "preserve": preserve,
             "timeout_start_on_send_ms": None,  # if not None then timestamp_ms is restarted
             "retval": None,
-            "print": print,
+            # "print": print,
             "callback": callback,
             "callback_error": callback_error
         }
@@ -759,10 +759,6 @@ class AFEDevice:
                             }
                             self.logger.log(
                                 VerbosityLevel["MEASUREMENT"], toLog)
-                        if self.executing.get("print") == True:
-                            if toLog is None:
-                                toLog = f_toLog()
-                            p.print(toLog)
                         self.executing = None
                     else:
                         pass

@@ -358,8 +358,7 @@ class HUBDevice:
         if afe is None:
             return
         commandKwargs = {"timeout_ms": 10220,
-                         "preserve": True, "timeout_start_on": 10000,
-                         "print": True}
+                         "preserve": True, "timeout_start_on": 10000}
         if callback is not None:
             commandKwargs["callback"] = callback
         afe.enqueue_command(AFECommand.getSensorDataSi_last_byMask, [
@@ -374,7 +373,7 @@ class HUBDevice:
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        commandKwargs = {"timeout_ms": 10220, "print": True,
+        commandKwargs = {"timeout_ms": 10220,
                          "preserve": True, "timeout_start_on": 5000}
         if callback is not None:
             commandKwargs["callback"] = callback
@@ -532,7 +531,6 @@ class HUBDevice:
             return
         commandKwargs = {"timeout_ms": 10220,
                          "preserve": True,
-                         "print": True,
                          "error_callback": self.callback_afe_error
                          }
         afe.enqueue_command(AFECommand.getSyncTimestamp, None, **commandKwargs)
@@ -540,7 +538,7 @@ class HUBDevice:
 
     def default_full(self, afe_id=35):
         self.powerOn()
-        self.default_setCanMsgBurstDelay_ms(afe_id, 0)
+        self.default_setCanMsgBurstDelay_ms(afe_id, 10)
         self.default_setAfe_can_watchdog_timeout_ms(afe_id, 1000000)
         afe = self.get_afe_by_id(afe_id)
         if afe is None:

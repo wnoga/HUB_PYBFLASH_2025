@@ -51,7 +51,7 @@ class wdt_x:
 
 
 try:
-    if True:
+    if False:
         wdt = wdt_x()
     else:
         from machine import WDT
@@ -370,11 +370,14 @@ class JSONLogger:
             return False
         if len(self.buffer) == 0:
             return False
-        toLog = self.buffer[0].copy()
+        toLog = self.buffer[0]
         # print(toLog)
         # retval = self._log(toLog[0],toLog[1])
         if 0 != self._log(toLog[0],toLog[1]):
-            self.buffer.pop(0)
+            try:
+                self.buffer.pop(0)
+            except:
+                pass # why?
         return True
     
     def log(self, level: int, message):
