@@ -239,6 +239,7 @@ class SensorChannel:
     def __init__(self, channel_id):
         self.channel_id = channel_id
         self.config = {}
+        self.name = e_ADC_CHANNEL[channel_id]
         # # Use .get() to avoid KeyError if a key is missing
         # self.time_interval_ms = kwargs.get("time_interval_ms", 0)
         # self.alpha = kwargs.get("alpha", 0)

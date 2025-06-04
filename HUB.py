@@ -124,23 +124,6 @@ class HUBDevice:
         self.use_rxcallback = use_rxcallback
         self.rxDeviceCAN = rxDeviceCAN
 
-        # self.rx_buffer = bytearray(8)  # Pre-allocate memory
-        # # Use memoryview to reduce heap allocations
-        # self.rx_message = [0, 0, 0, memoryview(self.rx_buffer)]
-        # self.rx_message_buffer_max_len = 32
-        # self.rx_message_buffer_head = 0
-        # self.rx_message_buffer_tail = 0
-        # self.rx_buffer_arr = [bytearray(8) for x in range(
-        #     self.rx_message_buffer_max_len)]  # Pre-allocate memory
-        # self.rx_message_buffer = [
-        #     [0, 0, 0, memoryview(self.rx_buffer_arr[x])] for x in range(self.rx_message_buffer_max_len)]
-        # while self.handle_can_rx_polling():
-        #     pass
-        # self.use_rxcallback = use_rxcallback
-        # if self.use_rxcallback:
-        #     # Trigger every new CAN message
-        #     self.can_bus.rxcallback(0, self.handle_can_rx)
-
         self.message_queue = []
         self.message_queue_max = 128
 
@@ -216,58 +199,12 @@ class HUBDevice:
         except Exception as e:
             p.print("Error clearing logs: {}".format(e))
 
-    # def _queue_message_copy(self, msg_copy):
-    #     self.message_queue.append(msg_copy)
-
     def _dequeue_message_copy(self, _):
         self.msg_to_process = self.rxDeviceCAN.get()
         return self.msg_to_process
 
     def _message_queue_len(self):
         return len(self.message_queue)
-
-    # def _get(self):
-    #     if self.rx_message_buffer_head == self.rx_message_buffer_tail:
-    #         return None
-    #     tmp = self.rx_message_buffer[self.rx_message_buffer_tail].copy()
-    #     self.rx_message_buffer_tail += 1
-    #     if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
-    #         self.rx_message_buffer_tail = 0
-    #     return tmp
-
-    # def _inc(self):
-    #     self.rx_message_buffer_head += 1
-    #     if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
-    #         self.rx_message_buffer_head = 0
-    #     if self.rx_message_buffer_head == self.rx_message_buffer_tail:
-    #         self.rx_message_buffer_tail += 1
-    #         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
-    #             self.rx_message_buffer_tail = 0
-
-    # def handle_can_rx(self, bus: pyb.CAN, reason=None):
-    #     """ Callback function to handle received CAN messages. """
-    #     bus.recv(
-    #         0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
-    #     self.rx_message_buffer_head += 1
-    #     if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
-    #         self.rx_message_buffer_head = 0
-    #     if self.rx_message_buffer_head == self.rx_message_buffer_tail:
-    #         self.rx_message_buffer_tail += 1
-    #         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
-    #             self.rx_message_buffer_tail = 0
-
-    # def handle_can_rx_polling(self):
-    #     try:
-    #         if self.can_bus.any(0):
-    #             # self.handle_can_rx(self.can_bus)
-    #             self.rxDeviceCAN.handle_can_rx(self.can_bus)
-    #             return True
-    #     except Exception as e:
-    #         p.print("handle_can_rx_polling: {}".format(e))
-    #     return None
-    
-    # def handle_can_rx_polling_schedule(self, _):
-    #     self.handle_can_rx_polling()
 
     def get_afe_by_id(self, afe_id) -> AFEDevice:
         """
@@ -316,7 +253,8 @@ class HUBDevice:
             })
             # Add the new AFE device to the list of known devices
             self.afe_devices.append(afe)
-            if afe_id == 35:
+            # if afe_id == 35:
+            if not self.afe0:
                 self.afe0 = afe
         # Process the received data using the AFE device's method
         afe.process_received_data(message)
