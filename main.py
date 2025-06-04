@@ -14,6 +14,7 @@ import _thread
 from my_utilities import p
 from my_utilities import JSONLogger
 
+
 # from my_utilities import wdt
 # from my_utilities import lock
 import time
@@ -59,6 +60,7 @@ if False:
 if True:
 
     from HUB import HUBDevice, initialize_can_hub
+    from HUB import RxDeviceCAN
     # can, hub = ci()
     # hub.start_discover(1)
     can = None
@@ -67,11 +69,11 @@ if True:
     # pyb.delay(500)
     # from my_server import MyServer
     from my_simple_server import MySimpleServer
-
-    can, hub = initialize_can_hub(
+    use_rxcallback = True
+    can, hub, rxDeviceCAN = initialize_can_hub(
         can_bus=can_bus,
         logger=logger,
-        use_rxcallback=False,
+        use_rxcallback=use_rxcallback,
         use_automatic_restart=True)
     hub.afe_devices_max = 2
 
@@ -86,9 +88,11 @@ if True:
     hub.tx_delay_ms = 1
     hub.afe_id_min = 35
     hub.afe_id_max = 37
+    
     # # h = _thread.start_new_thread(hub.main_loop,())
     # # Start threads
     try:
+        _thread.start_new_thread(rxDeviceCAN.main_loop, ())
         _thread.start_new_thread(hub.main_loop, ())
         # _thread.start_new_thread(server.main_loop, ())
         # _thread.start_new_thread(app2, ())

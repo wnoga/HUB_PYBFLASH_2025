@@ -472,7 +472,6 @@ class AFEDevice:
         max_chunks = None
         chunk_payload = []
         parsed_data = {}
-
         if True:
             data_bytes = list(bytes(received_data[3]))
             device_id = (received_data[0] >> 2) & 0xFF
@@ -832,7 +831,7 @@ class AFEDevice:
                             self.logger.log(
                                 VerbosityLevel["MEASUREMENT"], toLog)
                         except Exception as e:
-                            print("ERROR during save_periodic_data:", e, toLog)
+                            p.print("ERROR during save_periodic_data:", e, toLog)
                         finally:
                             self.periodic_data = {}
                 for subdev in [0, 1]:
@@ -846,7 +845,7 @@ class AFEDevice:
                             }
                             self.logger.log(VerbosityLevel["INFO"], toLog)
                         except Exception as e:
-                            print(
+                            p.print(
                                 "ERROR during debug_machine_control_msg:", e, toLog)
                         finally:
                             self.debug_machine_control_msg[subdev] = {}
@@ -911,12 +910,12 @@ class AFEDevice:
                 if "callback_error" in self.executing:
                     try:
                         if not self.executing["callback_error"] is None:
-                            print("callback_error: {}".format(
+                            p.print("callback_error: {}".format(
                                 self.executing["callback_error"]))
                             self.executing["callback_error"](
                                 {"afe": self, "afe_id": self.device_id, "executing": self.executing})
                     except Exception as e:
-                        print("AFE manage_state callback_error: {}".format(e))
+                        p.print("AFE manage_state callback_error: {}".format(e))
                 self.executing = None
 
         # Try send commands
