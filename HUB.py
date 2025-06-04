@@ -24,7 +24,7 @@ class RxDeviceCAN:
         self.rx_buffer = bytearray(8)  # Pre-allocate memory
         # Use memoryview to reduce heap allocations
         # self.rx_message = [0, 0, 0, memoryview(self.rx_buffer)]
-        self.rx_message_buffer_max_len = 32
+        self.rx_message_buffer_max_len = 320
         self.rx_message_buffer_head = 0
         self.rx_message_buffer_tail = 0
         # self.rx_buffer_arr = [bytearray(8) for x in range(
@@ -620,7 +620,7 @@ class HUBDevice:
 
     def default_full(self, afe_id=35):
         self.powerOn()
-        self.default_setCanMsgBurstDelay_ms(afe_id, 1)
+        self.default_setCanMsgBurstDelay_ms(afe_id, 5)
         self.default_setAfe_can_watchdog_timeout_ms(afe_id, 1000000)
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
