@@ -51,11 +51,11 @@ class wdt_x:
 
 
 try:
-    if False:
+    if True:
         wdt = wdt_x()
     else:
         from machine import WDT
-        wdt = WDT(timeout=10000)  # enable it with a timeout of 5s
+        wdt = WDT(timeout=20*1000)
         wdt.feed()
 
 except:
@@ -118,8 +118,8 @@ class AFECommandChannel:
     AFECommandChannel_7 = 0x80
     
 class AFECommandChannelMask:
-    AFECommandChannel_master = AFECommandChannel.AFECommandChannel_0 | AFECommandChannel.AFECommandChannel_2 | AFECommandChannel.AFECommandChannel_4 | AFECommandChannel.AFECommandChannel_7
-    AFECommandChannel_slave = AFECommandChannel.AFECommandChannel_1 | AFECommandChannel.AFECommandChannel_3 | AFECommandChannel.AFECommandChannel_5 | AFECommandChannel.AFECommandChannel_6
+    master = AFECommandChannel.AFECommandChannel_0 | AFECommandChannel.AFECommandChannel_2 | AFECommandChannel.AFECommandChannel_4 | AFECommandChannel.AFECommandChannel_7
+    slave = AFECommandChannel.AFECommandChannel_1 | AFECommandChannel.AFECommandChannel_3 | AFECommandChannel.AFECommandChannel_5 | AFECommandChannel.AFECommandChannel_6
     
 
 class AFECommandSubdevice:
@@ -127,17 +127,18 @@ class AFECommandSubdevice:
     AFECommandSubdevice_slave = 0x2
     AFECommandSubdevice_both = 0x3
 
-class AFECommandAverage:
-    NONE = 0x00
-    STANDARD = 0x01
-    EXPONENTIAL = 0x02
-    MEDIAN = 0x03
-    RMS = 0x04
-    HARMONIC = 0x05
-    GEOMETRIC = 0x06
-    TRIMMED = 0x07
-    WEIGHTED_EXPONENTIAL = 0x08
-    ARIMA = 0x09
+AFECommandAverage={
+    "NONE" : 0x00,
+    "STANDARD" : 0x01,
+    "EXPONENTIAL" : 0x02,
+    "MEDIAN" : 0x03,
+    "RMS" : 0x04,
+    "HARMONIC" : 0x05,
+    "GEOMETRIC" : 0x06,
+    "TRIMMED" : 0x07,
+    "WEIGHTED_EXPONENTIAL" : 0x08,
+    "ARIMA" : 0x09
+}
 
 
 e_ADC_CHANNEL: dict[int, str] = {
@@ -225,32 +226,32 @@ def extract_bracketed(text):
 
     return results
 
-# Measurement structure
-class SensorReading:
-    def __init__(self, timestamp_ms=0, value=0.0):
-        self.timestamp_ms = timestamp_ms
-        self.value = None
-    def __str__(self):
-        return "{{\"timestamp_ms\":{},\"value\":{}}}".format(self.timestamp_ms, self.value)
+# # Measurement structure
+# class SensorReading:
+#     def __init__(self, timestamp_ms=0, value=0.0):
+#         self.timestamp_ms = timestamp_ms
+#         self.value = None
+#     def __str__(self):
+#         return "{{\"timestamp_ms\":{},\"value\":{}}}".format(self.timestamp_ms, self.value)
 
 # Channel structure
 class SensorChannel:
-    def __init__(self, channel_id,**kwargs):
+    def __init__(self, channel_id):
         self.channel_id = channel_id
+        self.config = {}
+        # # Use .get() to avoid KeyError if a key is missing
+        # self.time_interval_ms = kwargs.get("time_interval_ms", 0)
+        # self.alpha = kwargs.get("alpha", 0)
+        # self.multiplicator = kwargs.get("multiplicator", 1)
+        # self.a = kwargs.get("a", 0)
+        # self.b = kwargs.get("b", 0)
+        # averagingmodes = AFECommandAverage()
+        # self.averaging_mode = kwargs.get("averaging_mode", averagingmodes.NONE)
+        # self.latest_reading = SensorReading()
         
-        # Use .get() to avoid KeyError if a key is missing
-        self.time_interval_ms = kwargs.get("time_interval_ms", 0)
-        self.alpha = kwargs.get("alpha", 0)
-        self.multiplicator = kwargs.get("multiplicator", 1)
-        self.a = kwargs.get("a", 0)
-        self.b = kwargs.get("b", 0)
-        averagingmodes = AFECommandAverage()
-        self.averaging_mode = kwargs.get("averaging_mode", averagingmodes.NONE)
-        self.latest_reading = SensorReading()
-        
-        # Measurement download settings
-        self.periodic_interval_ms = kwargs.get("periodic_interval_ms", 0)
-        self.periodic_sending_is_enabled = False
+        # # Measurement download settings
+        # self.periodic_interval_ms = kwargs.get("periodic_interval_ms", 0)
+        # self.periodic_sending_is_enabled = False
    
 # class EmptyLogger:
 #     def __init__(self,verbosity_level: int = VerbosityLevel["INFO"],**kwargs):
@@ -461,20 +462,20 @@ class JSONLogger:
     
     
 
-cmndavrg = AFECommandAverage()
+# cmndavrg = AFECommandAverage()
 AFE_Config = [
     {
         "afe_id": 35,
         "afe_uid": "",
         "channel": [
-            SensorChannel(0, time_interval_ms=1000),
-            SensorChannel(1, time_interval_ms=1000),
-            SensorChannel(2, time_interval_ms=1000),
-            SensorChannel(3, time_interval_ms=1000),
-            SensorChannel(4, time_interval_ms=1000),
-            SensorChannel(5, time_interval_ms=1000),
-            SensorChannel(6, time_interval_ms=1000, a=0.08057, b=6, alpha=1.0/1000, averaging_mode=cmndavrg.WEIGHTED_EXPONENTIAL),
-            SensorChannel(7, time_interval_ms=1000, a=0.08057, b=6, alpha=1.0/1000, averaging_mode=cmndavrg.WEIGHTED_EXPONENTIAL),
+            SensorChannel(0),
+            SensorChannel(1),
+            SensorChannel(2),
+            SensorChannel(3),
+            SensorChannel(4),
+            SensorChannel(5),
+            SensorChannel(6),
+            SensorChannel(7),
         ],
     }
 ]

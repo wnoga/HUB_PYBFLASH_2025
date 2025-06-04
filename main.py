@@ -73,7 +73,7 @@ if True:
         logger=logger,
         use_rxcallback=False,
         use_automatic_restart=True)
-    hub.afe_devices_max = 1
+    hub.afe_devices_max = 2
 
     server = MySimpleServer(hub)
     server.running = True
@@ -83,9 +83,9 @@ if True:
     hub.rx_process_active = True
     hub.use_tx_delay = True
     hub.afe_manage_active = True
-    hub.tx_delay_ms = 100
+    hub.tx_delay_ms = 1
     hub.afe_id_min = 35
-    hub.afe_id_max = 36
+    hub.afe_id_max = 37
     # # h = _thread.start_new_thread(hub.main_loop,())
     # # Start threads
     try:

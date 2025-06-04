@@ -7,8 +7,8 @@ import random
 import _thread
 import micropython
 
-from AFE import AFEDevice, AFECommand, millis, SensorChannel, SensorReading
-from my_utilities import JSONLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, AFE_Config, read_callibration_csv
+from AFE import AFEDevice, AFECommand, millis
+from my_utilities import JSONLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, read_callibration_csv
 from my_utilities import channel_name_xxx, e_ADC_CHANNEL
 from my_utilities import wdt
 from my_utilities import p
@@ -342,11 +342,11 @@ class HUBDevice:
                 for k, v in c0[g].items():
                     if k not in callibration[g]:  # no key
                         self.logger.log(
-                            "WARNING", "Calibration data: AFE {}: No key: {}".format(afe_id, k))
+                            VerbosityLevel["WARNING"], "Calibration data: AFE {}: No key: {}".format(afe_id, k))
                         callibration[g][k] = ''
                     elif len(str(callibration[g][k])) == 0:  # empty string:
                         self.logger.log(
-                            "WARNING", "Calibration data: AFE {}: No value {}, set to {}".format(afe_id, k, v))
+                            VerbosityLevel["WARNING"], "Calibration data: AFE {}: No value {}, set to {}".format(afe_id, k, v))
                         callibration[g][k] = v  # set default value
         return callibration
 
@@ -622,18 +622,19 @@ class HUBDevice:
             return AFECommandChannel.AFECommandChannel_4 if g == 'M' else AFECommandChannel.AFECommandChannel_5
 
         def get_general_ch_id_mask(g):
-            return AFECommandChannelMask.AFECommandChannel_master if g == 'M' else AFECommandChannelMask.AFECommandChannel_slave
+            return AFECommandChannelMask.master if g == 'M' else AFECommandChannelMask.slave
 
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        callib = self.get_configuration_from_files(afe_id)
+        configuration = self.get_configuration_from_files(afe_id)
+        afe.configuration = configuration.copy()
         afe.logger.log(VerbosityLevel["INFO"],
                        {
                            "device_id": afe.device_id,
                            "timestamp_ms": millis(),
                            "info": "default_procedure",
-                           "msg": callib
+                           "msg": configuration
         })
         afe.callback_1 = self.callback_1
         commandKwargs = {"timeout_ms": 10220,
@@ -645,7 +646,7 @@ class HUBDevice:
             ch_id = None
             avg_number = 256
             time_sample_ms = 1000
-            for k, v in callib[g].items():
+            for k, v in afe.configuration[g].items():
                 ch_id = 0x00
                 ks = k.split(" ")[0]
                 unit = None
@@ -710,27 +711,9 @@ class HUBDevice:
                     avg_number = int(round(avg_number))
                     continue
                 elif ks == "avg_mode":
-                    avg_mode = v
-                    if v == "STANDARD":
-                        avg_mode = AFECommandAverage.STANDARD
-                    elif v == "EXPONENTIAL":
-                        avg_mode = AFECommandAverage.EXPONENTIAL
-                    elif v == "MEDIAN":
-                        avg_mode = AFECommandAverage.MEDIAN
-                    elif v == "RMS":
-                        avg_mode = AFECommandAverage.RMS
-                    elif v == "HARMONIC":
-                        avg_mode = AFECommandAverage.HARMONIC
-                    elif v == "GEOMETRIC":
-                        avg_mode = AFECommandAverage.GEOMETRIC
-                    elif v == "TRIMMED":
-                        avg_mode = AFECommandAverage.TRIMMED
-                    elif v == "WEIGHTED_EXPONENTIAL":
-                        avg_mode = AFECommandAverage.WEIGHTED_EXPONENTIAL
-                    elif v == "ARIMA":
-                        avg_mode = AFECommandAverage.ARIMA
-                    else:
-                        avg_mode = AFECommandAverage.NONE
+                    if not v:
+                        v = "NONE"
+                    avg_mode = AFECommandAverage[v]
                     ch_id = self._get_subdevice_ch_id(g)
                     afe.enqueue_command(AFECommand.setAveragingMode_byMask, [ch_id,
                                                                              avg_mode
@@ -803,9 +786,13 @@ class HUBDevice:
         p.print("Send back: {}".format(json.dumps(toSend)))
 
     def main_process(self, timer=None):
-        micropython.schedule(self._dequeue_message_copy, 0)
-        micropython.schedule(self.handle_can_rx_polling_schedule, 0)
-            
+        if self.use_rxcallback:
+            micropython.schedule(self._dequeue_message_copy, 0)
+            micropython.schedule(self.handle_can_rx_polling_schedule, 0)
+        else:
+            self._dequeue_message_copy(0)
+            self.handle_can_rx_polling_schedule(0)
+        
         self.discover_devices()
         if self.rx_process_active:
             self.process_received_messages()
@@ -819,8 +806,11 @@ class HUBDevice:
                             afe.device_id))
                     if afe.is_configured and afe.periodic_measurement_download_is_enabled is False:
                         afe.periodic_measurement_download_is_enabled = True
-                        self.default_periodic_measurement_download_all(
-                            afe_id=afe.device_id, ms=5000)
+                        afe.start_periodic_measurement_by_config()
+                        # report_every_ms = afe.configuration.get()
+
+                        # self.default_periodic_measurement_download_all(
+                        #     afe_id=afe.device_id, ms=afe.configuration.get)
 
         if self.curent_function is not None:  # check if function is running
             if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
