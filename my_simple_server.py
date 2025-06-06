@@ -6,10 +6,11 @@ import _thread
 import ujson
 from HUB import HUBDevice
 import pyb
+import micropython
 
 from my_utilities import wdt
 from my_utilities import millis
-from my_utilities import P as p
+from my_utilities import p
 
 class MySimpleServer():
     def __init__(self, hub: HUBDevice, static_ip=None):
@@ -27,8 +28,8 @@ class MySimpleServer():
         # self.hub.use_tx_delay = True
         # self.hub.afe_manage_active = True
         self.static_ip = static_ip
-        self.server_socket = None
-        self.connecions = []
+        self.server_socket:socket.socket = None
+        # self.connecions = []
         self.timestamp_ms = 0
         self.wait_ms = 100
         
@@ -49,65 +50,82 @@ class MySimpleServer():
                 if self.lan.isconnected():
                     self.setup_lan_state = 2
                     p.print("Connected to LAN: {}".format(self.lan.ifconfig()))
+                    return True
                 else:
                     if (millis() - timestamp_ms) > 15000:
                         self.setup_lan_state = 0
             elif self.setup_lan_state == 2:
                 if not self.lan.isconnected():
                     self.setup_lan_state = 0 # Recconect
+                return True
             else:
                 self.setup_lan_state = 0
         except:
             self.setup_lan_state = 0
+        return None
 
     def handle_client(self, connection: socket.socket, address: tuple):
         p.print("New connection from {}".format(address))
-        connection.settimeout(5.0)
+        # connection.settimeout(5.0)
         try:
             data = connection.recv(1024).decode()
             if not data:
                 return
+            timestamp_ms = millis()
             p.print("Received: {}".format(data))
+            toSend = []
             try:
                 j = ujson.loads(data)
                 # afe_id = j["afe_id"]
-                afe_id = 35
+                # afe_id = 35
                 if "procedure" in j:
                     p.print("Procedure: {}".format(j["procedure"]))
-                    afe_id = int(j["afe_id"])
-                    afe = self.hub.get_afe_by_id(afe_id)
-                    if afe is None:
-                        pass
-                    else:
-                        if j["procedure"] == "default_full":
-                            self.hub.default_full(afe_id)
-                            j["status"] = "OK"
-                            connection.sendall(ujson.dumps(j).encode())
-                            return
-                        if j["procedure"] == "default_get_measurement_last":
-                            timestamp_ms = millis()
-                            x = True
-                            def cb(msg=None):
-                                x = False
-                                print("EXECUTED CALLBACK ON SERVER: {}".format(msg))
-                                my_dict = msg.copy()
-                                if 'frame' in my_dict:
-                                    my_dict.pop('frame')
-                                if 'callback' in my_dict:
-                                    my_dict.pop('callback')
+                    # afe_id = int(j["afe_id"])
+                    # afe = self.hub.get_afe_by_id(afe_id)
 
-                                connection.sendall(ujson.dumps(my_dict).encode())
-                                return my_dict
-                            self.hub.default_get_measurement_last(afe_id,callback=cb)
-                            while x:
-                                if (millis()-timestamp_ms > 5000):
-                                    return None
-                            j["status"] = "OK"
-                        else:
-                            j["status"] = "ERROR"
-                            j["status_info"] = "Not implemented"
-                            connection.sendall(ujson.dumps(j).encode())
+                    afe_id = j.get("afe_id",None)
+                    procedure = j["procedure"]
+                    if procedure == "default_full":
+                        if afe_id is None:
                             return
+                        afe = self.hub.get_afe_by_id(afe_id)
+                        if afe is None:
+                            return
+                        self.hub.default_full(afe_id)
+                        # j["status"] = "OK"
+                        toSend.append(j)
+                        # connection.sendall(ujson.dumps(j).encode())
+                    elif procedure == "default_get_measurement_last":
+                        x = True
+                        def cb(msg=None):
+                            x = False
+                            print("EXECUTED CALLBACK ON SERVER: {}".format(msg))
+                            my_dict = msg.copy()
+                            if 'frame' in my_dict:
+                                my_dict.pop('frame')
+                            if 'callback' in my_dict:
+                                my_dict.pop('callback')
+
+                            # connection.sendall(ujson.dumps(my_dict).encode())
+                            toSend.append(my_dict)
+                            # return my_dict
+                        self.hub.default_get_measurement_last(afe_id,callback=cb)
+                        while x:
+                            if (millis()-timestamp_ms > 5000):
+                                return None
+                        # j["status"] = "OK"
+                    elif procedure == "get_all_afe_configuration":
+                        my_dict = {}
+                        for afe in self.hub.afe_devices:
+                            my_dict[afe.device_id] = afe.configuration
+                        print(ujson.dumps(my_dict))
+                        connection.sendall(ujson.dumps(my_dict).encode())
+                    else:
+                        j["status"] = "ERROR"
+                        j["status_info"] = "Not implemented"
+                        connection.sendall(ujson.dumps(j).encode())
+                        return
+                        
                 if "command" in j:
                     if j["command"] == "get_data":
                         self.hub.send_back_data(afe_id)
@@ -131,7 +149,7 @@ class MySimpleServer():
                         self.hub.test1(afe_id)
             except Exception as e:
                 p.print("Error: {}".format(e))
-            connection.sendall(ujson.dumps({"status":"OK"}).encode())
+            # connection.sendall(ujson.dumps({"status":"OK"}).encode())
         except OSError as e:
             if e.args[0] == 110:  # ETIMEDOUT
                 p.print("Connection timed out from {}".format(address))
@@ -145,8 +163,12 @@ class MySimpleServer():
     
     def setup_socket(self):
         try:
+            try:
+                self.server_socket.close()
+            except:
+                pass
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.settimeout(2.0)
+            # self.server_socket.settimeout(2.0)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.server_socket.bind((self.lan.ifconfig()[0], int(self.port)))
             self.server_socket.listen(1)
@@ -155,34 +177,42 @@ class MySimpleServer():
             p.print("Error setting up server socket: {}".format(e))
     
     def main_machine(self):
-        if (millis() - self.timestamp_ms) < self.wait_ms:
-            return
-        self.timestamp_ms = millis()
+        # if (millis() - self.timestamp_ms) < self.wait_ms:
+        #     return
+        # self.timestamp_ms = millis()
         # p.print("MAIN MACHINE SERVER")
         # p.print(self.lan.ifconfig())
-        self.setup_lan_machine()
-        if self.server_socket is None:
-            self.setup_socket()
-            pass
-        try:
-            self.server_socket.settimeout(0.01)
+        if self.setup_lan_machine(): # If True, then lan is set
+            if self.server_socket is None:
+                self.setup_socket()
+            # try:
+            # self.server_socket.settimeout(0.01)
             connection, address = self.server_socket.accept()
             # _thread.start_new_thread(self.handle_client, (connection, address,))
+            # with connection:
             self.handle_client(connection,address)
             # self.connecions.append({"connection":connection,"address":address})
-        except:
-            pass
-        finally:
-            try:
-                connection.close()
-            except:
-                pass
-            
+            # except:
+            #     pass
+            # finally:
+            #     try:
+            #         connection.close()
+            #     except:
+            #         pass
+    
+    def main_machine_scheduled(self,_):
+        self.main_machine()       
     
     def main_loop(self):
         while self.running:
+            # micropython.schedule(self.main_machine_scheduled, 0)
             self.main_machine()
-            wdt.feed()
+            # print("SERVER")
+            time.sleep_us(10)
+            pass
+            # time.sleep_ms(100)
+            # time.sleep(0.01)
+            # wdt.feed()
                 
     def start_server(self):
         self.lan = self.setup_lan()

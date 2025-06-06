@@ -12,7 +12,7 @@ try:
 except:
     pass
 
-# Create a lock for safe printing
+# # Create a lock for safe printing
 print_lock = _thread.allocate_lock()
 
 class Print:
@@ -20,21 +20,31 @@ class Print:
         pass
     def print(self, *args, **kwargs):
         return
-        with print_lock:
-            print(*args, **kwargs)
+        # with print_lock:
+        #     print(*args, **kwargs)
     def debug(self, *args, **kwargs):
-        with print_lock:
-            print(*args, **kwargs)
+        # with print_lock:
+        print(*args, **kwargs)
             
 class PrintButLouder:
     def __init__(self):
-        pass
+        self.queue = []
+        
     def print(self, *args, **kwargs):
-        with print_lock:
-            print(*args, **kwargs)
+        # with print_lock:
+        # print(*args, **kwargs)
+        self.queue.append((args, kwargs))
+        if len(self.queue) > 50:
+            self.queue.pop(0)
+
+    def process_queue(self):
+        if self.queue:
+            # with print_lock:
+            item = self.queue.pop(0)
+            print(*(item[0]), **item[1])
 
 p = PrintButLouder()
-P = PrintButLouder()
+# P = PrintButLouder()
 
 
 class wdt_x:

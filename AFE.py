@@ -517,6 +517,7 @@ class AFEDevice:
                         "timestamp_ms": millis(),
                         "info": {"UID": self.unique_id_str}})
                     parsed_data["unique_id_str"] = self.unique_id_str
+                    self.configuration["UID"] = self.unique_id_str
 
             elif command == AFECommand.getVersion:
                 self.firmware_version = int("".join(map(str, chunk_payload)))

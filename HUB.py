@@ -14,17 +14,20 @@ from my_utilities import wdt
 from my_utilities import p
 from my_utilities import VerbosityLevel
 from my_utilities import AFECommandChannelMask
+from my_utilities import print_lock
 from my_utilities import extract_bracketed
+
 
 class RxDeviceCAN:
     def __init__(self,can_bus: pyb.CAN, use_rxcallback=True):
+        # self.lock = print_lock
         self.can_bus = can_bus
         self.use_rxcallback = use_rxcallback
         self.rx_timeout_ms = 1000
         self.rx_buffer = bytearray(8)  # Pre-allocate memory
         # Use memoryview to reduce heap allocations
         # self.rx_message = [0, 0, 0, memoryview(self.rx_buffer)]
-        self.rx_message_buffer_max_len = 320
+        self.rx_message_buffer_max_len = 32
         self.rx_message_buffer_head = 0
         self.rx_message_buffer_tail = 0
         # self.rx_buffer_arr = [bytearray(8) for x in range(
@@ -32,6 +35,7 @@ class RxDeviceCAN:
         # self.rx_message_buffer = [
         #     [0, 0, 0, memoryview(self.rx_buffer_arr[x])] for x in range(self.rx_message_buffer_max_len)]
         self.rx_message_buffer = [
+            # [0, 0, 0, bytearray(8)] for x in range(self.rx_message_buffer_max_len)]
             [0, 0, 0, memoryview(bytearray(8))] for x in range(self.rx_message_buffer_max_len)]
         while self.handle_can_rx_polling():
             pass
@@ -41,9 +45,14 @@ class RxDeviceCAN:
             self.can_bus.rxcallback(0, self.handle_can_rx)
         
     def get(self):
+        # with self.lock:
         if self.rx_message_buffer_head == self.rx_message_buffer_tail:
             return None
-        tmp = self.rx_message_buffer[self.rx_message_buffer_tail].copy()
+        # tmp = self.rx_message_buffer[self.rx_message_buffer_tail].copy()
+        tmp = [self.rx_message_buffer[self.rx_message_buffer_tail][0],
+                self.rx_message_buffer[self.rx_message_buffer_tail][1],
+                self.rx_message_buffer[self.rx_message_buffer_tail][2],
+                bytearray(self.rx_message_buffer[self.rx_message_buffer_tail][3])]
         self.rx_message_buffer_tail += 1
         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
             self.rx_message_buffer_tail = 0
@@ -59,6 +68,7 @@ class RxDeviceCAN:
                 self.rx_message_buffer_tail = 0
 
     def handle_can_rx(self, bus: pyb.CAN, reason=None):
+        # with self.lock:
         """ Callback function to handle received CAN messages. """
         bus.recv(
             0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
@@ -75,12 +85,13 @@ class RxDeviceCAN:
                 
     def handle_can_rx_polling(self):
         try:
+            # with self.lock:
             if self.can_bus.any(0):
                 self.handle_can_rx(self.can_bus)
                 return True
         except Exception as e:
             p.print("handle_can_rx_polling: {}".format(e))
-        return None
+            return None
     
     def handle_can_rx_polling_schedule(self, _):
         self.handle_can_rx_polling()
@@ -90,11 +101,16 @@ class RxDeviceCAN:
         
     def main_loop(self,reason=None):
         while not self.use_rxcallback:
-            try:
+            # try:
                 # print("X  ")
-                self.main_process()
-            except Exception as e:
-                p.print("handle_can_rx_polling: {}".format(e))
+            # print_lock.acquire()
+            self.handle_can_rx_polling()
+            time.sleep_us(1)
+            # print_lock.release()
+            # except Exception as e:
+            #     p.print("handle_can_rx_polling: {}".format(e))
+            # time.sleep_ms(1)
+
 
 class HUBDevice:
     """
@@ -812,13 +828,13 @@ class HUBDevice:
         # else:
         #     self._dequeue_message_copy(0)
         # #     self.handle_can_rx_polling_schedule(0)
-        micropython.schedule(self._dequeue_message_copy, 0)
+        # micropython.schedule(self._dequeue_message_copy, 0)
         # self.rxDeviceCAN.main_process()
-        # self._dequeue_message_copy(0)
+        self._dequeue_message_copy(0)
         
         self.discover_devices()
         if self.rx_process_active:
-            self.process_received_messages()
+            micropython.schedule(self.process_received_messages, 0)
         if self.afe_manage_active:
             for afe in self.afe_devices:
                 afe.manage_state()
@@ -844,8 +860,14 @@ class HUBDevice:
     def main_loop(self):
         while self.run:
             # print("  H")
+            # print_lock.acquire()
             self.main_process()
+            p.process_queue()
             wdt.feed()
+            time.sleep_us(1)
+            # print_lock.release()
+            # time.sleep_ms(1)
+            # time.sleep(0.01)
             # time.sleep_us(1)
 
 
