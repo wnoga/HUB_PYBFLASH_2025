@@ -864,7 +864,7 @@ class HUBDevice:
             self.main_process()
             p.process_queue()
             wdt.feed()
-            time.sleep_us(1)
+            time.sleep_us(10)
             # print_lock.release()
             # time.sleep_ms(1)
             # time.sleep(0.01)

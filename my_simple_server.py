@@ -12,7 +12,7 @@ import micropython
 
 from my_utilities import wdt
 from my_utilities import millis
-from my_utilities import p
+from my_utilities import p, VerbosityLevel
 from my_utilities import rtc, rtc_synced
 
 # NTP constants
@@ -43,13 +43,16 @@ class MySimpleServer():
         
         self.setup_lan_state = 0
         self.ntp_sync_state = 0
+        self.ntp_sync_timestamp_ms = 0
+        self.ntp_synce_every_ms = 1*60*60*1000 # sync every 1 hour
 
     def sync_ntp_machine(self):
         if not self.lan.isconnected():
             p.print("NTP sync: LAN not connected.")
             self.ntp_sync_state = 0
             return False
-
+        if (millis() - self.ntp_sync_timestamp_ms) > self.ntp_synce_every_ms:
+            self.ntp_sync_state = 0
         if self.ntp_sync_state == 0:
             p.print("Attempting to sync NTP...")
             try:
@@ -71,6 +74,7 @@ class MySimpleServer():
                 s.close()
 
                 if data:
+                    timestamp_ms = millis()
                     # Extract the transmit timestamp (bytes 40-43)
                     # This is the number of seconds since Jan 1, 1900
                     secs = struct.unpack("!I", data[40:44])[0]
@@ -94,6 +98,9 @@ class MySimpleServer():
                     current_time_tuple_for_log = time.gmtime() # Get current time after setting RTC
                     p.print("NTP sync successful. Time set to: {}".format(current_time_tuple_for_log))
                     rtc_synced = True
+                    self.ntp_synced = True
+                    self.ntp_sync_timestamp_ms = millis()
+                    self.hub.logger.log(VerbosityLevel["CRITICAL"], {"device_id": 0, "timestamp_ms": timestamp_ms, "info": "NTP time synced", "time": current_time_tuple_for_log, "unix_timestamp": unix_secs})
                     # Rename logger file with the new timestamp
                     try:
                         year, month, day, hour, minute, second = current_time_tuple_for_log[0:6]
@@ -114,6 +121,7 @@ class MySimpleServer():
             # time.time() in MicroPython is seconds since 2000-01-01
             if time.time() > (23 * 365 * 24 * 60 * 60): # Check if time is after Jan 1, 2023
                 self.ntp_synced = True
+                self.ntp_sync_timestamp_ms = millis()
                 return True
         return False
 
@@ -139,12 +147,13 @@ class MySimpleServer():
             elif self.setup_lan_state == 2:
                 if not self.lan.isconnected():
                     self.setup_lan_state = 0 # Recconect
+                    return False
                 return True
             else:
                 self.setup_lan_state = 0
         except:
             self.setup_lan_state = 0
-        return None
+        return False
 
     def handle_client(self, connection: socket.socket, address: tuple):
         p.print("New connection from {}".format(address))
@@ -277,15 +286,18 @@ class MySimpleServer():
         except Exception as e:
             self.server_socket = None
             p.print("Error setting up server socket: {}".format(e))
-    
-    def main_machine(self):
+    # def sync_loop(self, _=None):
+        
+    def main_machine(self, _=None):
         # if (millis() - self.timestamp_ms) < self.wait_ms:
         #     return
         # self.timestamp_ms = millis()
-        # p.print("MAIN MACHINE SERVER")
+        # print("MAIN MACHINE SERVER")
         # p.print(self.lan.ifconfig())
+        # print(self.setup_lan_machine())
+        # return
         if self.setup_lan_machine(): # If True, then lan is set
-            self.sync_ntp_machine()
+            # self.sync_ntp_machine()
             if self.server_socket is None:
                 self.setup_socket()
             # try:
@@ -304,7 +316,12 @@ class MySimpleServer():
             #         pass
     
     def main_machine_scheduled(self,_):
-        self.main_machine()       
+        self.main_machine()      
+        
+    def sync_ntp_loop(self,_=None):
+        while self.running:
+            self.sync_ntp_machine()
+            time.sleep(1)
     
     def main_loop(self):
         while self.running:
@@ -312,7 +329,6 @@ class MySimpleServer():
             self.main_machine()
             # print("SERVER")
             time.sleep_us(10)
-            pass
             # time.sleep_ms(100)
             # time.sleep(0.01)
             # wdt.feed()

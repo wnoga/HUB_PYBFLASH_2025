@@ -90,6 +90,11 @@ if True:
 
     if not use_rxcallback:
         _thread.start_new_thread(rxDeviceCAN.main_loop, ())
+        print("rxDeviceCAN.main_loop started")
     _thread.start_new_thread(hub.main_loop, ())
+    print("hub.main_loop started")
     if use_lan_server:
         _thread.start_new_thread(server.main_loop, ())
+        print("server.main_loop started")
+        _thread.start_new_thread(server.sync_ntp_loop, ())
+        print("server.sync_ntp_loop started")
