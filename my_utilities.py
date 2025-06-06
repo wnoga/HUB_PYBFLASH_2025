@@ -457,6 +457,14 @@ class JSONLogger:
                     p.print(line.strip())
         except OSError:
             p.print("Error: Cannot read JSON log file.")
+
+    def rename_current_file(self, new_name):
+        if self.file is not None:
+            self.sync()
+            self.file.close()
+            os.rename(self.filename, "{}/{}".format(self.parent_dir, new_name))
+            self.filename = "{}/{}".format(self.parent_dir, new_name)
+            self.file = open(self.filename, "a")  # Reopen as empty file
     
     def request_new_file(self):
         self._requestNewFile = True
