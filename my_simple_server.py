@@ -13,6 +13,7 @@ import micropython
 from my_utilities import wdt
 from my_utilities import millis
 from my_utilities import p
+from my_utilities import rtc, rtc_synced
 
 # NTP constants
 NTP_DELTA = 2208988800  # Seconds between NTP epoch (1900) and Unix epoch (1970)
@@ -87,23 +88,21 @@ class MySimpleServer():
 
                     # Set RTC: (year, month, day, weekday, hours, minutes, seconds, subseconds)
                     # weekday: Mon=1, Sun=7. time.gmtime returns Mon=0, Sun=6.
-                    machine.RTC().datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
+                    rtc.datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
                     self.ntp_sync_state = 1
                     # p.print("NTP sync successful. Time set to: {}".format(time.gmtime()))
                     current_time_tuple_for_log = time.gmtime() # Get current time after setting RTC
                     p.print("NTP sync successful. Time set to: {}".format(current_time_tuple_for_log))
-
+                    rtc_synced = True
                     # Rename logger file with the new timestamp
                     try:
                         year, month, day, hour, minute, second = current_time_tuple_for_log[0:6]
-                        new_log_filename = "log_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}.json".format(
+                        new_log_filename = "log_synced_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}.json".format(
                             year, month, day, hour, minute, second
                         )
-                        self.hub.logger.rename_current_file(new_log_filename)
-                        # Note: Depending on JSONLogger.rename_current_file implementation,
-                        # the file might need to be reopened to continue logging to the renamed file.
-                        # The current rename_current_file closes the file and updates the path.
-                        p.print("Logger file active name changed to: {}".format(self.hub.logger.filename))
+                        if not "log_synced_" in self.hub.logger.filename:
+                            self.hub.logger.rename_current_file(new_log_filename)
+                        # p.print("Logger file active name changed to: {}".format(self.hub.logger.filename))
                     except Exception as e_rename:
                         p.print("Failed to rename logger file: {}".format(e_rename))
             except Exception as e:

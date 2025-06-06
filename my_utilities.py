@@ -8,12 +8,15 @@ import os
 try:
     import _thread
     import micropython
+    import machine
     # lock = _thread.allocate_lock()
 except:
     pass
-
+import time
 # # Create a lock for safe printing
 print_lock = _thread.allocate_lock()
+rtc = machine.RTC()
+rtc_synced = False
 
 class Print:
     def __init__(self):
@@ -337,7 +340,13 @@ class JSONLogger:
         except:
             pass
         self._ensure_directory()
-        self.filename = self._get_unique_filename("{}/{}".format(self.parent_dir, self.filename_org))
+        filename_datetime = self.filename_org
+        if rtc_synced:
+            year, month, day, hour, minute, second = time.gmtime[0:6]
+            filename_datetime = "log_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}.json".format(
+                year, month, day, hour, minute, second
+            )
+        self.filename = self._get_unique_filename("{}/{}".format(self.parent_dir, filename_datetime))
         try:
             self.file = open(self.filename, "w")  # Keep JSON log file open for appending
         except Exception as e:
