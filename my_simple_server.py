@@ -1,21 +1,27 @@
 import network
-import usocket as socket
+import socket as socket
 import time
 import select
 import _thread
 import ujson
 from HUB import HUBDevice
 import pyb
+import struct
+import machine
 import micropython
 
 from my_utilities import wdt
 from my_utilities import millis
 from my_utilities import p
 
+# NTP constants
+NTP_DELTA = 2208988800  # Seconds between NTP epoch (1900) and Unix epoch (1970)
+NTP_HOST = "pool.ntp.org"
 class MySimpleServer():
     def __init__(self, hub: HUBDevice, static_ip=None):
         self.lan = network.LAN()
         self.port = 5555
+        self.ntp_synced = False
         self.s = None
         self.t = None
         self.running = False  # Add running flag to control server loop
@@ -26,6 +32,7 @@ class MySimpleServer():
         # self.hub.discovery_active = True
         # self.hub.rx_process_active = True
         # self.hub.use_tx_delay = True
+
         # self.hub.afe_manage_active = True
         self.static_ip = static_ip
         self.server_socket:socket.socket = None
@@ -34,6 +41,66 @@ class MySimpleServer():
         self.wait_ms = 100
         
         self.setup_lan_state = 0
+        self.ntp_sync_state = 0
+
+    def sync_ntp_machine(self):
+        if not self.lan.isconnected():
+            p.print("NTP sync: LAN not connected.")
+            self.ntp_sync_state = 0
+            return False
+
+        if self.ntp_sync_state == 0:
+            p.print("Attempting to sync NTP...")
+            try:
+                # Create a UDP socket
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.settimeout(5) # 5 second timeout
+
+                # Get server IP
+                addr = socket.getaddrinfo(NTP_HOST, 123)[0][-1]
+
+                # NTP request packet (minimal: version 3, client mode)
+                # LI = 0 (no warning), VN = 3 (version 3), Mode = 3 (client)
+                # (0 << 6) | (3 << 3) | 3 = 0 | 24 | 3 = 27 (0x1b)
+                msg = bytearray(48)
+                msg[0] = 0x1B # LI, Version, Mode
+
+                s.sendto(msg, addr)
+                data, server_addr = s.recvfrom(48)
+                s.close()
+
+                if data:
+                    # Extract the transmit timestamp (bytes 40-43)
+                    # This is the number of seconds since Jan 1, 1900
+                    secs = struct.unpack("!I", data[40:44])[0]
+                    
+                    # Convert to Unix epoch (seconds since Jan 1, 1970)
+                    unix_secs = secs - NTP_DELTA
+
+                    # Get the time tuple (year, month, mday, hour, minute, second, weekday, yearday)
+                    # MicroPython's time.gmtime() expects seconds since 2000-01-01.
+                    # So, we need to adjust unix_secs.
+                    # Seconds from 1970-01-01 to 2000-01-01 is 946684800
+                    secs_since_2000 = unix_secs - 946684800
+                    
+                    tm = time.gmtime(secs_since_2000)
+
+                    # Set RTC: (year, month, day, weekday, hours, minutes, seconds, subseconds)
+                    # weekday: Mon=1, Sun=7. time.gmtime returns Mon=0, Sun=6.
+                    machine.RTC().datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
+                    self.ntp_sync_state = 1
+                    p.print("NTP sync successful. Time set to: {}".format(time.gmtime()))
+            except Exception as e:
+                p.print("NTP sync failed: {}".format(e))
+                self.ntp_sync_state = 0
+                return False
+        elif self.ntp_sync_state == 1:
+            # Check if time is reasonable (after Unix epoch + some buffer, e.g., year 2023)
+            # time.time() in MicroPython is seconds since 2000-01-01
+            if time.time() > (23 * 365 * 24 * 60 * 60): # Check if time is after Jan 1, 2023
+                self.ntp_synced = True
+                return True
+        return False
 
     def setup_lan_machine(self):
         try:
@@ -66,7 +133,7 @@ class MySimpleServer():
 
     def handle_client(self, connection: socket.socket, address: tuple):
         p.print("New connection from {}".format(address))
-        # connection.settimeout(5.0)
+        connection.settimeout(10.0)
         try:
             data = connection.recv(1024).decode()
             if not data:
@@ -96,23 +163,36 @@ class MySimpleServer():
                         toSend.append(j)
                         # connection.sendall(ujson.dumps(j).encode())
                     elif procedure == "default_get_measurement_last":
-                        x = True
+                        # print("Before X")
+                        # x = True
                         def cb(msg=None):
-                            x = False
                             print("EXECUTED CALLBACK ON SERVER: {}".format(msg))
                             my_dict = msg.copy()
                             if 'frame' in my_dict:
                                 my_dict.pop('frame')
                             if 'callback' in my_dict:
                                 my_dict.pop('callback')
-
-                            # connection.sendall(ujson.dumps(my_dict).encode())
-                            toSend.append(my_dict)
+                            try:
+                                connection.sendall(ujson.dumps(my_dict).encode())
+                                connection.close()
+                            except:
+                                pass
+                            # toSend.append(my_dict)
+                            # print("Appended: ", my_dict)
+                            # x = False
                             # return my_dict
                         self.hub.default_get_measurement_last(afe_id,callback=cb)
-                        while x:
-                            if (millis()-timestamp_ms > 5000):
-                                return None
+                        # while x:
+                        #     if (millis()-timestamp_ms > 5000):
+                        #         return None
+                        # print("After X")
+                        # toSend_dict = {}
+                        # print(toSend)
+                        # for d in toSend:
+                        #     for k,v in d.items():
+                        #         toSend_dict.update(k)
+                        # print(ujson.dumps(toSend_dict))
+                        # connection.sendall(toSe)
                         # j["status"] = "OK"
                     elif procedure == "get_all_afe_configuration":
                         my_dict = {}
@@ -120,7 +200,14 @@ class MySimpleServer():
                             my_dict[afe.device_id] = afe.configuration
                         print(ujson.dumps(my_dict))
                         connection.sendall(ujson.dumps(my_dict).encode())
+                     # Check for 'get_unix_timestamp' command
+                    #  elif procedure == "get_unix_timestamp":
+                    #     if self.ntp_synced:
+                    #         connection.sendall(ujson.dumps({"unix_timestamp": time.time()}).encode())
+                    #     else:
+                            
                     else:
+                        connection.sendall(ujson.dumps({"status": "ERROR", "status_info": "NTP not synced"}).encode())
                         j["status"] = "ERROR"
                         j["status_info"] = "Not implemented"
                         connection.sendall(ujson.dumps(j).encode())
@@ -157,9 +244,9 @@ class MySimpleServer():
                 p.print("Error handling client from {}: {}".format(address, e))
         except Exception as e:
             p.print("Error handling client from {}: {}".format(address, e))
-        finally: # Avoid deadlock
-            connection.close()
-            p.print("Connection closed from {}".format(address))
+        # finally: # Avoid deadlock
+        #     connection.close()
+        #     p.print("Connection closed from {}".format(address))
     
     def setup_socket(self):
         try:
@@ -183,6 +270,7 @@ class MySimpleServer():
         # p.print("MAIN MACHINE SERVER")
         # p.print(self.lan.ifconfig())
         if self.setup_lan_machine(): # If True, then lan is set
+            self.sync_ntp_machine()
             if self.server_socket is None:
                 self.setup_socket()
             # try:

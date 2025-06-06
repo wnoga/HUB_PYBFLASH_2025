@@ -73,7 +73,7 @@ if True:
         use_automatic_restart=True)
     hub.afe_devices_max = 2
 
-    use_lan_server = False
+    use_lan_server = True
     if use_lan_server:
         from my_simple_server import MySimpleServer
         server = MySimpleServer(hub)

@@ -348,6 +348,7 @@ class AFEDevice:
         return {
             "command": command,  # command
             "frame": frame,  # payload
+            "device_id": self.device_id,  # AFE ID
             "can_address": self.can_address,  # can address
             "timeout_ms": self.default_command_timeout_ms if timeout_ms is None else timeout_ms,
             "timestamp_ms": timestamp_ms,
