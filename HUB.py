@@ -14,7 +14,7 @@ from my_utilities import wdt
 from my_utilities import p
 from my_utilities import VerbosityLevel
 from my_utilities import AFECommandChannelMask
-from my_utilities import print_lock
+from my_utilities import lock, unlock
 from my_utilities import extract_bracketed
 
 
@@ -49,6 +49,7 @@ class RxDeviceCAN:
         if self.rx_message_buffer_head == self.rx_message_buffer_tail:
             return None
         # tmp = self.rx_message_buffer[self.rx_message_buffer_tail].copy()
+        irq_state = pyb.disable_irq() # Start of critical section
         tmp = [self.rx_message_buffer[self.rx_message_buffer_tail][0],
                 self.rx_message_buffer[self.rx_message_buffer_tail][1],
                 self.rx_message_buffer[self.rx_message_buffer_tail][2],
@@ -56,19 +57,22 @@ class RxDeviceCAN:
         self.rx_message_buffer_tail += 1
         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
             self.rx_message_buffer_tail = 0
+        pyb.enable_irq(irq_state) # End of critical section
         return tmp
 
-    def inc(self):
-        self.rx_message_buffer_head += 1
-        if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
-            self.rx_message_buffer_head = 0
-        if self.rx_message_buffer_head == self.rx_message_buffer_tail:
-            self.rx_message_buffer_tail += 1
-            if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
-                self.rx_message_buffer_tail = 0
+    # def inc(self):
+    #     self.rx_message_buffer_head += 1
+    #     if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
+    #         self.rx_message_buffer_head = 0
+    #     if self.rx_message_buffer_head == self.rx_message_buffer_tail:
+    #         self.rx_message_buffer_tail += 1
+    #         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
+    #             self.rx_message_buffer_tail = 0
 
     def handle_can_rx(self, bus: pyb.CAN, reason=None):
         # with self.lock:
+        # lock()
+        irq_state = pyb.disable_irq() # Start of critical section
         """ Callback function to handle received CAN messages. """
         bus.recv(
             0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
@@ -82,10 +86,11 @@ class RxDeviceCAN:
             self.rx_message_buffer_tail += 1
             if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
                 self.rx_message_buffer_tail = 0
+        pyb.enable_irq(irq_state) # End of critical section
+        # unlock()
                 
     def handle_can_rx_polling(self):
         try:
-            # with self.lock:
             if self.can_bus.any(0):
                 self.handle_can_rx(self.can_bus)
                 return True
