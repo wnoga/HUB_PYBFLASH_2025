@@ -904,7 +904,6 @@ class HUBDevice:
             if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
                 self.curent_function = None
                 self.curent_function_retval = "timeout"
-        self.logger.machine()
 
     async def main_loop(self):
         while self.run:
@@ -912,6 +911,7 @@ class HUBDevice:
             # print_lock.acquire()
             self.main_process()
             p.process_queue()
+            self.logger.machine()
             wdt.feed()
             # time.sleep_us(10)
             await uasyncio.sleep_ms(0)

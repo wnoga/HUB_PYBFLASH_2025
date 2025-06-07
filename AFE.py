@@ -807,18 +807,18 @@ class AFEDevice:
                     else:
                         pass
                 if self.save_periodic_data is True:
-                    if "timestamp_ms" in self.periodic_data:
-                        try:
-                            toLog = self.default_log_dict({
-                                "command": AFECommand.AFECommand_getSensorDataSi_periodic,
-                                "retval": self.trim_dict_for_logger(self.periodic_data),
-                            })
-                            self.logger.log(
-                                VerbosityLevel["MEASUREMENT"], toLog)
-                        except Exception as e:
-                            p.print("ERROR during save_periodic_data:", e, toLog)
-                        finally:
-                            self.periodic_data = {}
+                    # if "timestamp_ms" in self.periodic_data:
+                    try:
+                        toLog = self.default_log_dict({
+                            "command": AFECommand.AFECommand_getSensorDataSi_periodic,
+                            "retval": self.trim_dict_for_logger(self.periodic_data),
+                        })
+                        self.logger.log(
+                            VerbosityLevel["MEASUREMENT"], toLog)
+                    except Exception as e:
+                        p.print("ERROR during save_periodic_data:", e, toLog)
+                    finally:
+                        self.periodic_data = {}
                 if command == AFECommand.debug_machine_control:
                     for subdev in [0, 1]:
                         if self.debug_machine_control_msg[subdev].get("timestamp_ms"):

@@ -39,7 +39,7 @@ class AsyncWebServer:
         self.last_lan_check_ms = 0
         self.ntp_synced = False
         
-        self.AsyncWebServer_cb_retval = None
+        self.AsyncWebServer_cb_retval = {}
 
     def connect_ethernet(self):
         self.lan.active(True)
@@ -62,16 +62,20 @@ class AsyncWebServer:
         print("Ethernet connected. IP:", self.lan.ifconfig()[0])
         self.lan_connected = True
         
-    def hub_cb(self,msg=None):
-        self.AsyncWebServer_cb_retval = None
-        p.print("EXECUTED CALLBACK ON SERVER: {}".format(msg))
+    def hub_cb(self,msg:dict=None):
+        device_id = msg.get("device_id",None)
+        if not device_id:
+            # p.print("FAILED EXECUTED CALLBACK ON SERVER: {}".format(msg))
+            return
+        self.AsyncWebServer_cb_retval[device_id] = None
+        # p.print("EXECUTED CALLBACK ON SERVER: {}".format(msg))
         my_dict = msg.copy()
         if 'frame' in my_dict:
             my_dict.pop('frame')
         if 'callback' in my_dict:
             my_dict.pop('callback')
         try:
-            self.AsyncWebServer_cb_retval = ujson.dumps(my_dict).encode()
+            self.AsyncWebServer_cb_retval[device_id] = ujson.dumps(my_dict).encode()
         except:
             pass
 
@@ -93,21 +97,21 @@ class AsyncWebServer:
             afe_id = request.get("afe_id",None)
             if afe_id is None:
                 return None
-            self.AsyncWebServer_cb_retval = None
+            self.AsyncWebServer_cb_retval[afe_id] = None
             self.hub.default_get_measurement_last(afe_id,callback=self.hub_cb)
             timestamp_ms = millis()
-            while self.AsyncWebServer_cb_retval is None:
+            while self.AsyncWebServer_cb_retval[afe_id] is None:
                 await uasyncio.sleep_ms(1)
                 if (millis()-timestamp_ms > 20000):
                     return None
-            return self.AsyncWebServer_cb_retval
+            return self.AsyncWebServer_cb_retval[afe_id]
             
         return None
 
 
     async def handle_client(self, reader, writer):
         request_line = await reader.readline()
-        p.print("Request:", request_line)
+        # p.print("Request:", request_line)
         
         # if request_line[-1] != "\n":
         #     print(request_line[-1], "\n", b"\n")
@@ -131,6 +135,7 @@ class AsyncWebServer:
         
 
     async def sync_rtc_with_ntp(self):
+        global rtc_synced, p, rtc
         """Syncs the RTC with an NTP server."""
         if not self.lan_connected:
             p.print("NTP sync: LAN not connected.")
@@ -219,8 +224,11 @@ class AsyncWebServer:
     async def sync_ntp_loop(self):
         """Periodically syncs RTC with NTP."""
         while True:
-            await self.sync_rtc_with_ntp()
-            await asyncio.sleep(10*60) # Sync every 60 seconds
+            isSynced = await self.sync_rtc_with_ntp()
+            if isSynced:
+                await asyncio.sleep(10*60) # Sync every 60 seconds
+            else:
+                await asyncio.sleep(10)
 
 
 # DHCP (default):
