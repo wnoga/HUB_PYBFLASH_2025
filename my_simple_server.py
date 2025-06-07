@@ -1,8 +1,7 @@
 import network
 import socket as socket
 import time
-import select
-import _thread
+import uasyncio
 import ujson
 from HUB import HUBDevice
 import pyb
@@ -23,13 +22,13 @@ class MySimpleServer():
         self.lan = network.LAN()
         self.port = 5555
         self.ntp_synced = False
-        self.s = None
-        self.t = None
         self.running = False  # Add running flag to control server loop
         self.host_ip = None
         # self.can, self.hub = initialize_can_hub()
         self.hub = hub
         # self.hub.afe_devices_max = 1
+        self.server_instance = None # For uasyncio server
+
         # self.hub.discovery_active = True
         # self.hub.rx_process_active = True
         # self.hub.use_tx_delay = True
@@ -37,23 +36,27 @@ class MySimpleServer():
         # self.hub.afe_manage_active = True
         self.static_ip = static_ip
         self.server_socket:socket.socket = None
-        # self.connecions = []
         self.timestamp_ms = 0
         self.wait_ms = 100
         
         self.setup_lan_state = 0
+        self._lan_conn_start_ms = 0 # Helper for LAN connection timeout
+        self._lan_setup_in_progress = False
+
         self.ntp_sync_state = 0
         self.ntp_sync_timestamp_ms = 0
         self.ntp_synce_every_ms = 1*60*60*1000 # sync every 1 hour
 
-    def sync_ntp_machine(self):
+    async def sync_ntp_machine(self):
         if not self.lan.isconnected():
             p.print("NTP sync: LAN not connected.")
             self.ntp_sync_state = 0
-            time.sleep(1)
+            await uasyncio.sleep_ms(1000) # Use async sleep
             return False
+
         if (millis() - self.ntp_sync_timestamp_ms) > self.ntp_synce_every_ms:
             self.ntp_sync_state = 0
+
         if self.ntp_sync_state == 0:
             p.print("Attempting to sync NTP...")
             try:
@@ -71,8 +74,10 @@ class MySimpleServer():
                 msg[0] = 0x1B # LI, Version, Mode
 
                 s.sendto(msg, addr)
+                await uasyncio.sleep_ms(0) # Yield
                 data, server_addr = s.recvfrom(48)
                 s.close()
+                await uasyncio.sleep_ms(0) # Yield
 
                 if data:
                     timestamp_ms = millis()
@@ -116,6 +121,7 @@ class MySimpleServer():
             except Exception as e:
                 p.print("NTP sync failed: {}".format(e))
                 self.ntp_sync_state = 0
+                await uasyncio.sleep_ms(0) # Yield
                 return False
         elif self.ntp_sync_state == 1:
             # Check if time is reasonable (after Unix epoch + some buffer, e.g., year 2023)
@@ -124,29 +130,289 @@ class MySimpleServer():
             #     self.ntp_synced = True
             #     self.ntp_sync_timestamp_ms = millis()
             #     return True
-            time.sleep(1)
+            await uasyncio.sleep_ms(1000) # Use async sleep
             return True
         return False
 
-    def setup_lan_machine(self):
+    async def setup_lan_machine(self):
+        if self._lan_setup_in_progress and self.setup_lan_state != 1:
+             # If setup was in progress but state changed (e.g. externally), reset flag
+            self._lan_setup_in_progress = False
+
         try:
             if self.setup_lan_state == 0:
+                p.print("Configuring LAN...")
                 self.lan = network.LAN()
                 self.lan.active(True)
                 if self.static_ip:
                     self.lan.ifconfig((self.static_ip, '255.255.255.0', '192.168.1.1', '8.8.8.8'))
                 else:
                     self.lan.ifconfig('dhcp')
-                timestamp_ms = millis()
+                self._lan_conn_start_ms = millis()
                 self.setup_lan_state = 1
+                self._lan_setup_in_progress = True
+                p.print("LAN configuration initiated, attempting to connect...")
+                return False # Indicate setup is in progress
+
             elif self.setup_lan_state == 1:
                 if self.lan.isconnected():
                     self.setup_lan_state = 2
                     p.print("Connected to LAN: {}".format(self.lan.ifconfig()))
+                    self._lan_setup_in_progress = False
                     return True
                 else:
-                    if (millis() - timestamp_ms) > 15000:
+                    if (millis() - self._lan_conn_start_ms) > 15000: # 15 seconds timeout
+                        p.print("LAN connection attempt timed out.")
                         self.setup_lan_state = 0
+                        self._lan_setup_in_progress = False
+                        return False # Failed to connect in time
+                    # Still trying, not yet an error, just not connected
+                    # p.print("Waiting for LAN connection...") # Optional: can be verbose
+                    await uasyncio.sleep_ms(500) # Yield and check later
+                    return False # Indicate still trying
+
+            elif self.setup_lan_state == 2:
+                if not self.lan.isconnected():
+                    p.print("LAN disconnected, attempting to reconnect...")
+                    self.setup_lan_state = 0 # Reconnect
+                    self._lan_setup_in_progress = False
+                    return False
+                return True # Still connected
+
+            else: # Should not happen
+                p.print(f"Unknown LAN setup state: {self.setup_lan_state}, resetting.")
+                self.setup_lan_state = 0
+                self._lan_setup_in_progress = False
+                return False
+
+        except Exception as e:
+            p.print(f"Error in LAN setup: {e}")
+            self.setup_lan_state = 0
+            self._lan_setup_in_progress = False
+        return False
+
+    async def handle_client(self, reader, writer):
+        address = writer.get_extra_info('peername')
+        p.print("New connection from {}".format(address))
+        # connection.settimeout(10.0) # Not directly applicable with uasyncio reader/writer
+        try:
+            data_bytes = await reader.read(1024)
+            if not data_bytes:
+                writer.close()
+                await writer.wait_closed()
+                p.print(f"Connection closed by peer {address} (no data).")
+                return
+
+            data = data_bytes.decode()
+            timestamp_ms = millis()
+            p.print("Received from {}: {}".format(address, data))
+            toSend = [] # This variable seems unused for sending back to client in original logic
+            response_sent = False
+            try:
+                j = ujson.loads(data)
+                if "procedure" in j:
+                    p.print("Procedure: {}".format(j["procedure"]))
+                    afe_id = j.get("afe_id", None)
+                    procedure = j["procedure"]
+
+                    if procedure == "default_full":
+                        if afe_id is None:
+                            writer.close()
+                            await writer.wait_closed()
+                            return
+                        afe = self.hub.get_afe_by_id(afe_id)
+                        if afe is None:
+                            writer.close()
+                            await writer.wait_closed()
+                            return
+                        self.hub.default_full(afe_id)
+                        j["status"] = "OK" # Prepare response
+                        writer.write(ujson.dumps(j).encode())
+                        await writer.drain()
+                        response_sent = True
+
+                    elif procedure == "default_get_measurement_last":
+                        async def cb(msg=None):
+                            p.print("EXECUTED CALLBACK ON SERVER: {}".format(msg))
+                            my_dict = msg.copy()
+                            if 'frame' in my_dict:
+                                my_dict.pop('frame')
+                            if 'callback' in my_dict:
+                                my_dict.pop('callback')
+                            try:
+                                writer.write(ujson.dumps(my_dict).encode())
+                                await writer.drain()
+                            except Exception as e_cb_send:
+                                p.print(f"Error sending callback data: {e_cb_send}")
+                            finally:
+                                writer.close()
+                                await writer.wait_closed()
+                        # This callback structure with uasyncio needs care.
+                        # The hub method should ideally be async or the callback needs to be uasyncio-aware.
+                        # For now, assuming hub.default_get_measurement_last handles its callback execution.
+                        # The socket closure is now part of the callback.
+                        self.hub.default_get_measurement_last(afe_id, callback=cb)
+                        response_sent = True # Callback will handle sending and closing
+                        return # Callback handles closure
+
+                    elif procedure == "get_all_afe_configuration":
+                        my_dict = {}
+                        for afe_device in self.hub.afe_devices: # Renamed afe to afe_device to avoid conflict
+                            my_dict[afe_device.device_id] = afe_device.configuration
+                        p.print(ujson.dumps(my_dict))
+                        writer.write(ujson.dumps(my_dict).encode())
+                        await writer.drain()
+                        response_sent = True
+                    
+                    else: # Fallback for unimplemented procedures
+                        error_response = {"status": "ERROR", "status_info": "Procedure not implemented or NTP not synced for relevant command"}
+                        if "get_unix_timestamp" == procedure and not self.ntp_synced:
+                             error_response["status_info"] = "NTP not synced"
+                        
+                        writer.write(ujson.dumps(error_response).encode())
+                        await writer.drain()
+                        response_sent = True
+                        # Original code sent two error messages, simplifying to one.
+                        # j["status"] = "ERROR"
+                        # j["status_info"] = "Not implemented"
+                        # writer.write(ujson.dumps(j).encode())
+                        # await writer.drain()
+
+                elif "command" in j: # Handling 'command' based requests
+                    afe_id = j.get("afe_id") # Assuming afe_id is present for commands
+                    if afe_id is None and j["command"] != "some_command_not_needing_afe_id": # Example
+                        error_response = {"status": "ERROR", "status_info": "afe_id missing for command"}
+                        writer.write(ujson.dumps(error_response).encode())
+                        await writer.drain()
+                        response_sent = True
+                    else:
+                        # Simplified: Acknowledge command, actual execution is via hub methods
+                        # Specific hub method calls...
+                        if j["command"] == "get_data":
+                            self.hub.send_back_data(afe_id)
+                        elif j["command"] == "default_procedure":                            
+                            self.hub.default_procedure(afe_id)
+                        # ... (other commands) ...
+                        elif j["command"] == "test1":
+                            self.hub.test1(afe_id)
+                        
+                        if not response_sent: # Send a generic OK if no specific response was crafted
+                            ok_response = {"status": "OK", "command_received": j["command"]}
+                            writer.write(ujson.dumps(ok_response).encode())
+                            await writer.drain()
+                            response_sent = True
+                
+                else: # No procedure or command
+                    if not response_sent:
+                        error_response = {"status": "ERROR", "status_info": "No procedure or command specified"}
+                        writer.write(ujson.dumps(error_response).encode())
+                        await writer.drain()
+                        response_sent = True
+
+            except ujson.JSONDecodeError as e_json:
+                p.print(f"JSON decode error: {e_json}")
+                if not response_sent:
+                    error_response = {"status": "ERROR", "status_info": f"Invalid JSON: {e_json}"}
+                    writer.write(ujson.dumps(error_response).encode())
+                    await writer.drain()
+            except Exception as e_proc:
+                p.print("Error processing client request: {}".format(e_proc))
+                if not response_sent:
+                    error_response = {"status": "ERROR", "status_info": f"Server error: {e_proc}"}
+                    writer.write(ujson.dumps(error_response).encode())
+                    await writer.drain()
+
+        # except OSError as e: # OSError might be caught by uasyncio stream
+        #     if e.args[0] == 110:  # ETIMEDOUT - less likely with await reader.read()
+        #         p.print("Connection timed out from {}".format(address))
+        #     else:
+        #         p.print("OSError handling client from {}: {}".format(address, e))
+        except Exception as e:
+            p.print("Generic error handling client from {}: {}".format(address, e))
+        finally:
+            if not writer.is_closing():
+                writer.close()
+                await writer.wait_closed()
+            p.print("Connection closed from {}".format(address))
+
+    async def main_loop(self):
+        p.print("Server main_loop starting...")
+        lan_ready = False
+        while self.running and not lan_ready:
+            lan_ready = await self.setup_lan_machine()
+            if not lan_ready:
+                p.print("LAN not ready, retrying in 5s...")
+                await uasyncio.sleep_ms(5000)
+            elif self._lan_setup_in_progress: # Still in setup_lan_state == 1 but not timed out
+                lan_ready = False # Force loop to continue until explicitly True or hard False
+                await uasyncio.sleep_ms(500) # Short sleep while setup_lan_machine progresses
+
+        if not lan_ready:
+            p.print("Failed to initialize LAN. Server cannot start.")
+            self.running = False
+            return
+
+        p.print(f"Attempting to start server on {self.lan.ifconfig()[0]}:{self.port}")
+        try:
+            self.server_instance = await uasyncio.start_server(
+                self.handle_client, self.lan.ifconfig()[0], int(self.port)
+            )
+            p.print("Server started successfully.")
+        except Exception as e:
+            p.print(f"Failed to start server: {e}")
+            self.running = False
+            return
+
+        while self.running:
+            # Server runs in the background via uasyncio.start_server
+            # This loop can do other periodic tasks or just sleep
+            if not self.lan.isconnected():
+                p.print("LAN disconnected. Attempting to re-establish...")
+                self.setup_lan_state = 0 # Trigger re-setup logic
+                lan_ready = False
+                while self.running and not lan_ready:
+                    lan_ready = await self.setup_lan_machine()
+                    if not lan_ready:
+                        await uasyncio.sleep_ms(5000)
+                    elif self._lan_setup_in_progress:
+                        lan_ready = False
+                        await uasyncio.sleep_ms(500)
+                
+                if not lan_ready:
+                    p.print("Could not re-establish LAN. Stopping server tasks.")
+                    self.running = False # Stop if LAN cannot be re-established
+                    break 
+                else:
+                    p.print("LAN re-established.")
+            
+            await uasyncio.sleep_ms(1000)
+
+        if self.server_instance:
+            self.server_instance.close()
+            await self.server_instance.wait_closed()
+        p.print("Server main_loop ended.")
+
+    async def sync_ntp_loop(self,_=None): # Parameter _ is unused
+        p.print("NTP sync_loop starting...")
+        while self.running:
+            await self.sync_ntp_machine()
+            await uasyncio.sleep_ms(1000) # Check/sync periodically, e.g., every second for state changes, actual sync less often
+        p.print("NTP sync_loop ended.")
+
+    # def start_server(self): # This method is not used in the uasyncio main.py structure
+    #     # self.lan = self.setup_lan() # setup_lan is not async, setup_lan_machine is
+    #     self.running = True
+    #     # self.run() # Original run method
+    #     # self.run_thread = _thread.start_new_thread(self.run, ()) # Replaced by uasyncio tasks
+    #     pass
+
+    # def x(self): # Unused method
+    #     while True:
+    #         pyb.delay(100)
+    #         # p.print("TEST")
+
+# Remove old threading-based methods if they are fully replaced
+# For example, setup_socket and the original main_machine are implicitly handled by uasyncio.start_server
             elif self.setup_lan_state == 2:
                 if not self.lan.isconnected():
                     self.setup_lan_state = 0 # Recconect

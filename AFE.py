@@ -3,7 +3,7 @@ import time
 import struct
 import random
 import pyb
-import machine
+# import machine # machine is not directly used here, pyb.millis is
 import micropython
 
 from my_utilities import AFECommand, AFECommandGPIO, AFECommandChannel, AFECommandSubdevice, JSONLogger
@@ -907,7 +907,7 @@ class AFEDevice:
                 pass
             else:
                 # micropython.schedule(self.execute, 0)
-                self.execute(0)
+                self.execute(0) # Direct call
         else:
             # micropython.schedule(self.execute, 0)
-            self.execute(0)
+            self.execute(0) # Direct call
