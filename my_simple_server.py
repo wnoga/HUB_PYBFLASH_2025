@@ -170,6 +170,9 @@ class AsyncWebServer:
                 self.ntp_synced = True
                 p.print("NTP sync successful. Time set to: {}".format(time.gmtime()))
                 rtc_synced = True # Update global flag
+                if not self.hub.logger.rtc_synced:
+                    self.hub.logger.rtc_synced = True
+                    self.hub.logger.request_rename_file()
                 return True
         except Exception as e:
             p.print("NTP sync failed: {}".format(e))

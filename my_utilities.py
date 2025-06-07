@@ -19,7 +19,6 @@ print_lock = _thread.allocate_lock()
 rtc = machine.RTC()
 rtc_synced = False
 
-
 def lock(blocking=True, sleep_ms=1):
     return
     if blocking:
@@ -349,9 +348,11 @@ class JSONLogger:
         self.burst_delay_ms = 10
         self.burst_timestamp_ms = 0
         self._requestNewFile = False
+        self._requestRenameFile = False
         self.file_rows = 0
         self.cursor_position = 0
         self.cursor_position_last = 0
+        self.rtc_synced = False
         self.new_file()
 
     def _ensure_directory(self):
@@ -378,6 +379,17 @@ class JSONLogger:
     def _should_log(self, level):
         return level <= self.verbosity_level
 
+    def get_new_file_path(self):
+        self._ensure_directory()
+        filename_datetime = self.filename_org
+        if rtc_synced:
+            year, month, day, hour, minute, second = time.gmtime[0:6]
+            filename_datetime = "log_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}.json".format(
+                year, month, day, hour, minute, second
+            )
+        return self._get_unique_filename(
+            "{}/{}".format(self.parent_dir, filename_datetime))
+
     def new_file(self):
         try:
             if self.file is None:
@@ -387,15 +399,7 @@ class JSONLogger:
                 self.file.close()
         except:
             pass
-        self._ensure_directory()
-        filename_datetime = self.filename_org
-        if rtc_synced:
-            year, month, day, hour, minute, second = time.gmtime[0:6]
-            filename_datetime = "log_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}.json".format(
-                year, month, day, hour, minute, second
-            )
-        self.filename = self._get_unique_filename(
-            "{}/{}".format(self.parent_dir, filename_datetime))
+        self.filename = self.get_new_file_path()
         try:
             # Keep JSON log file open for appending
             self.file = open(self.filename, "w")
@@ -525,9 +529,20 @@ class JSONLogger:
             os.rename(self.filename, "{}/{}".format(self.parent_dir, new_name))
             self.filename = "{}/{}".format(self.parent_dir, new_name)
             self.file = open(self.filename, "a")  # Reopen as empty file
+    
+    def rename_current_filename(self, path):
+        if self.file is not None:
+            self.sync()
+            self.file.close()
+            os.rename(self.filename, path)
+            self.filename = path.copy()
+            self.file = open(self.filename, "a")  # Reopen as empty file
 
     def request_new_file(self):
         self._requestNewFile = True
+        
+    def request_rename_file(self):
+        self._requestRenameFile = True
 
     def machine(self):
         if self._requestNewFile == True:
@@ -536,6 +551,12 @@ class JSONLogger:
                 pass
             self.sync()
             self.new_file()
+        if self._requestRenameFile == True:
+            self._requestRenameFile = False
+            while self.process_log(0):
+                pass
+            self.sync()
+            self.rename_current_filename(self.get_new_file_path())
         self.process_log(0)
         self.sync_process()
 
