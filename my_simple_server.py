@@ -180,13 +180,13 @@ class MySimpleServer():
                 return True # Still connected
 
             else: # Should not happen
-                p.print(f"Unknown LAN setup state: {self.setup_lan_state}, resetting.")
+                p.print("Unknown LAN setup state: {}, resetting.".format(self.setup_lan_state))
                 self.setup_lan_state = 0
                 self._lan_setup_in_progress = False
                 return False
 
         except Exception as e:
-            p.print(f"Error in LAN setup: {e}")
+            p.print("Error in LAN setup: {}".format(e))
             self.setup_lan_state = 0
             self._lan_setup_in_progress = False
         return False
@@ -200,9 +200,9 @@ class MySimpleServer():
             if not data_bytes:
                 writer.close()
                 await writer.wait_closed()
-                p.print(f"Connection closed by peer {address} (no data).")
+                p.print("Connection closed by peer {address} (no data).".format(address))
                 return
-
+            
             data = data_bytes.decode()
             timestamp_ms = millis()
             p.print("Received from {}: {}".format(address, data))
@@ -243,7 +243,7 @@ class MySimpleServer():
                                 writer.write(ujson.dumps(my_dict).encode())
                                 await writer.drain()
                             except Exception as e_cb_send:
-                                p.print(f"Error sending callback data: {e_cb_send}")
+                                p.print("Error sending callback data: {}".format(e_cb_send))
                             finally:
                                 writer.close()
                                 await writer.wait_closed()
@@ -266,7 +266,7 @@ class MySimpleServer():
                     
                     else: # Fallback for unimplemented procedures
                         error_response = {"status": "ERROR", "status_info": "Procedure not implemented or NTP not synced for relevant command"}
-                        if "get_unix_timestamp" == procedure and not self.ntp_synced:
+                        if procedure == "get_unix_timestamp" and not self.ntp_synced:
                              error_response["status_info"] = "NTP not synced"
                         
                         writer.write(ujson.dumps(error_response).encode())
@@ -310,15 +310,15 @@ class MySimpleServer():
                         response_sent = True
 
             except ujson.JSONDecodeError as e_json:
-                p.print(f"JSON decode error: {e_json}")
-                if not response_sent:
-                    error_response = {"status": "ERROR", "status_info": f"Invalid JSON: {e_json}"}
+                p.print("JSON decode error: {}".format(e_json))
+                if not response_sent: # Ensure a response is sent even on JSON error
+                    error_response = {"status": "ERROR", "status_info": "Invalid JSON: {}".format(e_json)}
                     writer.write(ujson.dumps(error_response).encode())
                     await writer.drain()
             except Exception as e_proc:
                 p.print("Error processing client request: {}".format(e_proc))
-                if not response_sent:
-                    error_response = {"status": "ERROR", "status_info": f"Server error: {e_proc}"}
+                if not response_sent: # Ensure a response is sent on other errors
+                    error_response = {"status": "ERROR", "status_info": "Server error: {}".format(e_proc)}
                     writer.write(ujson.dumps(error_response).encode())
                     await writer.drain()
 
@@ -352,21 +352,21 @@ class MySimpleServer():
             self.running = False
             return
 
-        p.print(f"Attempting to start server on {self.lan.ifconfig()[0]}:{self.port}")
-        try:
+        p.print("Attempting to start server on {}:{}".format(self.lan.ifconfig()[0],self.port))
+        try: # Start the uasyncio server
             self.server_instance = await uasyncio.start_server(
                 self.handle_client, self.lan.ifconfig()[0], int(self.port)
             )
             p.print("Server started successfully.")
         except Exception as e:
-            p.print(f"Failed to start server: {e}")
+            p.print("Failed to start server: {}".format(e))
             self.running = False
             return
 
         while self.running:
             # Server runs in the background via uasyncio.start_server
             # This loop can do other periodic tasks or just sleep
-            if not self.lan.isconnected():
+            if not self.lan.isconnected(): # Check for LAN disconnection
                 p.print("LAN disconnected. Attempting to re-establish...")
                 self.setup_lan_state = 0 # Trigger re-setup logic
                 lan_ready = False
@@ -385,7 +385,7 @@ class MySimpleServer():
                 else:
                     p.print("LAN re-established.")
             
-            await uasyncio.sleep_ms(1000)
+            await uasyncio.sleep_ms(1000) # Sleep to yield control and prevent tight loop
 
         if self.server_instance:
             self.server_instance.close()
@@ -393,7 +393,7 @@ class MySimpleServer():
         p.print("Server main_loop ended.")
 
     async def sync_ntp_loop(self,_=None): # Parameter _ is unused
-        p.print("NTP sync_loop starting...")
+        p.print("NTP sync_loop starting...") # Start NTP sync loop
         while self.running:
             await self.sync_ntp_machine()
             await uasyncio.sleep_ms(1000) # Check/sync periodically, e.g., every second for state changes, actual sync less often
@@ -407,22 +407,22 @@ class MySimpleServer():
     #     pass
 
     # def x(self): # Unused method
-    #     while True:
+    #     while True: # Unused method
     #         pyb.delay(100)
     #         # p.print("TEST")
 
-# Remove old threading-based methods if they are fully replaced
-# For example, setup_socket and the original main_machine are implicitly handled by uasyncio.start_server
-            elif self.setup_lan_state == 2:
-                if not self.lan.isconnected():
-                    self.setup_lan_state = 0 # Recconect
-                    return False
-                return True
-            else:
-                self.setup_lan_state = 0
-        except:
-            self.setup_lan_state = 0
-        return False
+# # Remove old threading-based methods if they are fully replaced
+# # For example, setup_socket and the original main_machine are implicitly handled by uasyncio.start_server
+#             elif self.setup_lan_state == 2:
+#                 if not self.lan.isconnected():
+#                     self.setup_lan_state = 0 # Recconect
+#                     return False
+#                 return True
+#             else:
+#                 self.setup_lan_state = 0
+#         except:
+#             self.setup_lan_state = 0
+#         return False
 
     def handle_client(self, connection: socket.socket, address: tuple):
         p.print("New connection from {}".format(address))
