@@ -54,41 +54,64 @@ if False:
             if tmp is None:
                 break
             print("To send:",tmp)
+            
+can = None
+hub = None
+rxDeviceCAN = None # Initialize to None
+server = None # Initialize to None
+
+# Initialize components
+from HUB import initialize_can_hub # HUBDevice and RxDeviceCAN are returned by this
+# from HUB import RxDeviceCAN # Not needed separately if obtained from initialize_can_hub
+
+use_rxcallback = True
+can, hub, rxDeviceCAN = initialize_can_hub(
+    can_bus=can_bus,
+    logger=logger,
+    use_rxcallback=use_rxcallback,
+    use_automatic_restart=True
+)
+hub.afe_devices_max = 2
+
+# Configure HUB
+hub.discovery_active = True
+hub.rx_process_active = True
+hub.use_tx_delay = True
+hub.afe_manage_active = True
+hub.tx_delay_ms = 1
+hub.afe_id_min = 35
+hub.afe_id_max = 37 # Ensure this is less than afe_devices_max for discovery to stop if all found
+
+async def periodic_tasks_loop():
+    """Handles periodic background tasks like watchdog, logging, and printing."""
+    p.print("Periodic tasks loop started.")
+    while True:
+        wdt.feed()
+        logger.machine()  # logger.machine() can have blocking I/O
+        await uasyncio.sleep_ms(0)  # Yield after logger processing
+
+        p.process_queue()  # p.process_queue() can have blocking I/O
+        await uasyncio.sleep_ms(0)  # Yield after print queue processing
+
+        await uasyncio.sleep_ms(100) # Overall frequency for this loop
+
 
 async def main():
+    global can,hub,rxDeviceCAN,server
     p.print("Main async task started.")
-    # Initialize components
-    from HUB import initialize_can_hub # HUBDevice and RxDeviceCAN are returned by this
-    # from HUB import RxDeviceCAN # Not needed separately if obtained from initialize_can_hub
 
-    can = None
-    hub = None
-    rxDeviceCAN = None # Initialize to None
-
-    use_rxcallback = True
-    can, hub, rxDeviceCAN = initialize_can_hub(
-        can_bus=can_bus,
-        logger=logger,
-        use_rxcallback=use_rxcallback,
-        use_automatic_restart=True
-    )
-    hub.afe_devices_max = 2
-
-    use_lan_server = True
-    server = None # Initialize to None
+    use_lan_server = False
+    
     if use_lan_server:
         from my_simple_server import MySimpleServer
         server = MySimpleServer(hub)
         server.running = True
-
-    # Configure HUB
-    hub.discovery_active = True
-    hub.rx_process_active = True
-    hub.use_tx_delay = True
-    hub.afe_manage_active = True
-    hub.tx_delay_ms = 1
-    hub.afe_id_min = 35
-    hub.afe_id_max = 37 # Ensure this is less than afe_devices_max for discovery to stop if all found
+        
+    use_async_server = True
+    if use_async_server:
+        from my_simple_server import AsyncWebServer
+        server = AsyncWebServer(hub)
+        # server.run()
 
     # Create asyncio tasks
     tasks = []
@@ -102,22 +125,22 @@ async def main():
         tasks.append(uasyncio.create_task(server.sync_ntp_loop()))
         p.print("server.sync_ntp_loop task created.")
     
+    if use_async_server and server:
+        tasks.append(uasyncio.create_task(server.start()))
+    
     if not use_rxcallback:
         tasks.append(uasyncio.create_task(rxDeviceCAN.main_loop()))
         p.print("rxDeviceCAN.main_loop task created.")
 
-    # # # Keep main task alive and perform periodic operations
-    # while True:
-    #     wdt.feed() # If you have a watchdog, feed it here.
-    #     logger.machine()  # Process logger queue
-    #     p.process_queue() # Process print queue
-    #     await uasyncio.sleep_ms(100) # Main loop tick
+    tasks.append(uasyncio.create_task(periodic_tasks_loop()))
+    p.print("periodic_tasks_loop task created.")
+
 loop = uasyncio.get_event_loop()
 loop.create_task(main())
 # uasyncio.loop_forever()
 
 # loop.run_forever()
-
+# _thread.start_new_thread(hub.main_loop, ())
 _thread.start_new_thread(loop.run_forever, ())
 
 # if __name__ == "__main__":

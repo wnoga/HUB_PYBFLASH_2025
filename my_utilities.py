@@ -21,6 +21,7 @@ rtc_synced = False
 
 
 def lock(blocking=True, sleep_ms=1):
+    return
     if blocking:
         while not print_lock.acquire():
             # time.sleep_us(sleep_us)
@@ -30,6 +31,7 @@ def lock(blocking=True, sleep_ms=1):
 
 
 def unlock():
+    return
     if print_lock.locked():
         print_lock.release()
 

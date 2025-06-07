@@ -14,6 +14,193 @@ from my_utilities import millis
 from my_utilities import p, VerbosityLevel
 from my_utilities import rtc, rtc_synced
 
+import network
+import uasyncio as asyncio
+import time
+
+class AsyncWebServer:
+    def __init__(self, hub: HUBDevice, dhcp=True, static_ip_config=None, port=5555):
+        """
+        dhcp: True to use DHCP, False to use static IP
+        static_ip_config: tuple (ip, subnet, gateway, dns)
+        port: Port to bind the server on
+        """
+        self.hub = hub
+        self.dhcp = dhcp
+        self.static_ip_config = static_ip_config
+        self.port = port
+        self.server = None
+        self.lan = network.LAN()
+        self.lan_connected = False
+        self.last_lan_check_ms = 0
+        self.ntp_synced = False
+
+    def connect_ethernet(self):
+        self.lan.active(True)
+
+        if not self.dhcp and self.static_ip_config:
+            ip, subnet, gateway, dns = self.static_ip_config
+            self.lan.ifconfig((ip, subnet, gateway, dns))
+
+        print("Waiting for Ethernet connection...", end="")
+        timeout = 10
+        while not self.lan.isconnected() and timeout > 0:
+            print(".", end="")
+            time.sleep(1)
+            timeout -= 1
+        print()
+
+        if not self.lan.isconnected():
+            raise RuntimeError("Ethernet connection failed")
+
+        print("Ethernet connected. IP:", self.lan.ifconfig()[0])
+        self.lan_connected = True
+
+    async def handle_procedure(self, request_line, reader, writer):
+        request = None
+        try:
+            request = ujson.loads(request_line)
+        except:
+            return
+        procedure = request.get("procedure", None)
+        if not procedure:
+            return
+        print(procedure)
+        if procedure == "get_all_afe_configuration":
+            my_dict = {}
+            for afe_device in self.hub.afe_devices: # Renamed afe to afe_device to avoid conflict
+                my_dict[afe_device.device_id] = afe_device.configuration
+            p.print(ujson.dumps(my_dict))
+            writer.write(ujson.dumps(my_dict).encode())
+            await writer.drain()
+            # await writer.awrite(response)
+            return True
+        return False
+
+
+    async def handle_client(self, reader, writer):
+        request_line = await reader.readline()
+        print("Request:", request_line)
+
+        while await reader.readline() != b"\r\n":
+            pass
+        if self.handle_procedure(request_line, reader, writer):
+            pass
+        else:
+            response = b"""\
+    HTTP/1.0 200 OK
+
+    Hello from AsyncWebServer over Ethernet!
+    """
+            await writer.awrite(response)
+        await writer.aclose()
+
+    async def sync_rtc_with_ntp(self):
+        """Syncs the RTC with an NTP server."""
+        if not self.lan_connected:
+            p.print("NTP sync: LAN not connected.")
+            return False
+
+        p.print("Attempting to sync NTP...")
+        try:
+            # Create a UDP socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(5) # 5 second timeout
+
+            # Get server IP
+            addr = socket.getaddrinfo(NTP_HOST, 123)[0][-1]
+
+            # NTP request packet (minimal: version 3, client mode)
+            msg = bytearray(48)
+            msg[0] = 0x1B # LI, Version, Mode
+
+            s.sendto(msg, addr)
+            await uasyncio.sleep_ms(0) # Yield
+            data, server_addr = s.recvfrom(48)
+            s.close()
+            await uasyncio.sleep_ms(0) # Yield
+
+            if data:
+                # Extract the transmit timestamp (bytes 40-43)
+                secs = struct.unpack("!I", data[40:44])[0]
+                unix_secs = secs - NTP_DELTA
+                secs_since_2000 = unix_secs - 946684800
+                tm = time.gmtime(secs_since_2000)
+                rtc.datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
+                self.ntp_synced = True
+                p.print("NTP sync successful. Time set to: {}".format(time.gmtime()))
+                rtc_synced = True # Update global flag
+                return True
+        except Exception as e:
+            p.print("NTP sync failed: {}".format(e))
+            return False
+
+    async def start(self):
+        self.connect_ethernet()
+        
+        # Start NTP sync loop
+        asyncio.create_task(self.sync_ntp_loop())
+        
+        while True:
+            if not self.lan_connected:
+                p.print("Attempting to reconnect Ethernet...")
+                try:
+                    self.connect_ethernet()
+                except RuntimeError:
+                    p.print("Ethernet reconnection failed. Retrying in 10s.")
+                    await asyncio.sleep(100)
+                    continue
+
+            if self.server is None:
+                p.print("Attempting to start server...")
+                try:
+                    self.server = await asyncio.start_server(self.handle_client, "0.0.0.0", self.port)
+                    p.print("Server running at http://{}:{}".format(self.lan.ifconfig()[0],self.port))
+                except Exception as e:
+                    p.print("Failed to start server: {}. Retrying in 10s.".format(e))
+                    self.server = None # Ensure server is None if start failed
+                    await asyncio.sleep(100)
+                    continue
+
+            # Periodically check LAN connection status
+            if (millis() - self.last_lan_check_ms) > 5000: # Check every 5 seconds
+                if not self.lan.isconnected():
+                    p.print("Ethernet disconnected.")
+                    self.lan_connected = False
+                    if self.server:
+                        self.server.close()
+                        await self.server.wait_closed()
+                        self.server = None
+                self.last_lan_check_ms = millis()
+            await asyncio.sleep_ms(10) # Yield control
+    def run(self):
+        try:
+            asyncio.run(self.start())
+        except KeyboardInterrupt:
+            print("Server stopped")
+
+
+# === Example usage ===
+    async def sync_ntp_loop(self):
+        """Periodically syncs RTC with NTP."""
+        while True:
+            await self.sync_rtc_with_ntp()
+            await asyncio.sleep(10*60) # Sync every 60 seconds
+
+
+# DHCP (default):
+# server = AsyncWebServer()
+
+# Static IP:
+# server = AsyncWebServer(
+#     dhcp=False,
+#     static_ip_config=("192.168.1.150", "255.255.255.0", "192.168.1.1", "8.8.8.8")
+# )
+
+# Run the server
+# server.run()
+
+
 # NTP constants
 NTP_DELTA = 2208988800  # Seconds between NTP epoch (1900) and Unix epoch (1970)
 NTP_HOST = "pool.ntp.org"
@@ -584,32 +771,32 @@ class MySimpleServer():
             #     except:
             #         pass
     
-    def main_machine_scheduled(self,_):
-        self.main_machine()      
+    # def main_machine_scheduled(self,_):
+    #     self.main_machine()      
         
-    def sync_ntp_loop(self,_=None):
-        while self.running:
-            self.sync_ntp_machine()
-            time.sleep_ms(1)
+    # def sync_ntp_loop(self,_=None):
+    #     while self.running:
+    #         self.sync_ntp_machine()
+    #         time.sleep_ms(1)
     
-    def main_loop(self):
-        while self.running:
-            # micropython.schedule(self.main_machine_scheduled, 0)
-            self.main_machine()
-            # print("SERVER")
-            # time.sleep_us(10)
-            time.sleep_ms(1)
-            # time.sleep_ms(100)
-            # time.sleep(0.01)
-            # wdt.feed()
+    # def main_loop(self):
+    #     while self.running:
+    #         # micropython.schedule(self.main_machine_scheduled, 0)
+    #         self.main_machine()
+    #         # print("SERVER")
+    #         # time.sleep_us(10)
+    #         time.sleep_ms(1)
+    #         # time.sleep_ms(100)
+    #         # time.sleep(0.01)
+    #         # wdt.feed()
                 
-    def start_server(self):
-        self.lan = self.setup_lan()
-        self.running = True
-        # self.run()
-        self.run_thread = _thread.start_new_thread(self.run, ())
+    # def start_server(self):
+    #     self.lan = self.setup_lan()
+    #     self.running = True
+    #     # self.run()
+    #     self.run_thread = _thread.start_new_thread(self.run, ())
         
-    def x(self):
-        while True:
-            pyb.delay(100)
-            # p.print("TEST")
+    # def x(self):
+    #     while True:
+    #         pyb.delay(100)
+    #         # p.print("TEST")

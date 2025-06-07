@@ -6,6 +6,7 @@ import struct
 import random
 import _thread
 import micropython
+import uasyncio
 
 from AFE import AFEDevice, AFECommand, millis
 from my_utilities import JSONLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, read_callibration_csv
@@ -72,21 +73,36 @@ class RxDeviceCAN:
     def handle_can_rx(self, bus: pyb.CAN, reason=None):
         # with self.lock:
         # lock()
-        irq_state = pyb.disable_irq() # Start of critical section
         """ Callback function to handle received CAN messages. """
-        bus.recv(
-            0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
-        # bus.recv(
-        #     0, self.rx_message, timeout=self.rx_timeout_ms)
-        # self.rx_message_buffer[self.rx_message_buffer_head] = self.rx_message.copy()
-        self.rx_message_buffer_head += 1
-        if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
-            self.rx_message_buffer_head = 0
-        if self.rx_message_buffer_head == self.rx_message_buffer_tail:
-            self.rx_message_buffer_tail += 1
-            if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
-                self.rx_message_buffer_tail = 0
-        pyb.enable_irq(irq_state) # End of critical section
+        # If use_rxcallback is True, this is called from ISR context or similar,
+        # a message should be ready. timeout=0 means non-blocking read.
+        # If use_rxcallback is False, it's called from polling after can_bus.any(0),
+        # so a message is likely ready, but self.rx_timeout_ms can be used.
+        current_recv_timeout = 0 if self.use_rxcallback else self.rx_timeout_ms
+        
+        received_successfully = False
+        try:
+            # The fourth element of the list item is the memoryview/bytearray for data
+            bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=current_recv_timeout)
+            received_successfully = True
+        except OSError as e:
+            if e.args[0] == 11: # EAGAIN for non-blocking read with no data (micropython.const(MP_EAGAIN))
+                # This might happen if timeout=0 and message was read by another context,
+                # or if can.any() was true but message disappeared before recv in polling.
+                # p.print(f"RxDeviceCAN.handle_can_rx: EAGAIN on recv with timeout {current_recv_timeout}")
+                pass # Do not advance buffer head if no message was actually received
+            else:
+                # Log other OSErrors, but don't advance buffer head on error
+                p.print("RxDeviceCAN.handle_can_rx: recv OSError:",e)
+
+        if received_successfully:
+            self.rx_message_buffer_head += 1
+            if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
+                self.rx_message_buffer_head = 0
+            if self.rx_message_buffer_head == self.rx_message_buffer_tail: # Buffer full
+                self.rx_message_buffer_tail += 1 # Overwrite oldest message
+                if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
+                    self.rx_message_buffer_tail = 0
         # unlock()
                 
     def handle_can_rx_polling(self):
@@ -223,6 +239,11 @@ class HUBDevice:
     def _dequeue_message_copy(self, _):
         self.msg_to_process = self.rxDeviceCAN.get()
         return self.msg_to_process
+    
+    # async def _dequeue_message(self):
+    #     self.msg_to_process = self.rxDeviceCAN.get()
+    #     await uasyncio.sleep_ms(10)
+
 
     def _message_queue_len(self):
         return len(self.message_queue)
@@ -281,7 +302,10 @@ class HUBDevice:
         afe.process_received_data(message)
         # except Exception as e:
         #     p.print("process_received_messages: {}".format(e))
-
+        
+    async def process_received_messages_async(self):
+        self.process_received_messages(None)
+        
     def discover_devices(self, timer=None):
         """ Periodically discover AFEs on the CAN bus. """
         # Check if discovery is active
@@ -838,8 +862,10 @@ class HUBDevice:
         self._dequeue_message_copy(0)
         
         self.discover_devices()
-        if self.rx_process_active:
-            micropython.schedule(self.process_received_messages, 0)
+        # if self.rx_process_active:
+        #     micropython.schedule(self.process_received_messages, 0)
+        self.process_received_messages_async()
+        # uasyncio.create_task(self.process_received_messages_async())
         if self.afe_manage_active:
             for afe in self.afe_devices:
                 afe.manage_state()
@@ -862,14 +888,15 @@ class HUBDevice:
                 self.curent_function_retval = "timeout"
         self.logger.machine()
 
-    def main_loop(self):
+    async def main_loop(self):
         while self.run:
             # print("  H")
             # print_lock.acquire()
             self.main_process()
             p.process_queue()
             wdt.feed()
-            time.sleep_us(10)
+            # time.sleep_us(10)
+            await uasyncio.sleep_ms(10)
             # print_lock.release()
             # time.sleep_ms(1)
             # time.sleep(0.01)
@@ -886,7 +913,7 @@ def initialize_can_hub(can_bus: pyb.CAN, logger, use_rxcallback=True, **kwargs):
     p.print("CAN Bus Initialized")
     logger.verbosity_level = VerbosityLevel["INFO"]
     # logger.verbosity_level = VerbosityLevel["DEBUG"]
-    logger.print_verbosity_level = VerbosityLevel["CRITICAL"]
+    logger.print_verbosity_level = VerbosityLevel["DEBUG"]
     rxDeviceCAN = RxDeviceCAN(can_bus, use_rxcallback)
     hub = HUBDevice(can_bus, logger=logger,
                     rxDeviceCAN=rxDeviceCAN,
