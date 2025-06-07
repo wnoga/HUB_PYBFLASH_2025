@@ -7,10 +7,11 @@
 import pyb
 import uasyncio
 import micropython
+import _thread
 micropython.alloc_emergency_exception_buf(100)
 # import micropython
 # micropython.alloc_emergency_exception_buf(100)
-from my_utilities import p
+from my_utilities import p, wdt
 from my_utilities import JSONLogger
 from my_utilities import rtc_unix_timestamp, rtc
 
@@ -105,20 +106,27 @@ async def main():
         tasks.append(uasyncio.create_task(rxDeviceCAN.main_loop()))
         p.print("rxDeviceCAN.main_loop task created.")
 
-    # Keep main task alive and perform periodic operations
-    while True:
-        # wdt.feed() # If you have a watchdog, feed it here.
-        logger.machine()  # Process logger queue
-        p.process_queue() # Process print queue
-        await uasyncio.sleep_ms(100) # Main loop tick
+    # # # Keep main task alive and perform periodic operations
+    # while True:
+    #     wdt.feed() # If you have a watchdog, feed it here.
+    #     logger.machine()  # Process logger queue
+    #     p.process_queue() # Process print queue
+    #     await uasyncio.sleep_ms(100) # Main loop tick
+loop = uasyncio.get_event_loop()
+loop.create_task(main())
+# uasyncio.loop_forever()
 
-if __name__ == "__main__":
-    try:
-        uasyncio.run(main())
-    except KeyboardInterrupt:
-        p.print("Main program interrupted.")
-    finally:
-        p.print("Cleaning up and exiting main program.")
-        # Perform any cleanup if necessary, e.g., closing server explicitly if not handled by tasks
-        # Note: uasyncio tasks might need explicit cancellation for cleaner shutdown,
-        # but for embedded systems, a hard reset or power cycle is common.
+# loop.run_forever()
+
+_thread.start_new_thread(loop.run_forever, ())
+
+# if __name__ == "__main__":
+#     try:
+#         uasyncio.run(main())
+#     except KeyboardInterrupt:
+#         p.print("Main program interrupted.")
+#     finally:
+#         p.print("Cleaning up and exiting main program.")
+#         # Perform any cleanup if necessary, e.g., closing server explicitly if not handled by tasks
+#         # Note: uasyncio tasks might need explicit cancellation for cleaner shutdown,
+#         # but for embedded systems, a hard reset or power cycle is common.
