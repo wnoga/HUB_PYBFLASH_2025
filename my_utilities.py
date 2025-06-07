@@ -382,8 +382,8 @@ class JSONLogger:
     def get_new_file_path(self):
         self._ensure_directory()
         filename_datetime = self.filename_org
-        if rtc_synced:
-            year, month, day, hour, minute, second = time.gmtime[0:6]
+        if self.rtc_synced:
+            year, month, day, hour, minute, second = time.gmtime()[0:6]
             filename_datetime = "log_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}.json".format(
                 year, month, day, hour, minute, second
             )
@@ -534,8 +534,9 @@ class JSONLogger:
         if self.file is not None:
             self.sync()
             self.file.close()
+            # print("Renaming {} to {}",self.filename, path)
             os.rename(self.filename, path)
-            self.filename = path.copy()
+            self.filename = path
             self.file = open(self.filename, "a")  # Reopen as empty file
 
     def request_new_file(self):
