@@ -24,7 +24,7 @@ class RxDeviceCAN:
         # self.lock = print_lock
         self.can_bus = can_bus
         self.use_rxcallback = use_rxcallback
-        self.rx_timeout_ms = 1000
+        self.rx_timeout_ms = 5000
         self.rx_buffer = bytearray(8)  # Pre-allocate memory
         # Use memoryview to reduce heap allocations
         # self.rx_message = [0, 0, 0, memoryview(self.rx_buffer)]
@@ -38,7 +38,10 @@ class RxDeviceCAN:
         self.rx_message_buffer = [
             # [0, 0, 0, bytearray(8)] for x in range(self.rx_message_buffer_max_len)]
             [0, 0, 0, memoryview(bytearray(8))] for x in range(self.rx_message_buffer_max_len)]
-        while self.handle_can_rx_polling():
+        try:
+            while self.handle_can_rx_polling():
+                pass
+        except:
             pass
         self.use_rxcallback = use_rxcallback
         if self.use_rxcallback:
@@ -47,10 +50,11 @@ class RxDeviceCAN:
         
     def get(self):
         # with self.lock:
+        
         if self.rx_message_buffer_head == self.rx_message_buffer_tail:
             return None
-        # tmp = self.rx_message_buffer[self.rx_message_buffer_tail].copy()
         irq_state = pyb.disable_irq() # Start of critical section
+        # tmp = self.rx_message_buffer[self.rx_message_buffer_tail].copy()
         tmp = [self.rx_message_buffer[self.rx_message_buffer_tail][0],
                 self.rx_message_buffer[self.rx_message_buffer_tail][1],
                 self.rx_message_buffer[self.rx_message_buffer_tail][2],
@@ -73,29 +77,9 @@ class RxDeviceCAN:
     def handle_can_rx(self, bus: pyb.CAN, reason=None):
         # with self.lock:
         # lock()
-        """ Callback function to handle received CAN messages. """
-        # If use_rxcallback is True, this is called from ISR context or similar,
-        # a message should be ready. timeout=0 means non-blocking read.
-        # If use_rxcallback is False, it's called from polling after can_bus.any(0),
-        # so a message is likely ready, but self.rx_timeout_ms can be used.
-        current_recv_timeout = 0 if self.use_rxcallback else self.rx_timeout_ms
-        
-        received_successfully = False
-        try:
-            # The fourth element of the list item is the memoryview/bytearray for data
-            bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=current_recv_timeout)
-            received_successfully = True
-        except OSError as e:
-            if e.args[0] == 11: # EAGAIN for non-blocking read with no data (micropython.const(MP_EAGAIN))
-                # This might happen if timeout=0 and message was read by another context,
-                # or if can.any() was true but message disappeared before recv in polling.
-                # p.print(f"RxDeviceCAN.handle_can_rx: EAGAIN on recv with timeout {current_recv_timeout}")
-                pass # Do not advance buffer head if no message was actually received
-            else:
-                # Log other OSErrors, but don't advance buffer head on error
-                p.print("RxDeviceCAN.handle_can_rx: recv OSError:",e)
-
-        if received_successfully:
+        # try:
+        while bus.any(0):
+            bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=0)
             self.rx_message_buffer_head += 1
             if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
                 self.rx_message_buffer_head = 0
@@ -103,7 +87,39 @@ class RxDeviceCAN:
                 self.rx_message_buffer_tail += 1 # Overwrite oldest message
                 if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
                     self.rx_message_buffer_tail = 0
-        # unlock()
+        # except:
+        #     pass
+        # """ Callback function to handle received CAN messages. """
+        # # If use_rxcallback is True, this is called from ISR context or similar,
+        # # a message should be ready. timeout=0 means non-blocking read.
+        # # If use_rxcallback is False, it's called from polling after can_bus.any(0),
+        # # so a message is likely ready, but self.rx_timeout_ms can be used.
+        # current_recv_timeout = 0 if self.use_rxcallback else self.rx_timeout_ms
+        
+        # received_successfully = False
+        # try:
+        #     # The fourth element of the list item is the memoryview/bytearray for data
+        #     bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=current_recv_timeout)
+        #     received_successfully = True
+        # except OSError as e:
+        #     if e.args[0] == 11: # EAGAIN for non-blocking read with no data (micropython.const(MP_EAGAIN))
+        #         # This might happen if timeout=0 and message was read by another context,
+        #         # or if can.any() was true but message disappeared before recv in polling.
+        #         # p.print(f"RxDeviceCAN.handle_can_rx: EAGAIN on recv with timeout {current_recv_timeout}")
+        #         pass # Do not advance buffer head if no message was actually received
+        #     else:
+        #         # Log other OSErrors, but don't advance buffer head on error
+        #         p.print("RxDeviceCAN.handle_can_rx: recv OSError:",e)
+
+        # if received_successfully:
+        #     self.rx_message_buffer_head += 1
+        #     if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
+        #         self.rx_message_buffer_head = 0
+        #     if self.rx_message_buffer_head == self.rx_message_buffer_tail: # Buffer full
+        #         self.rx_message_buffer_tail += 1 # Overwrite oldest message
+        #         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
+        #             self.rx_message_buffer_tail = 0
+        # # unlock()
                 
     def handle_can_rx_polling(self):
         try:
@@ -120,13 +136,14 @@ class RxDeviceCAN:
     def main_process(self):
         self.handle_can_rx_polling_schedule(0)
         
-    def main_loop(self,reason=None):
+    async def main_loop(self,reason=None):
         while not self.use_rxcallback:
             # try:
                 # print("X  ")
             # print_lock.acquire()
             self.handle_can_rx_polling()
-            time.sleep_us(1)
+            # time.sleep_us(1)
+            uasyncio.sleep_ms(1)
             # print_lock.release()
             # except Exception as e:
             #     p.print("handle_can_rx_polling: {}".format(e))
@@ -438,7 +455,7 @@ class HUBDevice:
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        commandKwargs = {"timeout_ms": 10220,
+        commandKwargs = {"timeout_ms": 20220,
                          "preserve": True, "timeout_start_on": 5000}
         if callback is not None:
             commandKwargs["callback"] = callback
@@ -603,7 +620,7 @@ class HUBDevice:
 
     def default_full(self, afe_id=35):
         self.powerOn()
-        self.default_setCanMsgBurstDelay_ms(afe_id, 5)
+        self.default_setCanMsgBurstDelay_ms(afe_id, 25)
         self.default_setAfe_can_watchdog_timeout_ms(afe_id, 1000000)
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
@@ -864,7 +881,8 @@ class HUBDevice:
         self.discover_devices()
         # if self.rx_process_active:
         #     micropython.schedule(self.process_received_messages, 0)
-        self.process_received_messages_async()
+        # self.process_received_messages_async()
+        self.process_received_messages(0)
         # uasyncio.create_task(self.process_received_messages_async())
         if self.afe_manage_active:
             for afe in self.afe_devices:
@@ -896,7 +914,7 @@ class HUBDevice:
             p.process_queue()
             wdt.feed()
             # time.sleep_us(10)
-            await uasyncio.sleep_ms(10)
+            await uasyncio.sleep_ms(0)
             # print_lock.release()
             # time.sleep_ms(1)
             # time.sleep(0.01)
@@ -913,7 +931,8 @@ def initialize_can_hub(can_bus: pyb.CAN, logger, use_rxcallback=True, **kwargs):
     p.print("CAN Bus Initialized")
     logger.verbosity_level = VerbosityLevel["INFO"]
     # logger.verbosity_level = VerbosityLevel["DEBUG"]
-    logger.print_verbosity_level = VerbosityLevel["DEBUG"]
+    # logger.print_verbosity_level = VerbosityLevel["DEBUG"]
+    logger.print_verbosity_level = VerbosityLevel["CRITICAL"]
     rxDeviceCAN = RxDeviceCAN(can_bus, use_rxcallback)
     hub = HUBDevice(can_bus, logger=logger,
                     rxDeviceCAN=rxDeviceCAN,

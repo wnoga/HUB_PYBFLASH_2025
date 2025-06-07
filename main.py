@@ -132,8 +132,8 @@ async def main():
         tasks.append(uasyncio.create_task(rxDeviceCAN.main_loop()))
         p.print("rxDeviceCAN.main_loop task created.")
 
-    tasks.append(uasyncio.create_task(periodic_tasks_loop()))
-    p.print("periodic_tasks_loop task created.")
+    # tasks.append(uasyncio.create_task(periodic_tasks_loop()))
+    # p.print("periodic_tasks_loop task created.")
 
 loop = uasyncio.get_event_loop()
 loop.create_task(main())
