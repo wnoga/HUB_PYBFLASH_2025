@@ -50,6 +50,7 @@ class MySimpleServer():
         if not self.lan.isconnected():
             p.print("NTP sync: LAN not connected.")
             self.ntp_sync_state = 0
+            time.sleep(1)
             return False
         if (millis() - self.ntp_sync_timestamp_ms) > self.ntp_synce_every_ms:
             self.ntp_sync_state = 0
@@ -119,10 +120,12 @@ class MySimpleServer():
         elif self.ntp_sync_state == 1:
             # Check if time is reasonable (after Unix epoch + some buffer, e.g., year 2023)
             # time.time() in MicroPython is seconds since 2000-01-01
-            if time.time() > (23 * 365 * 24 * 60 * 60): # Check if time is after Jan 1, 2023
-                self.ntp_synced = True
-                self.ntp_sync_timestamp_ms = millis()
-                return True
+            # if time.time() > (23 * 365 * 24 * 60 * 60): # Check if time is after Jan 1, 2023
+            #     self.ntp_synced = True
+            #     self.ntp_sync_timestamp_ms = millis()
+            #     return True
+            time.sleep(1)
+            return True
         return False
 
     def setup_lan_machine(self):
@@ -321,7 +324,7 @@ class MySimpleServer():
     def sync_ntp_loop(self,_=None):
         while self.running:
             self.sync_ntp_machine()
-            time.sleep(1)
+            time.sleep_ms(1)
     
     def main_loop(self):
         while self.running:

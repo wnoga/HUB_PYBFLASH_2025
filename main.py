@@ -13,6 +13,7 @@ import _thread
 # micropython.alloc_emergency_exception_buf(100)
 from my_utilities import p
 from my_utilities import JSONLogger
+from my_utilities import rtc_unix_timestamp, rtc
 
 
 # from my_utilities import wdt

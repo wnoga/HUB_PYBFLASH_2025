@@ -13,6 +13,7 @@ from my_utilities import p
 from my_utilities import VerbosityLevel
 from my_utilities import SensorChannel, AFECommandChannelMask, AFECommandAverage
 from my_utilities import extract_bracketed
+from my_utilities import rtc, rtc_synced, rtc_unix_timestamp
 
 
 class AFEDevice:
@@ -80,6 +81,17 @@ class AFEDevice:
 
         self.init_after_restart()
 
+    def default_log_dict(self, extra_fields=None, timestamp_ms=None, unix_timestamp=None):
+        toReturn = {
+            "device_id": self.device_id,
+            "timestamp_ms": timestamp_ms or millis(),
+            "rtc_unix_timestamp": unix_timestamp or rtc_unix_timestamp()
+        }
+        if extra_fields:
+            for k, v in extra_fields.items():
+                toReturn[k] = v
+        return toReturn
+
     def trim_dict_for_logger(self, executing):
         trimmed = executing.copy()
         keys_to_trim = ["frame", "callback", "callback_error"]
@@ -89,10 +101,8 @@ class AFEDevice:
 
     def begin_configuration(self, timeout_ms=10000):
         self.logger.log(
-            VerbosityLevel["INFO"], {
-                "device_id": self.device_id,
-                "timestamp_ms": millis(),
-                "info": "begin_configuration"})
+            VerbosityLevel["INFO"],
+            self.default_log_dict({"info": "begin_configuration"}))
         self.is_configuration_started = True
         self.configuration_timeout_ms = timeout_ms
         self.configuration_start_timestamp_ms = millis()
@@ -108,10 +118,8 @@ class AFEDevice:
         }
         self.end_configuration(success=True)
         self.logger.log(
-            VerbosityLevel["INFO"], {
-                "device_id": self.device_id,
-                "timestamp_ms": millis(),
-                "info": "configured"})
+            VerbosityLevel["INFO"],
+            self.default_log_dict({"info": "configured"}))
 
     def init_after_restart(self):
         # self.afe_config = None
@@ -157,19 +165,20 @@ class AFEDevice:
         self.can_interface.send(
             bytearray([AFECommand.resetAll]), self.can_address, timeout=1000)
         self.init_after_restart()
-        
+
     def print_all_channel_settings(self):
         tmp = "AFE{}:\n".format(self.device_id)
         for ch in self.channels:
-            tmp += "\t{}->{}\n".format(ch.name,ch.config)
+            tmp += "\t{}->{}\n".format(ch.name, ch.config)
         p.print(tmp)
-        
+
     def start_periodic_measurement_for_channels(self, report_every_ms, channels=0xFF):
-        self.enqueue_u32_for_channel(AFECommand.setSensorDataSi_periodic_average,channels,report_every_ms)
+        self.enqueue_u32_for_channel(
+            AFECommand.setSensorDataSi_periodic_average, channels, report_every_ms)
 
     def start_periodic_measurement_by_config(self):
         report_every_ms = {}
-        for g in ["M","S"]:
+        for g in ["M", "S"]:
             for k, v in self.configuration[g].items():
                 ks = k.split(" ")[0]
                 if not ks == "report_every":
@@ -205,21 +214,21 @@ class AFEDevice:
                 time_sample_ms = int(round(time_sample_ms))
                 report_every_ms[g] = time_sample_ms
         commandKwargs = {"timeout_ms": 10220,
-                    "preserve": True,
-                    "timeout_start_on_send_ms": 3000,
-                    "callback_error": self.start_periodic_measurement_by_config}
+                         "preserve": True,
+                         "timeout_start_on_send_ms": 3000,
+                         "callback_error": self.start_periodic_measurement_by_config}
         if report_every_ms.get("M") == report_every_ms.get("S"):
             self.enqueue_u32_for_channel(
                 AFECommand.setChannel_period_ms_byMask,
-                0xFF,report_every_ms.get("M"),**commandKwargs)
+                0xFF, report_every_ms.get("M"), **commandKwargs)
         else:
             self.enqueue_u32_for_channel(
                 AFECommand.setChannel_period_ms_byMask,
-                AFECommandChannelMask.master,report_every_ms.get("M"),
+                AFECommandChannelMask.master, report_every_ms.get("M"),
                 **commandKwargs)
             self.enqueue_u32_for_channel(
                 AFECommand.setChannel_period_ms_byMask,
-                AFECommandChannelMask.slave,report_every_ms.get("S"),
+                AFECommandChannelMask.slave, report_every_ms.get("S"),
                 **commandKwargs)
 
     # # p.print AFE information
@@ -305,7 +314,7 @@ class AFEDevice:
                         preserve=False,
                         # startKeepOutput=False, outputRestart=False,
                         can_timeout_ms=None, callback=None, callback_error=None,
-                        print=False,**kwargs):
+                        print=False, **kwargs):
         """
         Prepares a command to be sent to the AFE device.
 
@@ -450,7 +459,9 @@ class AFEDevice:
                 self.executing["timeout_ms"] = self.executing["timeout_start_on_send_ms"]
             self.can_interface.send(
                 cmd["frame"], cmd["can_address"], timeout=cmd["can_timeout_ms"])
-            self.logger.log(VerbosityLevel["DEBUG"], "Sending {}".format(cmd))
+            self.logger.log(VerbosityLevel["DEBUG"],
+                            self.default_log_dict(
+                                {"debug": "Sending {}".format(cmd)}))
 
     def process_received_data(self, received_data):
         """
@@ -484,7 +495,8 @@ class AFEDevice:
             device_id = (received_data[0] >> 2) & 0xFF
             msg_from_slave = (received_data[0] >> 10) & 0x001
             if msg_from_slave != 1:
-                self.logger.log(VerbosityLevel["WARNING"], "Not from slave")
+                self.logger.log(VerbosityLevel["WARNING"],
+                                self.default_log_dict({"debug": "Not from slave"}))
                 return
             if device_id != self.device_id:
                 return
@@ -493,12 +505,14 @@ class AFEDevice:
             chunk_id = data_bytes[1] & 0x0F
             max_chunks = (data_bytes[1] >> 4) & 0x0F
             chunk_payload = data_bytes[2:]
-            self.logger.log(VerbosityLevel["DEBUG"], "R: ID:{}; Command: 0x{:02X}: {}".format(
-                device_id, command, data_bytes))
+            self.logger.log(VerbosityLevel["DEBUG"], 
+                            self.default_log_dict({"debug": "R: ID:{}; Command: 0x{:02X}: {}".format(
+                device_id, command, data_bytes)}))
 
             if command == AFECommand.getSerialNumber:
-                self.logger.log(VerbosityLevel["WARNING"], "R: ID:{}; Command: 0x{:02X}: {}".format(
-                    device_id, command, data_bytes))
+                self.logger.log(VerbosityLevel["WARNING"], 
+                                self.default_log_dict({"debug": "R: ID:{}; Command: 0x{:02X}: {}".format(
+                    device_id, command, data_bytes)}))
                 chunk_data = self.bytes_to_u32(chunk_payload)
                 if chunk_id == 0:
                     self.unique_id_str = None
@@ -513,10 +527,9 @@ class AFEDevice:
                     uid2 = 0x20353634
                     self.unique_id_str = "".join(
                         "{:08X}".format(b) for b in self.unique_id)
-                    self.logger.log(VerbosityLevel["INFO"], {
-                        "device_id": self.device_id,
-                        "timestamp_ms": millis(),
-                        "info": {"UID": self.unique_id_str}})
+                    self.logger.log(VerbosityLevel["INFO"],
+                                    self.default_log_dict(
+                                        {"info": {"UID": self.unique_id_str}}))
                     parsed_data["unique_id_str"] = self.unique_id_str
                     self.configuration["UID"] = self.unique_id_str
 
@@ -528,10 +541,8 @@ class AFEDevice:
             elif command == AFECommand.resetAll:
                 self.init_after_restart()
                 self.logger.log(VerbosityLevel["ERROR"],
-                                {
-                                    "device_id": self.device_id,
-                                    "timestamp_ms": millis(),
-                                    "error": "AFE {} was restared! Reason {}".format(device_id, ResetReason[chunk_payload[0]])})
+                                self.default_log_dict(
+                                    {"error": "AFE {} was restared! Reason {}".format(device_id, ResetReason[chunk_payload[0]])}))
                 self.logger.sync()
 
             elif command == AFECommand.startADC:
@@ -583,21 +594,25 @@ class AFEDevice:
                     for uch in unmasked_channels:
                         parsed_data["average_data"].update(
                             {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
-            
+
             elif command == AFECommand.setAD8402Value_byte_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
-                    self.configuration["M" if uch == 0 else "S"]["offset [bit]"] = self.bytes_to_u16(chunk_payload[1:])
+                    self.configuration["M" if uch == 0 else "S"]["offset [bit]"] = self.bytes_to_u16(
+                        chunk_payload[1:])
                     if 0x01 & (chunk_payload[2] >> uch):
-                        self.logger.log(VerbosityLevel["ERROR"], "AFE {}: ERROR setAD8402Value_byte_byMask for CH{}".format(
+                        self.logger.log(VerbosityLevel["ERROR"], 
+                                        self.default_log_dict({"error": "AFE {}: ERROR setAD8402Value_byte_byMask for CH{}".format(
                             device_id, uch
-                        ))
-                        self.configuration["M" if uch == 0 else "S"]["offset [bit]"] = None # Error
+                        )}))
+                        # Error
+                        self.configuration["M" if uch ==
+                                           0 else "S"]["offset [bit]"] = None
 
             elif command == AFECommand.setAveragingMode_byMask:
                 unmasked_channels = self.unmask_channel(chunk_payload[0])
                 for uch in unmasked_channels:
                     averaging_mode = ''
-                    for a,v in AFECommandAverage.items():
+                    for a, v in AFECommandAverage.items():
                         if v == chunk_payload[1]:
                             averaging_mode = a
                             break
@@ -704,12 +719,11 @@ class AFEDevice:
             elif command == AFECommand.writeGPIO:
                 pass
             elif command == AFECommand.setCanMsgBurstDelay_ms:
-                self.logger.log(VerbosityLevel["INFO"], {
-                    "device_id": self.device_id,
-                    "timestamp_ms": millis(),
-                    "info": "Changed CanMsgBurstDelay_ms on AFE to {}".format(
-                        self.bytes_to_u32(chunk_payload[1:]))
-                })
+                self.logger.log(VerbosityLevel["INFO"],
+                                self.default_log_dict({
+                                    "info": "Changed CanMsgBurstDelay_ms on AFE to {}".format(
+                                        self.bytes_to_u32(chunk_payload[1:]))
+                                }))
                 pass
             elif command == AFECommand.setAfe_can_watchdog_timeout_ms:
                 self.afe_can_watchdog_timeout_ms = self.bytes_to_u32(
@@ -768,37 +782,25 @@ class AFEDevice:
                     if command == self.executing["command"]:
                         self.executing["status"] = CommandStatus.RECIEVED
                         self.logger.log(
-                            VerbosityLevel["DEBUG"], {
-                                "device_id": self.device_id,
-                                "timestamp_ms": millis(),
-                                "debug": "END 0x{:02X}".format(command)})
+                            VerbosityLevel["DEBUG"], self.default_log_dict({
+                                "debug": "END 0x{:02X}".format(command)}))
                         try:
                             if "callback" in self.executing and callable(self.executing["callback"]):
                                 self.executing["callback"](self.executing)
                         except:
                             self.logger.log(
                                 VerbosityLevel["ERROR"],
-                                {"device_id": self.device_id,
-                                 "timestamp_ms": millis(),
-                                 "info": self.trim_dict_for_logger(self.executing),
-                                 "error": "callback error"})
+                                self.default_log_dict({
+                                    "info": self.trim_dict_for_logger(self.executing),
+                                    "error": "callback error"}))
                         toLog = None
-                        def f_toLog():
-                            return {
-                                "device_id": self.device_id,
-                                "timestamp_ms": millis(),
-                                "request_timestamp_ms": self.executing.get("timestamp_ms"),
-                                "command": command,
-                                "retval": self.trim_dict_for_logger(self.executing.get("retval")),
-                            }
+
                         if self.executing.get("preserve") == True:
-                            toLog = {
-                                "device_id": self.device_id,
-                                "timestamp_ms": millis(),
+                            toLog = self.default_log_dict({
                                 "request_timestamp_ms": self.executing.get("timestamp_ms"),
                                 "command": command,
                                 "retval": self.trim_dict_for_logger(self.executing.get("retval")),
-                            }
+                            })
                             self.logger.log(
                                 VerbosityLevel["MEASUREMENT"], toLog)
                         self.executing = None
@@ -807,12 +809,10 @@ class AFEDevice:
                 if self.save_periodic_data is True:
                     if "timestamp_ms" in self.periodic_data:
                         try:
-                            toLog = {
-                                "device_id": self.device_id,
-                                "timestamp_ms": millis(),
+                            toLog = self.default_log_dict({
                                 "command": AFECommand.AFECommand_getSensorDataSi_periodic,
                                 "retval": self.trim_dict_for_logger(self.periodic_data),
-                            }
+                            })
                             self.logger.log(
                                 VerbosityLevel["MEASUREMENT"], toLog)
                         except Exception as e:
@@ -823,12 +823,10 @@ class AFEDevice:
                     for subdev in [0, 1]:
                         if self.debug_machine_control_msg[subdev].get("timestamp_ms"):
                             try:
-                                toLog = {
-                                    "device_id": self.device_id,
+                                toLog = self.default_log_dict({
                                     "command": AFECommand.debug_machine_control,
                                     "retval": self.trim_dict_for_logger(self.debug_machine_control_msg[subdev]),
-                                    "timestamp_ms": millis(),
-                                }
+                                })
                                 self.logger.log(VerbosityLevel["INFO"], toLog)
                             except Exception as e:
                                 p.print(
@@ -879,20 +877,19 @@ class AFEDevice:
             if self.is_configuration_started is True:
                 timestamp_ms = millis()
                 if (millis() - self.configuration_start_timestamp_ms) > self.configuration_timeout_ms:
-                    self.logger.log(VerbosityLevel["ERROR"], {
-                                    "device_id": self.device_id, "error": "configuration timeout", "timestamp_ms": millis()})
+                    self.logger.log(VerbosityLevel["ERROR"], 
+                                    self.default_log_dict({"error": "configuration timeout", "timestamp_ms": millis()}))
                     self.restart_device()
 
         if self.executing is not None:
             if (millis() - self.executing["timestamp_ms"]) > self.executing["timeout_ms"]:
                 self.executing["status"] = CommandStatus.ERROR
                 self.logger.log(VerbosityLevel["ERROR"],
+                                self.default_log_dict(
                                 {
-                                    "device_id": self.device_id,
-                                    "timestamp_ms": millis(),
                                     "error": "TIMEOUT",
                                     "executing": self.trim_dict_for_logger(self.executing)
-                })
+                                }))
                 if "callback_error" in self.executing:
                     try:
                         if not self.executing["callback_error"] is None:
@@ -914,4 +911,3 @@ class AFEDevice:
         else:
             # micropython.schedule(self.execute, 0)
             self.execute(0)
-

@@ -18,6 +18,12 @@ print_lock = _thread.allocate_lock()
 rtc = machine.RTC()
 rtc_synced = False
 
+def rtc_unix_timestamp():
+    dt = rtc.datetime() # (year, month, day, weekday, hours, minutes, seconds, subseconds)
+    # Rearrange to (year, month, day, hour, minute, second, weekday, yearday)
+    tm = (dt[0], dt[1], dt[2], dt[4], dt[5], dt[6], dt[3], 0)
+    return time.mktime(tm) + 946684800 # Add seconds from 1970-01-01 to 2000-01-01
+
 class Print:
     def __init__(self):
         pass
@@ -34,17 +40,17 @@ class PrintButLouder:
         self.queue = []
         
     def print(self, *args, **kwargs):
-        # with print_lock:
+        with print_lock:
         # print(*args, **kwargs)
-        self.queue.append((args, kwargs))
-        if len(self.queue) > 50:
-            self.queue.pop(0)
+            self.queue.append((args, kwargs))
+            if len(self.queue) > 50:
+                self.queue.pop(0)
 
     def process_queue(self):
         if self.queue:
-            # with print_lock:
-            item = self.queue.pop(0)
-            print(*(item[0]), **item[1])
+            with print_lock:
+                item = self.queue.pop(0)
+                print(*(item[0]), **item[1])
 
 p = PrintButLouder()
 # P = PrintButLouder()
@@ -363,7 +369,7 @@ class JSONLogger:
         if self.file is None:
             self.new_file()
         log_timestamp = millis()
-        log_entry = {"timestamp": log_timestamp, "level": level, "message": message}
+        log_entry = {"timestamp": log_timestamp, "rtc_timestamp":rtc_unix_timestamp(), "level": level, "message": message}
         try:
             self.cursor_position_last = self.cursor_position
             toLog = json.dumps(log_entry)
