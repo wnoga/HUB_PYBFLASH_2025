@@ -85,15 +85,15 @@ async def periodic_tasks_loop():
     while True:
         wdt.feed()
         try:
-            for _ in range(100):
+            for _ in range(10):
                 logger.machine()  # logger.machine() can have blocking I/O
-                await uasyncio.sleep_ms(0)  # Yield after logger processing
+                await uasyncio.sleep_ms(1)  # Yield after logger processing
 
             p.process_queue()  # p.process_queue() can have blocking I/O
             await uasyncio.sleep_ms(0)  # Yield after print queue processing
         except Exception as e:
             print("Error in periodic_tasks_loop:", e)
-        await uasyncio.sleep_ms(10) # Overall frequency for this loop
+        await uasyncio.sleep_ms(50) # Overall frequency for this loop
 
 
 async def main():
