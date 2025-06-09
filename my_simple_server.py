@@ -288,36 +288,39 @@ class AsyncWebServer:
         asyncio.create_task(self.sync_ntp_loop())
         
         while True:
-            if not self.lan_connected:
-                p.print("Attempting to reconnect Ethernet...")
-                try:
-                    await self.connect_ethernet() # Call with await
-                except RuntimeError:
-                    p.print("Ethernet reconnection failed. Retrying in 10s.")
-                    await asyncio.sleep(100)
-                    continue
+            try:
+                if not self.lan_connected:
+                    p.print("Attempting to reconnect Ethernet...")
+                    try:
+                        await self.connect_ethernet() # Call with await
+                    except RuntimeError:
+                        p.print("Ethernet reconnection failed. Retrying in 10s.")
+                        await asyncio.sleep(100)
+                        continue
 
-            if self.server is None:
-                p.print("Attempting to start server...")
-                try:
-                    self.server = await asyncio.start_server(self.handle_client, "0.0.0.0", self.port)
-                    p.print("Server running at http://{}:{}".format(self.lan.ifconfig()[0],self.port))
-                except Exception as e:
-                    p.print("Failed to start server: {}. Retrying in 10s.".format(e))
-                    self.server = None # Ensure server is None if start failed
-                    await asyncio.sleep(100)
-                    continue
+                if self.server is None:
+                    p.print("Attempting to start server...")
+                    try:
+                        self.server = await asyncio.start_server(self.handle_client, "0.0.0.0", self.port)
+                        p.print("Server running at http://{}:{}".format(self.lan.ifconfig()[0],self.port))
+                    except Exception as e:
+                        p.print("Failed to start server: {}. Retrying in 10s.".format(e))
+                        self.server = None # Ensure server is None if start failed
+                        await asyncio.sleep(100)
+                        continue
 
-            # Periodically check LAN connection status
-            if (millis() - self.last_lan_check_ms) > 5000: # Check every 5 seconds
-                if not self.lan.isconnected():
-                    p.print("Ethernet disconnected.")
-                    self.lan_connected = False
-                    if self.server:
-                        self.server.close()
-                        await self.server.wait_closed()
-                        self.server = None
-                self.last_lan_check_ms = millis()
+                # Periodically check LAN connection status
+                if (millis() - self.last_lan_check_ms) > 5000: # Check every 5 seconds
+                    if not self.lan.isconnected():
+                        p.print("Ethernet disconnected.")
+                        self.lan_connected = False
+                        if self.server:
+                            self.server.close()
+                            await self.server.wait_closed()
+                            self.server = None
+                    self.last_lan_check_ms = millis()
+            except Exception as e:
+                p.print("HUB main_loop:",e)
             await asyncio.sleep_ms(self.main_loop_yield_wait_ms) # Yield control
     def run(self):
         try:

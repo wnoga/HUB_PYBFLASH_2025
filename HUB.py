@@ -19,146 +19,102 @@ from my_utilities import lock, unlock
 from my_utilities import extract_bracketed
 
 
+import micropython
+import uasyncio
+import pyb
+
 class RxDeviceCAN:
-    def __init__(self,can_bus: pyb.CAN, use_rxcallback=True):
-        # self.lock = print_lock
+    def __init__(self, can_bus: pyb.CAN, use_rxcallback=True):
         self.can_bus = can_bus
         self.use_rxcallback = use_rxcallback
         self.rx_timeout_ms = 5000
-        self.rx_buffer = bytearray(8)  # Pre-allocate memory
-        # Use memoryview to reduce heap allocations
-        # self.rx_message = [0, 0, 0, memoryview(self.rx_buffer)]
         self.rx_message_buffer_max_len = 32
         self.rx_message_buffer_head = 0
         self.rx_message_buffer_tail = 0
-        # self.rx_buffer_arr = [bytearray(8) for x in range(
-        #     self.rx_message_buffer_max_len)]  # Pre-allocate memory
-        # self.rx_message_buffer = [
-        #     [0, 0, 0, memoryview(self.rx_buffer_arr[x])] for x in range(self.rx_message_buffer_max_len)]
         self.rx_message_buffer = [
-            # [0, 0, 0, bytearray(8)] for x in range(self.rx_message_buffer_max_len)]
-            [0, 0, 0, memoryview(bytearray(8))] for x in range(self.rx_message_buffer_max_len)]
+            [0, 0, 0, memoryview(bytearray(8))]
+            for _ in range(self.rx_message_buffer_max_len)
+        ]
+
+        self.running = True
+        self.yielld_ms = 10
+        self.error_yielld_ms = 100
+
         try:
             while self.handle_can_rx_polling():
                 pass
         except:
             pass
-        self.running = True
-        self.use_rxcallback = use_rxcallback
+
         if self.use_rxcallback:
-            # Trigger every new CAN message
-            self.can_bus.rxcallback(0, self.handle_can_rx)
-        
+            # Register CAN RX interrupt, call safe ISR wrapper
+            self.can_bus.rxcallback(0, self.handle_can_rx_irq)
+
     def get(self):
-        # with self.lock:
-        
         if self.rx_message_buffer_head == self.rx_message_buffer_tail:
             return None
-        irq_state = pyb.disable_irq() # Start of critical section
-        # tmp = self.rx_message_buffer[self.rx_message_buffer_tail].copy()
+        irq_state = pyb.disable_irq()
         tmp = [self.rx_message_buffer[self.rx_message_buffer_tail][0],
-                self.rx_message_buffer[self.rx_message_buffer_tail][1],
-                self.rx_message_buffer[self.rx_message_buffer_tail][2],
-                bytearray(self.rx_message_buffer[self.rx_message_buffer_tail][3])]
+               self.rx_message_buffer[self.rx_message_buffer_tail][1],
+               self.rx_message_buffer[self.rx_message_buffer_tail][2],
+               bytearray(self.rx_message_buffer[self.rx_message_buffer_tail][3])]
         self.rx_message_buffer_tail += 1
         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
             self.rx_message_buffer_tail = 0
-        pyb.enable_irq(irq_state) # End of critical section
+        pyb.enable_irq(irq_state)
         return tmp
 
-    # def inc(self):
-    #     self.rx_message_buffer_head += 1
-    #     if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
-    #         self.rx_message_buffer_head = 0
-    #     if self.rx_message_buffer_head == self.rx_message_buffer_tail:
-    #         self.rx_message_buffer_tail += 1
-    #         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
-    #             self.rx_message_buffer_tail = 0
-
-    def handle_can_rx(self, bus: pyb.CAN, reason=None):
-        # with self.lock:
-        # lock()
+    def handle_can_rx(self):
         try:
-            while bus.any(0):
-                bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
+            while self.can_bus.any(0):
+                self.can_bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
                 self.rx_message_buffer_head += 1
                 if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
                     self.rx_message_buffer_head = 0
-                if self.rx_message_buffer_head == self.rx_message_buffer_tail: # Buffer full
-                    self.rx_message_buffer_tail += 1 # Overwrite oldest message
+                if self.rx_message_buffer_head == self.rx_message_buffer_tail:
+                    self.rx_message_buffer_tail += 1
                     if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
                         self.rx_message_buffer_tail = 0
         except:
             pass
-        # """ Callback function to handle received CAN messages. """
-        # # If use_rxcallback is True, this is called from ISR context or similar,
-        # # a message should be ready. timeout=0 means non-blocking read.
-        # # If use_rxcallback is False, it's called from polling after can_bus.any(0),
-        # # so a message is likely ready, but self.rx_timeout_ms can be used.
-        # current_recv_timeout = 0 if self.use_rxcallback else self.rx_timeout_ms
-        
-        # received_successfully = False
-        # try:
-        #     # The fourth element of the list item is the memoryview/bytearray for data
-        #     bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=current_recv_timeout)
-        #     received_successfully = True
-        # except OSError as e:
-        #     if e.args[0] == 11: # EAGAIN for non-blocking read with no data (micropython.const(MP_EAGAIN))
-        #         # This might happen if timeout=0 and message was read by another context,
-        #         # or if can.any() was true but message disappeared before recv in polling.
-        #         # p.print(f"RxDeviceCAN.handle_can_rx: EAGAIN on recv with timeout {current_recv_timeout}")
-        #         pass # Do not advance buffer head if no message was actually received
-        #     else:
-        #         # Log other OSErrors, but don't advance buffer head on error
-        #         p.print("RxDeviceCAN.handle_can_rx: recv OSError:",e)
 
-        # if received_successfully:
-        #     self.rx_message_buffer_head += 1
-        #     if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
-        #         self.rx_message_buffer_head = 0
-        #     if self.rx_message_buffer_head == self.rx_message_buffer_tail: # Buffer full
-        #         self.rx_message_buffer_tail += 1 # Overwrite oldest message
-        #         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
-        #             self.rx_message_buffer_tail = 0
-        # # unlock()
-                
     def handle_can_rx_polling(self):
         try:
             if self.can_bus.any(0):
-                self.handle_can_rx(self.can_bus)
+                self.handle_can_rx()
                 return True
         except Exception as e:
-            p.print("handle_can_rx_polling: {}".format(e))
-            return None
-    
+            print("handle_can_rx_polling: {}".format(e))
+        return False
+
+    # SCHEDULED version, safe in main thread
     def handle_can_rx_polling_schedule(self, _):
         self.handle_can_rx_polling()
-                
+
+    # ISR → only schedules processing
+    def handle_can_rx_irq(self, bus: pyb.CAN, reason=None):
+        try:
+            micropython.schedule(self.handle_can_rx_polling_schedule, 0)
+        except:
+            pass  # Too many scheduled tasks or already pending
+
     def main_process(self):
         self.handle_can_rx_polling_schedule(0)
-        
-    async def main_loop(self,reason=None):
+
+    async def main_loop(self, reason=None):
         while self.running:
             try:
                 state = self.can_bus.state()
                 if state == pyb.CAN.STOPPED:
-                    p.print("CAN BUS STOPPED")
-                elif state > 0: # pyb.CAN.ERROR_ACTIVE: # 1
-                    # CAN.ERROR_WARNING, # 2
-                    # CAN.ERROR_PASSIVE, # 3
-                    # CAN.BUS_OFF,       # 4
-                    p.print("CAN BUS ERROR {}".format(state))
+                    print("CAN BUS STOPPED")
+                elif state > 0:
+                    print("CAN BUS ERROR:", state)
+                    await uasyncio.sleep_ms(self.error_yielld_ms)
                     return
-                    # print("X  ")
-                # print_lock.acquire()
                 self.handle_can_rx_polling()
-                # time.sleep_us(1)
-                # print_lock.release()
-                # except Exception as e:
             except Exception as e:
-                pass
-            uasyncio.sleep_ms(1)
-            # time.sleep_ms(1)
+                print("RxDeviceCAN main_process:", e)
+            await uasyncio.sleep_ms(self.yielld_ms)
 
 
 class HUBDevice:
@@ -933,13 +889,16 @@ class HUBDevice:
 
     async def main_loop(self):
         while self.run:
-            # print("  H")
-            # print_lock.acquire()
-            self.main_process()
-            # p.process_queue()
-            # self.logger.machine()
-            wdt.feed()
-            # time.sleep_us(10)
+            try:
+                # print("  H")
+                # print_lock.acquire()
+                self.main_process()
+                # p.process_queue()
+                # self.logger.machine()
+                wdt.feed()
+                # time.sleep_us(10)
+            except Exception as e:
+                p.print("HUB main_loop: {}".format(e))
             await uasyncio.sleep_ms(0)
             # print_lock.release()
             # time.sleep_ms(1)
