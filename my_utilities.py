@@ -10,13 +10,13 @@ try:
     import micropython
     import machine
     import gc
+    # # Create a lock for safe printing
+    print_lock = _thread.allocate_lock()
+    rtc = machine.RTC()
     # lock = _thread.allocate_lock()
 except:
     pass
 import time
-# # Create a lock for safe printing
-print_lock = _thread.allocate_lock()
-rtc = machine.RTC()
 rtc_synced = False
 
 def lock(blocking=True, sleep_ms=1):
@@ -41,6 +41,14 @@ def rtc_unix_timestamp():
     tm = (dt[0], dt[1], dt[2], dt[4], dt[5], dt[6], dt[3], 0)
     # Add seconds from 1970-01-01 to 2000-01-01
     return time.mktime(tm) + 946684800
+
+def rtc_datetime_pretty():
+    dt = rtc.datetime()
+    return "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
+        dt[0], dt[1], dt[2], dt[4], dt[5], dt[6])
+
+
+# Custom print function with lock
 
 
 class Print:
@@ -202,6 +210,12 @@ e_ADC_CHANNEL: dict[int, str] = {
     7: "TEMP_LOCAL"
 }
 
+def get_e_ADC_CHANNEL(channel_name):
+    for k, v in e_ADC_CHANNEL:
+        if v == channel_name:
+            return k
+    return None
+
 channel_name_xxx: dict[str, int] = {
     "MASTER_VOLTAGE": AFECommandChannel.AFECommandChannel_2,
     "SLAVE_VOLTAGE": AFECommandChannel.AFECommandChannel_3,
@@ -297,6 +311,7 @@ class SensorChannel:
         self.channel_id = channel_id
         self.config = {}
         self.name = e_ADC_CHANNEL[channel_id]
+        self.last_recieved_data = {"last":{},"average":{}}
         # # Use .get() to avoid KeyError if a key is missing
         # self.time_interval_ms = kwargs.get("time_interval_ms", 0)
         # self.alpha = kwargs.get("alpha", 0)

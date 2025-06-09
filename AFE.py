@@ -14,7 +14,7 @@ from my_utilities import VerbosityLevel
 from my_utilities import SensorChannel, AFECommandChannelMask, AFECommandAverage
 from my_utilities import extract_bracketed
 from my_utilities import rtc, rtc_synced, rtc_unix_timestamp
-
+from my_utilities import get_e_ADC_CHANNEL
 
 class AFEDevice:
     def __init__(self, can_interface: pyb.CAN, device_id, logger: JSONLogger, config_path=None):
@@ -29,7 +29,7 @@ class AFEDevice:
 
         # Use this if communication is faster than the AFE
         self.use_tx_delay = True
-        self.tx_timeout_ms = 10
+        self.tx_timeout_ms = 50
 
         self.can_address = device_id << 2
         self.configuration = {}
@@ -764,7 +764,7 @@ class AFEDevice:
                 p.print("Unknow command: 0x{:02X}: {}".format(
                     command, data_bytes))
                 return
-
+            
             if self.executing is not None:
                 if command == self.executing["command"]:
                     if self.executing["preserve"] == True:
@@ -813,6 +813,16 @@ class AFEDevice:
                             "command": AFECommand.AFECommand_getSensorDataSi_periodic,
                             "retval": self.trim_dict_for_logger(self.periodic_data),
                         })
+                        channel_timestamp = self.periodic_data.get("timestamp_ms",None)
+                        last_data = self.periodic_data.get("last_data",None)
+                        average_data = self.periodic_data.get("average_data",None)
+                        for ch in self.channels:
+                            if last_data:
+                                if ch.name in last_data:
+                                    ch.last_recieved_data["last"] = {"value":last_data[ch.name], "timestamp_ms": channel_timestamp}
+                            if average_data:
+                                if ch.name in average_data:
+                                    ch.last_recieved_data["average"] = {"value":average_data[ch.name], "timestamp_ms": channel_timestamp}
                         self.logger.log(
                             VerbosityLevel["MEASUREMENT"], toLog)
                     except Exception as e:

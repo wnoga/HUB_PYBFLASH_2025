@@ -15,15 +15,12 @@ from my_utilities import p, wdt
 from my_utilities import JSONLogger
 from my_utilities import rtc_unix_timestamp, rtc
 
-
 # from my_utilities import lock
 import time
 
-print("RESTART")
-
-logger = JSONLogger()
 can_bus = pyb.CAN(1)
-
+logger = JSONLogger()
+print("RESTART")
 # wdt.feed()
 if False:
     from my_database import SimpleFileDB, StatusFlags
@@ -87,13 +84,16 @@ async def periodic_tasks_loop():
     p.print("Periodic tasks loop started.")
     while True:
         wdt.feed()
-        logger.machine()  # logger.machine() can have blocking I/O
-        await uasyncio.sleep_ms(0)  # Yield after logger processing
+        try:
+            for _ in range(100):
+                logger.machine()  # logger.machine() can have blocking I/O
+                await uasyncio.sleep_ms(0)  # Yield after logger processing
 
-        p.process_queue()  # p.process_queue() can have blocking I/O
-        await uasyncio.sleep_ms(0)  # Yield after print queue processing
-
-        await uasyncio.sleep_ms(100) # Overall frequency for this loop
+            p.process_queue()  # p.process_queue() can have blocking I/O
+            await uasyncio.sleep_ms(0)  # Yield after print queue processing
+        except Exception as e:
+            print("Error in periodic_tasks_loop:", e)
+        await uasyncio.sleep_ms(10) # Overall frequency for this loop
 
 
 async def main():
@@ -132,8 +132,8 @@ async def main():
         tasks.append(uasyncio.create_task(rxDeviceCAN.main_loop()))
         p.print("rxDeviceCAN.main_loop task created.")
 
-    # tasks.append(uasyncio.create_task(periodic_tasks_loop()))
-    # p.print("periodic_tasks_loop task created.")
+    tasks.append(uasyncio.create_task(periodic_tasks_loop()))
+    p.print("periodic_tasks_loop task created.")
 
 loop = uasyncio.get_event_loop()
 loop.create_task(main())

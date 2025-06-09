@@ -12,7 +12,7 @@ import micropython
 from my_utilities import wdt
 from my_utilities import millis
 from my_utilities import p, VerbosityLevel
-from my_utilities import rtc, rtc_synced
+from my_utilities import rtc, rtc_synced, rtc_datetime_pretty, rtc_unix_timestamp
 
 import network
 import uasyncio as asyncio
@@ -42,9 +42,9 @@ class AsyncWebServer:
         self.AsyncWebServer_cb_retval = {}
 
     def connect_ethernet(self):
-        self.lan.active(True)
-
-        if not self.dhcp and self.static_ip_config:
+        # The next line was already present
+        self.lan.active(True)        
+        if not self.dhcp and self.static_ip_config:            
             ip, subnet, gateway, dns = self.static_ip_config
             self.lan.ifconfig((ip, subnet, gateway, dns))
 
@@ -108,29 +108,92 @@ class AsyncWebServer:
             
         return None
 
+    async def send_control_web_page(self, writer):
+        """
+        Generates the HTML content for the control web page.
+
+        This method creates a simple HTML page that displays information about
+        the connected AFE devices and provides controls for interacting with them.
+        It includes device status, configuration, and buttons for triggering
+        measurements and other procedures.
+
+        Returns:
+            str: The complete HTML content of the control page.
+        """
+        await writer.awrite("HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n")
+        await writer.awrite("""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>AFE HUB Control</title>
+                <style>
+                    body { }
+                    .afe-device { border: 1px solid #ccc; margin: 10px; padding: 10px; }
+                    .afe-device h3 { margin-top: 0; }
+                    button { margin: 5px; padding: 8px; cursor: pointer; }
+                    pre { background-color: #eee; padding: 10px; overflow-x: auto; }
+                </style>
+            </head>""")
+        await writer.awrite("""
+            <body>
+                <h1>AFE HUB Control</h1>
+                <p>Current Time: <span id="current-time">{}</span></p>
+                <button onclick="updatePage()">Refresh Data</button>
+                <div id="afe-devices-container">
+            """.format(rtc_datetime_pretty()))
+
+        if not self.hub.afe_devices:
+            await writer.awrite("<p>No AFE devices found.</p>")
+        else:
+            for afe in self.hub.afe_devices:
+                await writer.awrite("""
+                <div class="afe-device" id="afe-{}">
+                    <h3>AFE Device ID: {}</h3>
+                    <p>UID: {}</p>
+                    <h4>Configuration:</h4>
+                    <pre>{}</pre> 
+                    """.format(
+                        afe.device_id,
+                        afe.device_id,
+                        afe.unique_id_str or 'N/A',
+                        ujson.dumps(afe.configuration))) # Consider if afe.configuration can be very large
+
+                for ch in afe.channels:
+                    # Formatting complex objects like ch.last_recieved_data directly
+                    # might still be an issue if they are very large.
+                    # For now, let's assume ujson.dumps is efficient enough for them.
+                    channel_data_str = ujson.dumps(ch.last_recieved_data)
+                    await writer.awrite("""
+                    <div class="afe-channel">
+                        <h5>Channel {}:</h5>
+                        <p>Data: {}</p>
+                    </div>
+                    """.format(ch.name,channel_data_str))
+                await writer.awrite("""
+                    </div>
+                """)
+                # Example buttons (ensure functions are defined in your JS)
+                # await writer.awrite(f"""
+                # <button onclick="getMeasurementLast({afe.device_id})">Get Last Measurement</button>
+                # </div>
+                # """.encode())
+
+        await writer.awrite(b"""
+                </div>
+            </body>
+            </html>
+        """)
+
 
     async def handle_client(self, reader, writer):
-        request_line = await reader.readline()
-        # p.print("Request:", request_line)
-        
-        # if request_line[-1] != "\n":
-        #     print(request_line[-1], "\n", b"\n")
-        #     while await reader.readline() != b"\r\n":
-        #         pass
-        # print("Readed: ", request_line)
+        request_line = await uasyncio.wait_for(reader.readline(), 5)
         response = await self.handle_procedure(request_line)
         if response:
-            # print("XXX")
-            # print(response)
-            pass
-        else:
-            response = b"""\
-    HTTP/1.0 200 OK
-
-    Hello from AsyncWebServer over Ethernet!
-    """
-        if response:
             await writer.awrite(response)
+        else:
+            while await uasyncio.wait_for(reader.readline(), 1) != b"\r\n":
+                pass
+            await self.send_control_web_page(writer)
         await writer.aclose()
         
 

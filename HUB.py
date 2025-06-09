@@ -43,6 +43,7 @@ class RxDeviceCAN:
                 pass
         except:
             pass
+        self.running = True
         self.use_rxcallback = use_rxcallback
         if self.use_rxcallback:
             # Trigger every new CAN message
@@ -137,16 +138,26 @@ class RxDeviceCAN:
         self.handle_can_rx_polling_schedule(0)
         
     async def main_loop(self,reason=None):
-        while not self.use_rxcallback:
-            # try:
-                # print("X  ")
-            # print_lock.acquire()
-            self.handle_can_rx_polling()
-            # time.sleep_us(1)
+        while self.running:
+            try:
+                state = self.can_bus.state()
+                if state == pyb.CAN.STOPPED:
+                    p.print("CAN BUS STOPPED")
+                elif state > 0: # pyb.CAN.ERROR_ACTIVE: # 1
+                    # CAN.ERROR_WARNING, # 2
+                    # CAN.ERROR_PASSIVE, # 3
+                    # CAN.BUS_OFF,       # 4
+                    p.print("CAN BUS ERROR {}".format(state))
+                    return
+                    # print("X  ")
+                # print_lock.acquire()
+                self.handle_can_rx_polling()
+                # time.sleep_us(1)
+                # print_lock.release()
+                # except Exception as e:
+            except Exception as e:
+                pass
             uasyncio.sleep_ms(1)
-            # print_lock.release()
-            # except Exception as e:
-            #     p.print("handle_can_rx_polling: {}".format(e))
             # time.sleep_ms(1)
 
 
@@ -244,6 +255,7 @@ class HUBDevice:
         self.use_automatic_restart = False
         for afe in self.afe_devices:
             afe.restart_device()
+        self.powerOff()
 
     def clear_all_logs(self):
         try:
@@ -617,18 +629,32 @@ class HUBDevice:
                          }
         afe.enqueue_command(AFECommand.getSyncTimestamp, None, **commandKwargs)
 
+    def default_afe_pause(self, afe_id=35):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        commandKwargs = {"timeout_ms": 10220,
+                    "preserve": True,
+                    "error_callback": None
+                    }
+        afe.enqueue_u32_for_channel(
+            AFECommand.setChannel_period_ms_byMask,
+            0xFF, 0, **commandKwargs)
 
     def default_full(self, afe_id=35):
         self.powerOn()
-        self.default_setCanMsgBurstDelay_ms(afe_id, 25)
+        self.default_afe_pause(afe_id)
+        self.default_setCanMsgBurstDelay_ms(afe_id, 0)
         self.default_setAfe_can_watchdog_timeout_ms(afe_id, 1000000)
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
         afe.begin_configuration(timeout_ms=20000)
+        self.default_get_UID(afe_id)
         self.default_procedure(afe_id)
         self.default_set_dac(afe_id)
         self.default_start_temperature_loop(afe_id)
+        self.default_setCanMsgBurstDelay_ms(afe_id, 50)
         self.default_accept(afe_id)
         self.defualt_getSyncTimestamp(afe_id)
 
@@ -910,7 +936,7 @@ class HUBDevice:
             # print("  H")
             # print_lock.acquire()
             self.main_process()
-            p.process_queue()
+            # p.process_queue()
             self.logger.machine()
             wdt.feed()
             # time.sleep_us(10)
