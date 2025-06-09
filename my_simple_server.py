@@ -39,27 +39,31 @@ class AsyncWebServer:
         self.last_lan_check_ms = 0
         self.ntp_synced = False
         
+        self.main_loop_yield_wait_ms = 10
+        self.sync_ntp_loop_yield_wait_s = 10
+        self.sync_ntp_every_s = 10*60
+        
         self.AsyncWebServer_cb_retval = {}
 
-    def connect_ethernet(self):
+    async def connect_ethernet(self):
         # The next line was already present
         self.lan.active(True)        
         if not self.dhcp and self.static_ip_config:            
             ip, subnet, gateway, dns = self.static_ip_config
             self.lan.ifconfig((ip, subnet, gateway, dns))
 
-        print("Waiting for Ethernet connection...", end="")
+        p.print("Waiting for Ethernet connection...", end="")
         timeout = 10
         while not self.lan.isconnected() and timeout > 0:
-            print(".", end="")
-            time.sleep(1)
+            p.print(".", end="")
+            await uasyncio.sleep(1) # Use asynchronous sleep
             timeout -= 1
-        print()
+        p.print("") # Newline after dots
 
         if not self.lan.isconnected():
             raise RuntimeError("Ethernet connection failed")
 
-        print("Ethernet connected. IP:", self.lan.ifconfig()[0])
+        p.print("Ethernet connected. IP:", self.lan.ifconfig()[0])
         self.lan_connected = True
         
     def hub_cb(self,msg:dict=None):
@@ -186,15 +190,40 @@ class AsyncWebServer:
 
 
     async def handle_client(self, reader, writer):
-        request_line = await uasyncio.wait_for(reader.readline(), 5)
-        response = await self.handle_procedure(request_line)
-        if response:
-            await writer.awrite(response)
-        else:
-            while await uasyncio.wait_for(reader.readline(), 1) != b"\r\n":
+        peername = writer.get_extra_info('peername')
+        try:
+            request_line = await uasyncio.wait_for(reader.readline(), 5)
+            if not request_line: # Client closed connection before sending anything
+                p.print("Client {} disconnected before sending request.".format(peername))
+                # writer.close() # Ensure writer is closed in finally block
+                # await writer.wait_closed()
+                return
+
+            response = await self.handle_procedure(request_line)
+            if response:
+                await writer.awrite(response)
+            else:
+                # If it's not a procedure call, assume it's a GET for the main page.
+                # We need to consume the rest of the HTTP headers.
+                while True:
+                    header_line = await uasyncio.wait_for(reader.readline(), 1) # Timeout for each header line
+                    if header_line == b"\r\n" or not header_line: # Empty line signifies end of headers or client closed
+                        break
+                await self.send_control_web_page(writer)
+        except OSError as e:
+            if e.args[0] == 104:  # ECONNRESET
+                p.print("Connection reset by peer {}.".format(peername))
+            else:
+                p.print("OSError in handle_client for {}: {}".format(peername,e))
+        except uasyncio.TimeoutError:
+            p.print("Timeout in handle_client for {}.".format(peername))
+        except Exception as e:
+            p.print("Error handling client {}: {}".format(peername,e))
+        finally:
+            try:
+                await writer.aclose()
+            except:
                 pass
-            await self.send_control_web_page(writer)
-        await writer.aclose()
         
 
     async def sync_rtc_with_ntp(self):
@@ -242,7 +271,7 @@ class AsyncWebServer:
             return False
 
     async def start(self):
-        self.connect_ethernet()
+        await self.connect_ethernet() # Call with await
         
         # Start NTP sync loop
         asyncio.create_task(self.sync_ntp_loop())
@@ -251,7 +280,7 @@ class AsyncWebServer:
             if not self.lan_connected:
                 p.print("Attempting to reconnect Ethernet...")
                 try:
-                    self.connect_ethernet()
+                    await self.connect_ethernet() # Call with await
                 except RuntimeError:
                     p.print("Ethernet reconnection failed. Retrying in 10s.")
                     await asyncio.sleep(100)
@@ -278,7 +307,7 @@ class AsyncWebServer:
                         await self.server.wait_closed()
                         self.server = None
                 self.last_lan_check_ms = millis()
-            await asyncio.sleep_ms(10) # Yield control
+            await asyncio.sleep_ms(self.main_loop_yield_wait_ms) # Yield control
     def run(self):
         try:
             asyncio.run(self.start())
@@ -292,9 +321,9 @@ class AsyncWebServer:
         while True:
             isSynced = await self.sync_rtc_with_ntp()
             if isSynced:
-                await asyncio.sleep(10*60) # Sync every 60 seconds
+                await asyncio.sleep(self.sync_ntp_every_s)
             else:
-                await asyncio.sleep(10)
+                await asyncio.sleep(self.sync_ntp_loop_yield_wait_s)
 
 
 # DHCP (default):
