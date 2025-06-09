@@ -362,7 +362,7 @@ class JSONLogger:
         self.last_sync = 0
         self.sync_every_ms = 1000
         self.buffer = []
-        self.burst_delay_ms = 10
+        self.burst_delay_ms = 0
         self.burst_timestamp_ms = 0
         self._requestNewFile = False
         self._requestRenameFile = False
@@ -432,18 +432,19 @@ class JSONLogger:
         await uasyncio.sleep_ms(0) # Yield
 
     async def _log(self, level: int, message):
-        if (millis() - self.burst_timestamp_ms) < self.burst_delay_ms:
-            return 0  # Zero item saved
+        if self.burst_delay_ms:
+            if (millis() - self.burst_timestamp_ms) < self.burst_delay_ms:
+                return 0  # Zero item saved
         self.burst_timestamp_ms = millis()
         if self.file is None:
             await self.new_file()
         log_timestamp = millis()
-        log_entry = {"timestamp": log_timestamp, "rtc_timestamp": rtc_unix_timestamp(
-        ), "level": level, "message": message}
+        log_entry = {"timestamp": log_timestamp, "rtc_timestamp": rtc_unix_timestamp(), "level": level, "message": message}
         try:
             self.cursor_position_last = self.cursor_position
             toLog = json.dumps(log_entry)
-            self.file.write(str(toLog) + "\n")  # Append log as a new line
+            # await uasyncio.get_event_loop().run_in_executor(None, self.file.write, str(toLog) + "\n") # Append log as a new line
+            self.file.write(str(toLog) + "\n")
             await uasyncio.sleep_ms(0) # Yield after write
             self.file_rows += 1
             self.cursor_position = self.file.tell()
@@ -457,17 +458,21 @@ class JSONLogger:
         return 1  # One item saved
 
     async def process_log(self, _):
-        if self.file is None:
-            return False
         if len(self.buffer) == 0:
             return False
+        
         toLog = self.buffer[0]
-        # print(toLog)
-        if 0 != await self._log(toLog[0], toLog[1]):
+        log_level = toLog[0]
+        log_message = toLog[1]
+        
+        log_result = await self._log(log_level, log_message)
+        
+        if log_result == 1:  # Successfully written
             lock()
             self.buffer.pop(0)
             unlock()
-        return True
+            return True  # Item processed
+        return False # Item not processed (burst delay or error)
 
     def log(self, level: int, message):
         if self._should_log(level):
@@ -579,18 +584,23 @@ class JSONLogger:
         if self._requestNewFile == True:
             self._requestNewFile = False
             while await self.process_log(0):
-                pass
+                await uasyncio.sleep_ms(0)
             await self.sync()
             await self.new_file()
         if self._requestRenameFile == True:
             self._requestRenameFile = False
             while await self.process_log(0):
+                await uasyncio.sleep_ms(0)
                 pass
             await self.sync()
             new_path = await self.get_new_file_path()
             await self.rename_current_filename(new_path)
-        await self.process_log(0)
-        await self.sync_process()
+
+        while await self.process_log(0): # Process one item from buffer
+            await uasyncio.sleep_ms(0)
+
+        await self.sync_process() # Sync file to card periodically
+        # await uasyncio.sleep_ms(0) # Yield is already in sync_process if sync happens
 
 
 # cmndavrg = AFECommandAverage()
