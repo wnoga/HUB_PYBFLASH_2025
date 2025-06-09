@@ -78,18 +78,18 @@ class RxDeviceCAN:
     def handle_can_rx(self, bus: pyb.CAN, reason=None):
         # with self.lock:
         # lock()
-        # try:
-        while bus.any(0):
-            bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=0)
-            self.rx_message_buffer_head += 1
-            if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
-                self.rx_message_buffer_head = 0
-            if self.rx_message_buffer_head == self.rx_message_buffer_tail: # Buffer full
-                self.rx_message_buffer_tail += 1 # Overwrite oldest message
-                if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
-                    self.rx_message_buffer_tail = 0
-        # except:
-        #     pass
+        try:
+            while bus.any(0):
+                bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
+                self.rx_message_buffer_head += 1
+                if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
+                    self.rx_message_buffer_head = 0
+                if self.rx_message_buffer_head == self.rx_message_buffer_tail: # Buffer full
+                    self.rx_message_buffer_tail += 1 # Overwrite oldest message
+                    if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
+                        self.rx_message_buffer_tail = 0
+        except:
+            pass
         # """ Callback function to handle received CAN messages. """
         # # If use_rxcallback is True, this is called from ISR context or similar,
         # # a message should be ready. timeout=0 means non-blocking read.

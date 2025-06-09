@@ -9,3 +9,7 @@ pyb.usb_mode(
     'VCP+MSC',  # or 'MSC' only if no serial needed
     msc=(pyb.Flash(), pyb.SDCard())
 )
+
+import micropython
+micropython.opt_level(2)
+micropython.alloc_emergency_exception_buf(100)

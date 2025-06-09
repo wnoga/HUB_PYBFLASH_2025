@@ -8,7 +8,7 @@ import pyb
 import uasyncio
 import micropython
 import _thread
-micropython.alloc_emergency_exception_buf(100)
+# micropython.alloc_emergency_exception_buf(100)
 # import micropython
 # micropython.alloc_emergency_exception_buf(100)
 from my_utilities import p, wdt
