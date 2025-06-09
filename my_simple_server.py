@@ -7,7 +7,7 @@ from HUB import HUBDevice
 import pyb
 import struct
 import machine
-import micropython
+import uos # For file operations
 
 from my_utilities import wdt
 from my_utilities import millis
@@ -143,14 +143,23 @@ class AsyncWebServer:
                 <h1>AFE HUB Control</h1>
                 <p>Current Time: <span id="current-time">{}</span></p>
                 <button onclick="updatePage()">Refresh Data</button>
-                <div id="afe-devices-container">
             """.format(rtc_datetime_pretty()))
+        
+        await writer.awrite(b"<div><h4>Log Files in /sd/logs/:</h4><ul>")
+        try:
+            log_files = uos.listdir("/sd/logs")
+            for log_file in log_files:
+                await writer.awrite("<li>{}</li>".format(log_file))
+        except OSError:
+            await writer.awrite(b"<li>Could not list log files.</li>")
+        await writer.awrite(b"</ul></div>")
 
         if not self.hub.afe_devices:
             await writer.awrite("<p>No AFE devices found.</p>")
         else:
             for afe in self.hub.afe_devices:
                 await writer.awrite("""
+                <div id="afe-devices-container">
                 <div class="afe-device" id="afe-{}">
                     <h3>AFE Device ID: {}</h3>
                     <p>UID: {}</p>
@@ -181,6 +190,8 @@ class AsyncWebServer:
                 # <button onclick="getMeasurementLast({afe.device_id})">Get Last Measurement</button>
                 # </div>
                 # """.encode())
+        
+        await writer.awrite(b"</div>") # Close afe-devices-container
 
         await writer.awrite(b"""
                 </div>

@@ -352,7 +352,7 @@ class SensorChannel:
 
 
 class JSONLogger:
-    def __init__(self, filename="log.json", parent_dir="/sd/logs", verbosity_level=VerbosityLevel["INFO"]):
+    def __init__(self, filename="log.json", parent_dir="/sd/logs", verbosity_level=VerbosityLevel["INFO"], keep_file_open=True):
         self.parent_dir = parent_dir
         self.verbosity_level = verbosity_level
         self.filename = filename
@@ -370,7 +370,12 @@ class JSONLogger:
         self.cursor_position = 0
         self.cursor_position_last = 0
         self.rtc_synced = False
-        self.file = None # Initialize file to None, will be opened on first log or machine call
+        self.keep_file_open = keep_file_open
+
+        if self.keep_file_open:
+            self.file = None # File will be opened by new_file or on first log
+        else:
+            self.file = None # File is never persistently kept open
 
     def _ensure_directory(self):
         if not self._path_exists(self.parent_dir):
@@ -409,49 +414,101 @@ class JSONLogger:
             "{}/{}".format(self.parent_dir, filename_datetime))
 
     async def new_file(self):
-        try:
-            if self.file is None:
-                pass
-            else:
-                await self.sync()
-                self.file.close()
-                await uasyncio.sleep_ms(0) # Yield after close
-        except:
-            pass
+        if self.keep_file_open:
+            try:
+                if self.file is not None:
+                    await self.sync() # Sync before closing
+                    self.file.close()
+                    await uasyncio.sleep_ms(0)
+            except Exception as e:
+                p.print("Error closing old file in new_file (keep_open=True): {}".format(e))
+            
+            self.filename = await self.get_new_file_path()
+            try:
+                # Open in write mode, truncating for a new file
+                self.file = open(self.filename, "w") 
+                await uasyncio.sleep_ms(0)
+            except Exception as e:
+                p.print("ERROR new_file (keep_open=True): {}".format(e))
+                self.file = None # Ensure file is None on error
+        else: # not keep_file_open
+            if self.file is not None: # Should be None, but as a safeguard
+                try:
+                    self.file.close()
+                    await uasyncio.sleep_ms(0)
+                except Exception as e:
+                    p.print("Error closing file in new_file (keep_open=False): {}".format(e))
+                self.file = None
+            # Sets the filename, ensures dir. File is not opened here for this mode.
+            self.filename = await self.get_new_file_path() 
+
         self.filename = await self.get_new_file_path()
-        try:
-            # Keep JSON log file open for appending
-            self.file = open(self.filename, "w")
-            await uasyncio.sleep_ms(0) # Yield after open
-        except Exception as e:
-            print("ERROR new_file", e)
         self.cursor_position = 0
         self.cursor_position_last = 0
         self.file_rows = 0
-        p.print("New logger file", self.filename)
+        p.print("New logger file target set to:", self.filename)
         await uasyncio.sleep_ms(0) # Yield
 
     async def _log(self, level: int, message):
-        if self.burst_delay_ms:
+        if self.burst_delay_ms: # Rate limiting
             if (millis() - self.burst_timestamp_ms) < self.burst_delay_ms:
                 return 0  # Zero item saved
         self.burst_timestamp_ms = millis()
-        if self.file is None:
-            await self.new_file()
+
+        if not self.filename: # If filename is not set (e.g. very first log)
+            await self.new_file() # This will set self.filename
+            if not self.filename: # Still no filename after new_file attempt
+                p.print("ERROR in _log: Could not determine filename.")
+                return -1
+
         log_timestamp = millis()
         log_entry = {"timestamp": log_timestamp, "rtc_timestamp": rtc_unix_timestamp(), "level": level, "message": message}
+        toLog = json.dumps(log_entry)
+        
+        current_file_handle = None
         try:
-            self.cursor_position_last = self.cursor_position
-            toLog = json.dumps(log_entry)
-            # await uasyncio.get_event_loop().run_in_executor(None, self.file.write, str(toLog) + "\n") # Append log as a new line
-            self.file.write(str(toLog) + "\n")
+            if self.keep_file_open:
+                if self.file is None: # Attempt to open/reopen if not already
+                    try:
+                        self.file = open(self.filename, "a") # Append mode
+                        await uasyncio.sleep_ms(0)
+                        p.print("Re-opened log file {} for append in _log (keep_open=True)".format(self.filename))
+                    except Exception as e_open:
+                        p.print("ERROR in _log: Failed to open file {} (keep_open=True): {}".format(self.filename, e_open))
+                        await self.request_new_file()
+                        return -1
+                current_file_handle = self.file
+            else: # Not keep_file_open: open, write, close
+                self._ensure_directory() 
+                current_file_handle = open(self.filename, "a") # Append mode
+                await uasyncio.sleep_ms(0)
+
+            if current_file_handle is None:
+                 p.print("ERROR in _log: File handle is None for {}.".format(self.filename))
+                 return -1
+
+            self.cursor_position_last = current_file_handle.tell() if self.keep_file_open else 0
+            current_file_handle.write(str(toLog) + "\n")
             await uasyncio.sleep_ms(0) # Yield after write
             self.file_rows += 1
-            self.cursor_position = self.file.tell()
+            self.cursor_position = current_file_handle.tell() if self.keep_file_open else 0
+
+            if not self.keep_file_open: # Close if opened in this scope
+                current_file_handle.flush()
+                await uasyncio.sleep_ms(0)
+                current_file_handle.close()
+                await uasyncio.sleep_ms(0)
+                current_file_handle = None
         except Exception as e:
-            print("ERROR in _log: {} -> {}".format(e, log_entry))
-            self.request_new_file()
-            self.new_file()
+            p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename, e, log_entry))
+            if self.keep_file_open and self.file:
+                try: self.file.close()
+                except: pass
+                self.file = None
+            elif not self.keep_file_open and current_file_handle:
+                try: current_file_handle.close()
+                except: pass
+            await self.request_new_file()
             return -1 # skip this row
         if level >= self.print_verbosity_level:
             p.print("LOG:", toLog)
@@ -480,12 +537,14 @@ class JSONLogger:
 
     async def sync(self):
         if self.file is not None:
-            try:
-                self.file.flush()
-                await uasyncio.sleep_ms(0) # Yield after flush
-                self.last_sync = millis()
-            except:
-                pass
+            if self.keep_file_open: # Only flush if we are keeping it open
+                try:
+                    self.file.flush()
+                    await uasyncio.sleep_ms(0) # Yield after flush
+                    self.last_sync = millis()
+                except Exception as e:
+                    p.print("Error in sync (keep_open=True): {}".format(e))
+        # If not keep_file_open, _log handles flush and close, so sync is a no-op.
 
     async def sync_process(self):
         if (millis() - self.last_sync) > self.sync_every_ms:
@@ -494,22 +553,45 @@ class JSONLogger:
             await uasyncio.sleep_ms(0) # Yield after gc.collect if it's potentially long
 
     async def close(self):
-        await self.sync()
-        if self.file:
-            self.file.close()
-            await uasyncio.sleep_ms(0) # Yield after close
-        self.file = None
+        if self.keep_file_open:
+            await self.sync() # Ensure buffer is flushed if file was open
+            if self.file is not None:
+                try:
+                    self.file.close()
+                    await uasyncio.sleep_ms(0) # Yield after close
+                except Exception as e:
+                    p.print("Error in close (keep_open=True): {}".format(e))
+                self.file = None
+        else: # not keep_file_open
+            self.file = None # Should already be None
 
-    def clear_logs(self):
+    async def clear_logs(self):
         # This method is highly blocking and not easily made async without async os calls.
         # For now, it remains largely synchronous. Consider if it's called from async context.
         p.print("clear_logs is a blocking operation and not fully async.")
-        if self.file:
-            self.file.close()
-            if self.filename and self._path_exists(self.filename):
+        file_was_managed_open = self.file is not None and self.keep_file_open
+        
+        if file_was_managed_open:
+            try:
+                self.file.close()
+                await uasyncio.sleep_ms(0)
+            except Exception as e:
+                p.print("Error closing file in clear_logs: {}".format(e))
+            self.file = None
+
+        if self.filename and self._path_exists(self.filename):
+            try:
                 os.unlink(self.filename)
-            # Re-opening should be handled by new_file or _log when needed
-        self.file = None 
+                await uasyncio.sleep_ms(0) 
+                p.print("Log file {} unlinked.".format(self.filename))
+            except Exception as e:
+                p.print("Error unlinking file {} in clear_logs: {}".format(self.filename, e))
+        
+        self.file_rows = 0
+        self.cursor_position = 0
+        self.cursor_position_last = 0
+        # For keep_file_open=True, new_file or _log will handle re-creating/re-opening.
+        # For keep_file_open=False, _log will create on next write.
 
     def print_lines(self, path=None):
         try:
@@ -551,28 +633,75 @@ class JSONLogger:
         except OSError:
             p.print("Error: Cannot read JSON log file.")
 
-    async def rename_current_file(self, new_name):
-        if self.file is not None:
+    async def rename_current_file(self, new_name_suffix):
+        new_full_path = "{}/{}".format(self.parent_dir, new_name_suffix)
+        
+        if self.keep_file_open and self.file is not None:
             await self.sync()
-            self.file.close()
-            await uasyncio.sleep_ms(0)
-            os.rename(self.filename, "{}/{}".format(self.parent_dir, new_name))
-            await uasyncio.sleep_ms(0)
-            self.filename = "{}/{}".format(self.parent_dir, new_name)
-            self.file = open(self.filename, "a")  # Reopen as empty file
-            await uasyncio.sleep_ms(0)
+            try:
+                self.file.close()
+                await uasyncio.sleep_ms(0)
+            except Exception as e:
+                p.print("Error closing file in rename_current_file (keep_open=True): {}".format(e))
+            self.file = None 
+        
+        if self.filename and self._path_exists(self.filename):
+            try:
+                os.rename(self.filename, new_full_path)
+                await uasyncio.sleep_ms(0)
+                p.print("Renamed {} to {}".format(self.filename, new_full_path))
+            except Exception as e:
+                p.print("Error renaming {} to {}: {}".format(self.filename, new_full_path, e))
+        else:
+            p.print("Old filename {} does not exist for renaming.".format(self.filename))
 
-    async def rename_current_filename(self, path):
-        if self.file is not None:
+        self.filename = new_full_path 
+        
+        if self.keep_file_open:
+            try:
+                self.file = open(self.filename, "a") # Reopen in append mode
+                await uasyncio.sleep_ms(0)
+            except Exception as e:
+                p.print("Error reopening renamed file {} (keep_open=True): {}".format(self.filename, e))
+                self.file = None
+        self.file_rows = 0 
+        self.cursor_position = 0
+        self.cursor_position_last = 0
+
+    async def rename_current_filename(self, new_full_path):
+        if self.keep_file_open and self.file is not None:
             await self.sync()
-            self.file.close()
-            await uasyncio.sleep_ms(0)
-            # print("Renaming {} to {}",self.filename, path)
-            os.rename(self.filename, path)
-            await uasyncio.sleep_ms(0)
-            self.filename = path
-            self.file = open(self.filename, "a")  # Reopen as empty file
-            await uasyncio.sleep_ms(0)
+            try:
+                self.file.close()
+                await uasyncio.sleep_ms(0)
+            except Exception as e:
+                p.print("Error closing file in rename_current_filename (keep_open=True): {}".format(e))
+            self.file = None
+            
+        if self.filename and self._path_exists(self.filename) and self.filename != new_full_path:
+            try:
+                os.rename(self.filename, new_full_path)
+                await uasyncio.sleep_ms(0)
+                p.print("Renamed {} to {}".format(self.filename, new_full_path))
+            except Exception as e:
+                p.print("Error renaming {} to {}: {}".format(self.filename, new_full_path, e))
+        elif self.filename == new_full_path:
+            p.print("Target filename {} is same as current; no rename needed.".format(new_full_path))
+        else:
+             p.print("Old filename {} does not exist for renaming or no rename needed.".format(self.filename))
+
+        self.filename = new_full_path
+        
+        if self.keep_file_open:
+            try:
+                self.file = open(self.filename, "a") # Reopen in append mode
+                await uasyncio.sleep_ms(0)
+            except Exception as e:
+                p.print("Error reopening renamed file {} (keep_open=True): {}".format(self.filename, e))
+                self.file = None
+        self.file_rows = 0
+        self.cursor_position = 0
+        self.cursor_position_last = 0
 
     def request_new_file(self):
         self._requestNewFile = True

@@ -19,7 +19,7 @@ from my_utilities import rtc_unix_timestamp, rtc
 import time
 
 can_bus = pyb.CAN(1)
-logger = JSONLogger()
+logger = JSONLogger(keep_file_open=False)
 print("RESTART")
 # wdt.feed()
 if False:
