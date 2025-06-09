@@ -937,7 +937,7 @@ class HUBDevice:
             # print_lock.acquire()
             self.main_process()
             # p.process_queue()
-            self.logger.machine()
+            # self.logger.machine()
             wdt.feed()
             # time.sleep_us(10)
             await uasyncio.sleep_ms(0)

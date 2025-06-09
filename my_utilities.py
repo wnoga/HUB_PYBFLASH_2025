@@ -9,6 +9,7 @@ try:
     import _thread
     import micropython
     import machine
+    import uasyncio # Added for async operations
     import gc
     # # Create a lock for safe printing
     print_lock = _thread.allocate_lock()
@@ -78,14 +79,15 @@ class PrintButLouder:
             self.queue.pop(0)
         unlock()
 
-    def process_queue(self):
+    async def process_queue(self):
         if not self.queue:
             return
         lock()
         item = self.queue.pop(0)
         unlock()
         print(*(item[0]), **item[1])
-
+        await uasyncio.sleep_ms(0) # Yield to the event loop after printing one item
+ 
 
 p = PrintButLouder()
 # P = PrintButLouder()
@@ -368,7 +370,7 @@ class JSONLogger:
         self.cursor_position = 0
         self.cursor_position_last = 0
         self.rtc_synced = False
-        self.new_file()
+        self.file = None # Initialize file to None, will be opened on first log or machine call
 
     def _ensure_directory(self):
         if not self._path_exists(self.parent_dir):
@@ -394,7 +396,7 @@ class JSONLogger:
     def _should_log(self, level):
         return level <= self.verbosity_level
 
-    def get_new_file_path(self):
+    async def get_new_file_path(self):
         self._ensure_directory()
         filename_datetime = self.filename_org
         if self.rtc_synced:
@@ -402,35 +404,39 @@ class JSONLogger:
             filename_datetime = "log_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}.json".format(
                 year, month, day, hour, minute, second
             )
+        await uasyncio.sleep_ms(0) # Yield
         return self._get_unique_filename(
             "{}/{}".format(self.parent_dir, filename_datetime))
 
-    def new_file(self):
+    async def new_file(self):
         try:
             if self.file is None:
                 pass
             else:
-                self.sync()
+                await self.sync()
                 self.file.close()
+                await uasyncio.sleep_ms(0) # Yield after close
         except:
             pass
-        self.filename = self.get_new_file_path()
+        self.filename = await self.get_new_file_path()
         try:
             # Keep JSON log file open for appending
             self.file = open(self.filename, "w")
+            await uasyncio.sleep_ms(0) # Yield after open
         except Exception as e:
             print("ERROR new_file", e)
         self.cursor_position = 0
         self.cursor_position_last = 0
         self.file_rows = 0
         p.print("New logger file", self.filename)
+        await uasyncio.sleep_ms(0) # Yield
 
-    def _log(self, level: int, message):
+    async def _log(self, level: int, message):
         if (millis() - self.burst_timestamp_ms) < self.burst_delay_ms:
             return 0  # Zero item saved
         self.burst_timestamp_ms = millis()
         if self.file is None:
-            self.new_file()
+            await self.new_file()
         log_timestamp = millis()
         log_entry = {"timestamp": log_timestamp, "rtc_timestamp": rtc_unix_timestamp(
         ), "level": level, "message": message}
@@ -438,33 +444,26 @@ class JSONLogger:
             self.cursor_position_last = self.cursor_position
             toLog = json.dumps(log_entry)
             self.file.write(str(toLog) + "\n")  # Append log as a new line
+            await uasyncio.sleep_ms(0) # Yield after write
             self.file_rows += 1
             self.cursor_position = self.file.tell()
         except Exception as e:
             print("ERROR in _log: {} -> {}".format(e, log_entry))
+            self.request_new_file()
             self.new_file()
-            try:
-                retval = self._log(level, message)
-                if retval >= 0:
-                    return retval
-                else:
-                    return -1  # Error, skip this row
-            except:
-                return -1
-            return -1
+            return -1 # skip this row
         if level >= self.print_verbosity_level:
             p.print("LOG:", toLog)
         return 1  # One item saved
 
-    def process_log(self, _):
+    async def process_log(self, _):
         if self.file is None:
             return False
         if len(self.buffer) == 0:
             return False
         toLog = self.buffer[0]
         # print(toLog)
-        # retval = self._log(toLog[0],toLog[1])
-        if 0 != self._log(toLog[0], toLog[1]):
+        if 0 != await self._log(toLog[0], toLog[1]):
             lock()
             self.buffer.pop(0)
             unlock()
@@ -474,28 +473,38 @@ class JSONLogger:
         if self._should_log(level):
             self.buffer.append([level, message])
 
-    def sync(self):
+    async def sync(self):
         if self.file is not None:
             try:
                 self.file.flush()
+                await uasyncio.sleep_ms(0) # Yield after flush
                 self.last_sync = millis()
             except:
                 pass
 
-    def sync_process(self):
+    async def sync_process(self):
         if (millis() - self.last_sync) > self.sync_every_ms:
-            self.sync()
+            await self.sync()
             gc.collect()
+            await uasyncio.sleep_ms(0) # Yield after gc.collect if it's potentially long
 
-    def close(self):
-        self.sync()
-        self.file.close()
+    async def close(self):
+        await self.sync()
+        if self.file:
+            self.file.close()
+            await uasyncio.sleep_ms(0) # Yield after close
         self.file = None
 
     def clear_logs(self):
-        self.file.close()
-        os.unlink(self.filename)  # Remove JSON file
-        self.file = open(self.filename, "w")  # Reopen as empty file
+        # This method is highly blocking and not easily made async without async os calls.
+        # For now, it remains largely synchronous. Consider if it's called from async context.
+        p.print("clear_logs is a blocking operation and not fully async.")
+        if self.file:
+            self.file.close()
+            if self.filename and self._path_exists(self.filename):
+                os.unlink(self.filename)
+            # Re-opening should be handled by new_file or _log when needed
+        self.file = None 
 
     def print_lines(self, path=None):
         try:
@@ -537,44 +546,51 @@ class JSONLogger:
         except OSError:
             p.print("Error: Cannot read JSON log file.")
 
-    def rename_current_file(self, new_name):
+    async def rename_current_file(self, new_name):
         if self.file is not None:
-            self.sync()
+            await self.sync()
             self.file.close()
+            await uasyncio.sleep_ms(0)
             os.rename(self.filename, "{}/{}".format(self.parent_dir, new_name))
+            await uasyncio.sleep_ms(0)
             self.filename = "{}/{}".format(self.parent_dir, new_name)
             self.file = open(self.filename, "a")  # Reopen as empty file
-    
-    def rename_current_filename(self, path):
+            await uasyncio.sleep_ms(0)
+
+    async def rename_current_filename(self, path):
         if self.file is not None:
-            self.sync()
+            await self.sync()
             self.file.close()
+            await uasyncio.sleep_ms(0)
             # print("Renaming {} to {}",self.filename, path)
             os.rename(self.filename, path)
+            await uasyncio.sleep_ms(0)
             self.filename = path
             self.file = open(self.filename, "a")  # Reopen as empty file
+            await uasyncio.sleep_ms(0)
 
     def request_new_file(self):
         self._requestNewFile = True
-        
+
     def request_rename_file(self):
         self._requestRenameFile = True
 
-    def machine(self):
+    async def machine(self):
         if self._requestNewFile == True:
             self._requestNewFile = False
-            while self.process_log(0):
+            while await self.process_log(0):
                 pass
-            self.sync()
-            self.new_file()
+            await self.sync()
+            await self.new_file()
         if self._requestRenameFile == True:
             self._requestRenameFile = False
-            while self.process_log(0):
+            while await self.process_log(0):
                 pass
-            self.sync()
-            self.rename_current_filename(self.get_new_file_path())
-        self.process_log(0)
-        self.sync_process()
+            await self.sync()
+            new_path = await self.get_new_file_path()
+            await self.rename_current_filename(new_path)
+        await self.process_log(0)
+        await self.sync_process()
 
 
 # cmndavrg = AFECommandAverage()
