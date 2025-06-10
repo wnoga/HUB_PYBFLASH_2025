@@ -8,7 +8,7 @@ import _thread
 import micropython
 import uasyncio
 
-from AFE import AFEDevice, AFECommand, millis
+from AFE import AFEDevice, AFECommand
 from my_utilities import JSONLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, read_callibration_csv
 from my_utilities import channel_name_xxx, e_ADC_CHANNEL
 from my_utilities import wdt
@@ -18,6 +18,7 @@ from my_utilities import AFECommandChannelMask
 from my_utilities import lock, unlock
 from my_utilities import extract_bracketed
 from my_utilities import RxDeviceCAN
+from my_utilities import millis
 
 class HUBDevice:
     """
@@ -500,6 +501,11 @@ class HUBDevice:
             0xFF, 0, **commandKwargs)
 
     def default_full(self, afe_id=35):
+        afe = self.get_afe_by_id(afe_id)
+        # if afe:
+        #     if (afe.init_timestamp_ms - millis()) < afe.init_wait_ms:
+        #         return
+        #     afe.init_timestamp_ms = millis()
         self.powerOn()
         self.default_afe_pause(afe_id)
         self.default_setCanMsgBurstDelay_ms(afe_id, 0)
@@ -774,8 +780,8 @@ class HUBDevice:
                 if self.use_automatic_restart:
                     if not afe.is_configuration_started:
                         self.default_full(afe_id=afe.device_id)
-                        p.print("AFE {} was restarted".format(
-                            afe.device_id))
+                        # p.print("AFE {} was restarted".format(
+                        #     afe.device_id))
                     if afe.is_configured and afe.periodic_measurement_download_is_enabled is False:
                         afe.periodic_measurement_download_is_enabled = True
                         afe.start_periodic_measurement_by_config()

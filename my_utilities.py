@@ -20,6 +20,14 @@ except:
     pass
 import time
 
+def is_timeout(timestamp_ms, timeout_ms):
+    return time.ticks_diff(time.ticks_ms(), timestamp_ms) < timeout_ms
+
+# def is_burst_delay_active(self):
+#     return time.ticks_diff(time.ticks_ms(), self.burst_timestamp_ms) < self.burst_delay_ms
+
+
+
 class wdt_x:
     def __init__(self, timeout=2000):
         try:
