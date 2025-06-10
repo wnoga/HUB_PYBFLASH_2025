@@ -128,9 +128,9 @@ async def main():
     if use_async_server and server:
         tasks.append(uasyncio.create_task(server.start()))
     
-    if not use_rxcallback:
-        tasks.append(uasyncio.create_task(rxDeviceCAN.main_loop()))
-        p.print("rxDeviceCAN.main_loop task created.")
+    # if not use_rxcallback:
+    tasks.append(uasyncio.create_task(rxDeviceCAN.main_loop()))
+    p.print("rxDeviceCAN.main_loop task created.")
 
     tasks.append(uasyncio.create_task(periodic_tasks_loop()))
     p.print("periodic_tasks_loop task created.")

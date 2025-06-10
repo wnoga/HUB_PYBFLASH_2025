@@ -15,9 +15,10 @@ from my_utilities import SensorChannel, AFECommandChannelMask, AFECommandAverage
 from my_utilities import extract_bracketed
 from my_utilities import rtc, rtc_synced, rtc_unix_timestamp
 from my_utilities import get_e_ADC_CHANNEL
+from my_utilities import RxDeviceCAN
 
 class AFEDevice:
-    def __init__(self, can_interface: pyb.CAN, device_id, logger: JSONLogger, config_path=None):
+    def __init__(self, can_interface: RxDeviceCAN, device_id, logger: JSONLogger, config_path=None):
         self.can_interface = can_interface
         self.device_id = device_id  # Channel number
         self.unique_id = [0, 0, 0]  # 3*32-bit = 96-bit STM32 Unique ID
@@ -448,6 +449,52 @@ class AFEDevice:
         return self.enqueue_command(
             command, [channel] + list(struct.pack('<I', value)), **kwargs)
 
+    def executing_error_handler(self):
+        """
+        Handles errors during command execution.
+
+        This function is called when a command execution fails, typically due
+        to a timeout or other communication issues. It logs the error and
+        potentially triggers a callback error function if defined for the
+        failed command.
+        """
+        self.executing["status"] = CommandStatus.ERROR
+        self.logger.log(VerbosityLevel["ERROR"],
+                        self.default_log_dict(
+                            {"error": "TIMEOUT", "executing": self.trim_dict_for_logger(self.executing)}))
+        if "callback_error" in self.executing:
+            try:
+                if not self.executing["callback_error"] is None:
+                    p.print("callback_error: {}".format(
+                        self.executing["callback_error"]))
+                    self.executing["callback_error"](
+                        {"afe": self, "afe_id": self.device_id, "executing": self.executing})
+            except Exception as e:
+                p.print("AFE executing_error_handler callback_error: {}".format(e))
+        self.executing = None
+
+    def request_new_file(self):
+        self.logger.requestNewFile()
+
+    def request_rename_file(self, new_name_suffix):
+        self.logger.requestRenameFile(new_name_suffix)
+
+    def process_logger_requests(self):
+        if self.logger._requestNewFile:
+            self.logger._requestNewFile = False
+            micropython.schedule(self.logger.new_file, 0)
+        if self.logger._requestRenameFile:
+            new_name = self.logger._requestRenameFile
+            self.logger._requestRenameFile = False
+            micropython.schedule(self.logger.rename_current_file, new_name)
+
+    def process_logger_buffer(self):
+        if len(self.logger.buffer):
+            micropython.schedule(self.logger.process_log, 0)
+
+    def process_logger_sync(self):
+        micropython.schedule(self.logger.sync_process, 0)
+
     def execute(self, _):
         if len(self.to_execute) and self.executing is None:
             self.execute_timestamp = millis()
@@ -457,11 +504,13 @@ class AFEDevice:
             if self.executing["timeout_start_on_send_ms"] is not None:
                 self.executing["timestamp_ms"] = millis()
                 self.executing["timeout_ms"] = self.executing["timeout_start_on_send_ms"]
-            self.can_interface.send(
-                cmd["frame"], cmd["can_address"], timeout=cmd["can_timeout_ms"])
-            self.logger.log(VerbosityLevel["DEBUG"],
-                            self.default_log_dict(
-                                {"debug": "Sending {}".format(cmd)}))
+            if self.can_interface.send(
+                cmd["frame"], cmd["can_address"], timeout=cmd["can_timeout_ms"]):
+                self.executing_error_handler()
+            else:
+                self.logger.log(VerbosityLevel["DEBUG"],
+                                self.default_log_dict(
+                                    {"debug": "Sending {}".format(cmd)}))
 
     def process_received_data(self, received_data):
         """
