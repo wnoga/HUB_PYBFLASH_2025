@@ -18,7 +18,7 @@ from my_utilities import AFECommandChannelMask
 from my_utilities import lock, unlock
 from my_utilities import extract_bracketed
 from my_utilities import RxDeviceCAN
-from my_utilities import millis
+from my_utilities import millis, is_timeout, is_delay
 
 class HUBDevice:
     """
@@ -206,7 +206,7 @@ class HUBDevice:
             return
 
         if self.use_tx_delay:
-            if (millis() - self.last_tx_time) < self.tx_delay_ms:
+            if is_delay(self.last_tx_time,self.tx_delay_ms):
                 return
         if self.can_bus.state() > 1:
             # self.logger.log(VerbosityLevel["ERROR"],"CAN BUS ERROR {}".format(self.can_bus.state()))
@@ -399,14 +399,14 @@ class HUBDevice:
             afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus, [
                                 self._get_subdevice_ch_id(g), 1], **commandKwargs)
 
-    def default_manual_blocking_measurement_loop(self, afe_id=35):
-        afe = self.get_afe_by_id(afe_id)
-        if afe is None:
-            return
-        timestamp_ms = millis()
-        while (millis() - timestamp_ms) <= 10000:
-            self.default_get_measurement(afe_id)
-            time.sleep(5.0)
+    # def default_manual_blocking_measurement_loop(self, afe_id=35):
+    #     afe = self.get_afe_by_id(afe_id)
+    #     if afe is None:
+    #         return
+    #     timestamp_ms = millis()
+    #     while (millis() - timestamp_ms) <= 10000:
+    #         self.default_get_measurement(afe_id)
+    #         time.sleep(5.0)
 
     def default_periodic_measurement_download_all(self, afe_id=35, ms=10000):
         afe = self.get_afe_by_id(afe_id)
@@ -791,7 +791,7 @@ class HUBDevice:
                         #     afe_id=afe.device_id, ms=afe.configuration.get)
 
         if self.curent_function is not None:  # check if function is running
-            if (millis() - self.curent_function_timestamp_ms) > self.curent_function_timeout_ms:
+            if is_timeout(self.curent_function_timestamp_ms, self.curent_function_timeout_ms):
                 self.curent_function = None
                 self.curent_function_retval = "timeout"
 

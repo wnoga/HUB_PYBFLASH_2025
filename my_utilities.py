@@ -21,10 +21,10 @@ except:
 import time
 
 def is_timeout(timestamp_ms, timeout_ms):
-    return time.ticks_diff(time.ticks_ms(), timestamp_ms) < timeout_ms
+    return time.ticks_diff(time.ticks_ms(), timestamp_ms) > timeout_ms
 
-# def is_burst_delay_active(self):
-#     return time.ticks_diff(time.ticks_ms(), self.burst_timestamp_ms) < self.burst_delay_ms
+def is_delay(timestamp_ms, delay_ms):
+    return time.ticks_diff(time.ticks_ms(), timestamp_ms) < delay_ms
 
 
 
@@ -43,7 +43,7 @@ class wdt_x:
 
 
 try:
-    if False:
+    if True:
         wdt = wdt_x()
     else:
         from machine import WDT
@@ -460,7 +460,7 @@ class JSONLogger:
 
     async def _log(self, level: int, message):
         if self.burst_delay_ms: # Rate limiting
-            if (millis() - self.burst_timestamp_ms) < self.burst_delay_ms:
+            if is_delay(self.burst_timestamp_ms, self.burst_delay_ms):
                 return 0  # Zero item saved
         self.burst_timestamp_ms = millis()
 
@@ -548,7 +548,7 @@ class JSONLogger:
         # If not keep_file_open, _log handles flush and close, so sync is a no-op.
 
     async def sync_process(self):
-        if (millis() - self.last_sync) > self.sync_every_ms:
+        if is_timeout(self.last_sync, self.sync_every_ms):
             await self.sync()
             await uasyncio.sleep_ms(0) # Yield
 
@@ -841,6 +841,7 @@ if __name__ == "__main__":
 
 class RxDeviceCAN:
     def __init__(self, can_bus: pyb.CAN, use_rxcallback=True):
+        self.handle_can_rx_ref = self.handle_can_rx
         self.can_bus: pyb.CAN = can_bus
         self.use_rxcallback = use_rxcallback
         self.rx_timeout_ms = 5000
@@ -875,7 +876,7 @@ class RxDeviceCAN:
                 return None # return None as success
             except:
                 pass
-            if (timestamp_ms - millis()) > timeout:
+            if is_timeout(timestamp_ms,timeout):
                 return -1 # return error
             await uasyncio.sleep_ms(self.yielld_ms) # Yield
    
@@ -896,7 +897,7 @@ class RxDeviceCAN:
         return tmp
     
 
-    def handle_can_rx(self):
+    def handle_can_rx(self,_=None):
         try:
             while self.can_bus.any(0):
                 self.can_bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
@@ -907,41 +908,42 @@ class RxDeviceCAN:
                     self.rx_message_buffer_tail += 1
                     if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
                         self.rx_message_buffer_tail = 0
-        except:
+        except Exception as e:
+            p.print("handle_can_rx: {}",e)
             pass
 
-    def handle_can_rx_polling(self):
-        try:
-            if self.can_bus.any(0):
-                self.handle_can_rx()
-                return True
-        except Exception as e:
-            print("handle_can_rx_polling: {}".format(e))
-        return False
+    # def handle_can_rx_polling(self):
+    #     try:
+    #         if self.can_bus.any(0):
+    #             self.handle_can_rx()
+    #             return True
+    #     except Exception as e:
+    #         print("handle_can_rx_polling: {}".format(e))
+    #     return False
 
-    # SCHEDULED version, safe in main thread
-    def handle_can_rx_polling_schedule(self, _):
-        self.handle_can_rx_polling()
+    # # SCHEDULED version, safe in main thread
+    # def handle_can_rx_polling_schedule(self, _):
+    #     self.handle_can_rx_polling()
 
     # ISR → only schedules processing
     def handle_can_rx_irq(self, bus: pyb.CAN, reason=None):
         # try:
             # micropython.schedule(self.handle_can_rx_polling_schedule, 0)
-            # micropython.schedule(self.handle_can_rx, 0)
-        self.irq_flag = True
-        # self.handle_can_rx()
-        # while self.can_bus.any(0):
-        self.can_bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
-        self.rx_message_buffer_head += 1
-        if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
-            self.rx_message_buffer_head = 0
-        if self.rx_message_buffer_head == self.rx_message_buffer_tail:
-            self.rx_message_buffer_tail += 1
-            if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
-                self.rx_message_buffer_tail = 0
-        self.irq_flag = False
-        # except:
-        #     pass  # Too many scheduled tasks or already pending
+        micropython.schedule(self.handle_can_rx_ref, 0)
+        # self.irq_flag = True
+        # # self.handle_can_rx()
+        # # while self.can_bus.any(0):
+        # self.can_bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
+        # self.rx_message_buffer_head += 1
+        # if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
+        #     self.rx_message_buffer_head = 0
+        # if self.rx_message_buffer_head == self.rx_message_buffer_tail:
+        #     self.rx_message_buffer_tail += 1
+        #     if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
+        #         self.rx_message_buffer_tail = 0
+        # self.irq_flag = False
+        # # except:
+        # #     pass  # Too many scheduled tasks or already pending
 
     # def main_process(self):
     #     self.handle_can_rx_polling_schedule(0)
@@ -956,8 +958,8 @@ class RxDeviceCAN:
                     print("CAN BUS ERROR:", state)
                     await uasyncio.sleep_ms(self.error_yielld_ms)
                     return
-                if self.can_bus.any(0) and not self.irq_flag:
-                    micropython.schedule(self.handle_can_rx, 0)
+                # if self.can_bus.any(0) and not self.irq_flag:
+                #     micropython.schedule(self.handle_can_rx, 0)
                 # self.handle_can_rx_polling()
             except Exception as e:
                 print("RxDeviceCAN main_process:", e)

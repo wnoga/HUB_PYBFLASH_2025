@@ -7,7 +7,7 @@ import pyb
 import micropython
 
 from my_utilities import AFECommand, AFECommandGPIO, AFECommandChannel, AFECommandSubdevice, JSONLogger
-from my_utilities import millis
+from my_utilities import millis, is_timeout, is_delay
 from my_utilities import e_ADC_CHANNEL, CommandStatus, ResetReason
 from my_utilities import p
 from my_utilities import VerbosityLevel
@@ -925,7 +925,7 @@ class AFEDevice:
     # AFE state management
     def manage_state(self):
         if self.use_afe_can_watchdog:
-            if (millis() - self.afe_can_watchdog_timestamp_ms) > int(round(self.afe_can_watchdog_timeout_ms/10.0)):
+            if is_timeout(self.afe_can_watchdog_timeout_ms,int(round(self.afe_can_watchdog_timeout_ms/10.0))):
                 self.afe_can_watchdog_timestamp_ms = millis()
                 commandKwargs = {"timeout_ms": 10220,
                                  "preserve": True,
@@ -938,13 +938,13 @@ class AFEDevice:
         if not self.is_configured:
             if self.is_configuration_started is True:
                 timestamp_ms = millis()
-                if (millis() - self.configuration_start_timestamp_ms) > self.configuration_timeout_ms:
+                if is_timeout(self.configuration_start_timestamp_ms,self.configuration_timeout_ms):
                     self.logger.log(VerbosityLevel["ERROR"], 
                                     self.default_log_dict({"error": "configuration timeout", "timestamp_ms": millis()}))
                     self.restart_device()
 
         if self.executing is not None:
-            if (millis() - self.executing["timestamp_ms"]) > self.executing["timeout_ms"]:
+            if is_timeout(self.executing["timestamp_ms"],self.executing["timeout_ms"]):
                 self.executing["status"] = CommandStatus.ERROR
                 self.logger.log(VerbosityLevel["ERROR"],
                                 self.default_log_dict(
@@ -965,7 +965,7 @@ class AFEDevice:
 
         # Try send commands
         if self.use_tx_delay:
-            if (millis() - self.execute_timestamp) < self.tx_timeout_ms:
+            if is_delay(self.execute_timestamp,self.tx_timeout_ms):
                 pass
             else:
                 # micropython.schedule(self.execute, 0)

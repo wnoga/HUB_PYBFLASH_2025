@@ -10,7 +10,7 @@ import machine
 import uos # For file operations
 
 from my_utilities import wdt
-from my_utilities import millis
+from my_utilities import millis, is_timeout, is_delay
 from my_utilities import p, VerbosityLevel
 from my_utilities import rtc, rtc_synced, rtc_datetime_pretty, rtc_unix_timestamp
 
@@ -118,7 +118,7 @@ class AsyncWebServer:
             timestamp_ms = millis()
             while self.AsyncWebServer_cb_retval[afe_id] is None:
                 await uasyncio.sleep_ms(1)
-                if (millis()-timestamp_ms > 20000):
+                if is_timeout(timestamp_ms,20000):
                     return None
             return self.AsyncWebServer_cb_retval[afe_id]
             
@@ -322,7 +322,7 @@ class AsyncWebServer:
                         continue
 
                 # Periodically check LAN connection status
-                if (millis() - self.last_lan_check_ms) > 5000: # Check every 5 seconds
+                if is_timeout(self.last_lan_check_ms, 5000):
                     if not self.lan.isconnected():
                         p.print("Ethernet disconnected.")
                         self.lan_connected = False

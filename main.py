@@ -110,7 +110,7 @@ async def main():
     use_async_server = True
     if use_async_server:
         from my_simple_server import AsyncWebServer
-        server = AsyncWebServer(hub,port=80)
+        server = AsyncWebServer(hub)
         # server.run()
 
     # Create asyncio tasks
