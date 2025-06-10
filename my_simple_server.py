@@ -44,6 +44,18 @@ class AsyncWebServer:
         self.sync_ntp_every_s = 10*60
         
         self.AsyncWebServer_cb_retval = {}
+        
+    def get_webpage_address(self):
+        """
+        Returns the current IP address of the server.
+        Returns None if the LAN is not connected.
+        """
+        if self.lan_connected:
+            return "http://{}:{}".format(self.lan.ifconfig()[0],self.port)
+        return None
+    
+    def print_webpage_address(self):
+        p.print(self.get_webpage_address())
 
     async def connect_ethernet(self):
         # The next line was already present
