@@ -484,7 +484,7 @@ class AFEDevice:
     def request_rename_file(self, new_name_suffix):
         self.logger.requestRenameFile(new_name_suffix)
 
-    def execute(self, _):
+    async def execute(self, _):
         if len(self.to_execute) and self.executing is None:
             self.execute_timestamp = millis()
             cmd = self.to_execute.pop(0)
@@ -493,14 +493,13 @@ class AFEDevice:
             if self.executing["timeout_start_on_send_ms"] is not None:
                 self.executing["timestamp_ms"] = millis()
                 self.executing["timeout_ms"] = self.executing["timeout_start_on_send_ms"]
-            if self.can_interface.send(
+            if await self.can_interface.send( # Added await
                 cmd["frame"], cmd["can_address"], timeout=cmd["can_timeout_ms"]):
                 self.executing_error_handler()
             else:
                 self.logger.log(VerbosityLevel["DEBUG"],
                                 self.default_log_dict(
                                     {"debug": "Sending {}".format(cmd)}))
-
     def process_received_data(self, received_data):
         """
         Processes received data from the AFE device.
@@ -909,7 +908,7 @@ class AFEDevice:
         return self.enqueue_command(AFECommand.setOffset, [2, offset_slave])
 
     # AFE state management
-    def manage_state(self):
+    async def manage_state(self):
         if self.use_afe_can_watchdog:
             if is_timeout(self.afe_can_watchdog_timeout_ms,int(round(self.afe_can_watchdog_timeout_ms/10.0))):
                 self.afe_can_watchdog_timestamp_ms = millis()
@@ -954,8 +953,6 @@ class AFEDevice:
             if is_delay(self.execute_timestamp, self.tx_timeout_ms):
                 pass
             else:
-                # micropython.schedule(self.execute, 0)
-                self.execute(0) # Direct call
+                await self.execute(0) # Changed to await
         else:
-            # micropython.schedule(self.execute, 0)
-            self.execute(0) # Direct call
+            await self.execute(0) # Changed to await

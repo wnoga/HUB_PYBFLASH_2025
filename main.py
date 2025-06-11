@@ -13,7 +13,7 @@ import _thread
 # micropython.alloc_emergency_exception_buf(100)
 from my_utilities import p, wdt
 from my_utilities import JSONLogger
-from my_utilities import rtc_unix_timestamp, rtc
+from my_utilities import rtc_unix_timestamp, rtc, rtc_datetime_pretty
 
 # from my_utilities import lock
 import time
@@ -82,6 +82,12 @@ hub.tx_delay_ms = 1
 hub.afe_id_min = 35
 hub.afe_id_max = 37 # Ensure this is less than afe_devices_max for discovery to stop if all found
 
+async def clock_printer():
+    while True:
+        print(rtc_datetime_pretty())
+        
+        await uasyncio.sleep(1)
+
 async def periodic_tasks_loop():
     """Handles periodic background tasks like watchdog, logging, and printing."""
     p.print("Periodic tasks loop started.")
@@ -141,6 +147,10 @@ async def main():
 
     tasks.append(uasyncio.create_task(periodic_tasks_loop()))
     p.print("periodic_tasks_loop task created.")
+    
+    tasks.append(uasyncio.create_task(clock_printer()))
+    
+    
 
 loop = uasyncio.get_event_loop()
 loop.create_task(main())

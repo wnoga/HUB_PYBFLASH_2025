@@ -776,7 +776,7 @@ class HUBDevice:
         # uasyncio.create_task(self.process_received_messages_async())
         if self.afe_manage_active:
             for afe in self.afe_devices:
-                afe.manage_state()
+                await afe.manage_state() # Added await
                 if self.use_automatic_restart:
                     if not afe.is_configuration_started:
                         self.default_full(afe_id=afe.device_id)
