@@ -399,6 +399,7 @@ class JSONLogger:
             self.file = None # File will be opened by new_file or on first log
         else:
             self.file = None # File is never persistently kept open
+        self.request_new_file()
 
     def _ensure_directory(self):
         if not self._path_exists(self.parent_dir):
