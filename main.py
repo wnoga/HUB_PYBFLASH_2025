@@ -81,15 +81,16 @@ hub.afe_manage_active = True
 hub.tx_delay_ms = 1
 hub.afe_id_min = 35
 hub.afe_id_max = 37 # Ensure this is less than afe_devices_max for discovery to stop if all found
-from my_utilities import VerbosityLevel
-def test():
-    logger.log(VerbosityLevel["CRITICAL"],"test {}".format(rtc_datetime_pretty()))
 
-async def clock_printer():
-    while True:
-        print(rtc_datetime_pretty())
+# from my_utilities import VerbosityLevel
+# def test():
+#     logger.log(VerbosityLevel["CRITICAL"],"test {}".format(rtc_datetime_pretty()))
+
+# async def clock_printer():
+#     while True:
+#         print(rtc_datetime_pretty())
         
-        await uasyncio.sleep(5)
+#         await uasyncio.sleep(5)
 
 async def periodic_tasks_loop():
     """Handles periodic background tasks like watchdog, logging, and printing."""
@@ -151,7 +152,7 @@ async def main():
     tasks.append(uasyncio.create_task(periodic_tasks_loop()))
     p.print("periodic_tasks_loop task created.")
     
-    tasks.append(uasyncio.create_task(clock_printer()))
+    # tasks.append(uasyncio.create_task(clock_printer()))
     
     
 
