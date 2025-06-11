@@ -489,7 +489,7 @@ class JSONLogger:
         # log_entry = {"timestamp": log_timestamp, "rtc_timestamp": rtc_unix_timestamp(), "level": level, "message": message}
         # toLog = json.dumps(log_entry)
         log_entry = '"timestamp":{},"rtc_timestamp":{},"level":{},"message":'.format(
-            log_timestamp,rtc_datetime_pretty(),level)
+            log_timestamp,rtc_unix_timestamp(),level)
         
         try:
             if self.file is None: # Attempt to open/reopen if not already
@@ -515,10 +515,10 @@ class JSONLogger:
             # Ensure message is a string before concatenation
             message_str = str(message) if not isinstance(message, str) else message
             if msg_id == 0:
-                toLog = log_entry
+                toLog = "{" + log_entry
             toLog += message_str
             if msg_id == msg_id_max:
-                toLog += '\n'
+                toLog += "}\n"
                 # print(toLog)
             # print(msg_id,msg_id_max, toLog)
             self.file.write(toLog)
