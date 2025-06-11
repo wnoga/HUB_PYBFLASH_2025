@@ -391,6 +391,8 @@ class JSONLogger:
         
         self.request_print_last_lines = 0
         
+        self.sheduled_append_ref = self.sheduled_append
+        
         # self.json_buffer = bytearray(2**13)
 
         if self.keep_file_open:
@@ -552,18 +554,13 @@ class JSONLogger:
         await uasyncio.sleep_ms(0) # Yield
         return len(self.log_queue)
 
+    def sheduled_append(self, msg_data_tuple):
+        # msg_data_tuple is expected to be (level, current_chunk_data, chunk_id, chunk_id_max)
+        self.log_queue.append(msg_data_tuple)
+
+
     def log(self, level: int, message: str):
         if self._should_log(level):
-            while len(self.log_queue) >= self.log_queue_max_len:
-                # uasyncio.sleep_ms(10)
-                # time.sleep_ms(1)
-                pass
-                # while self.lock_process_log_queue:
-                #     await uasyncio.sleep_ms(10)
-                # print(len(self.log_queue))
-                # self._process_log_queue()
-                
-                # await uasyncio.sleep_ms(100)
             chunk_size = 512
             # try:
             #     self.json_buffer = str(message[:2**13])
@@ -582,24 +579,82 @@ class JSONLogger:
             # except Exception as e:
             #     pass
             message = str(message)
-            # print(message)
-                # print("ERROR in JSONLogger.log dumps: ", e)
-            # print(self.json_buffer.decode())
-            # message_length = len(self.json_buffer) # Get length of the dumped JSON string
-            # print(message_length)
             message_length = len(message)
             chunk_id_max = int(message_length // chunk_size)
+
             for i in range(0, message_length, chunk_size):
                 chunk_id = int(i // chunk_size)
                 i_plus = i + chunk_size
                 if i_plus > message_length:
                     i_plus = message_length
-                # print(chunk_id, chunk_id_max, message_length, message)
-                # print(str(self.json_buffer[i:i_plus]))
+                
+                current_chunk_data = message[i:i_plus]
+
+                # Wait if the log queue is full. This is a blocking wait.
+                # In a highly concurrent or performance-sensitive async environment,
+                # this blocking could be an issue.
+                while len(self.log_queue) >= self.log_queue_max_len:
+                    try:
+                        time.sleep_ms(1)  # Yield to other tasks/threads
+                    except NameError: # Fallback if time.sleep_ms is not available
+                        pass # Reverts to a more aggressive busy-wait
+                
+                while True:
+                    try:
+                        # Schedule the append operation.
+                        # Assumes self.sheduled_append and this call signature are correct for your MicroPython port.
+                        micropython.schedule(self.sheduled_append_ref, (level, current_chunk_data, chunk_id, chunk_id_max))
+                        break
+                    except RuntimeError as e_sched: # micropython.schedule can raise RuntimeError if its internal queue is full
+                        p.print("ERROR in JSONLogger.log: Failed to schedule log append (RuntimeError): {}".format(e_sched))
+                    except Exception as e: # Catch other potential errors during scheduling
+                        p.print("ERROR in JSONLogger.log: Unexpected error during scheduling: {}".format(e))
+                        break
+                    time.sleep_ms(1) # Yield to other tasks/threads
+            
+                
+    async def sync(self):
+        if self.file is not None:
+            if self.keep_file_open: # Only flush if we are keeping it open
                 try:
-                    self.log_queue.append((level, message[i:i_plus], chunk_id, chunk_id_max))
+                    self.file.flush()
+                    await uasyncio.sleep_ms(0) # Yield after flush
+                    self.last_sync = millis()
                 except Exception as e:
-                    print("ERROR in JSONLogger.log:",e,":",len(self.log_queue))
+                    p.print("Error in sync (keep_open=True): {}".format(e))
+        # If not keep_file_open, _log handles flush and close, so sync is a no-op.
+
+    async def sync_process(self):
+        if is_timeout(self.last_sync, self.sync_every_ms):
+            await self.sync()
+            await uasyncio.sleep_ms(0) # Yield
+
+    async def close(self):
+        if self.keep_file_open:
+            await self.sync() # Ensure buffer is flushed if file was open
+            if self.file is not None:
+                try:
+                    self.file.close()
+                    await uasyncio.sleep_ms(0) # Yield after close
+                except Exception as e:
+                    p.print("Error in close (keep_open=True): {}".format(e))
+                self.file = None
+        else: # not keep_file_open
+            self.file = None # Should already be None
+
+    # async def clear_logs(self):
+    #     # This method is highly blocking and not easily made async without async os calls.
+    #     # For now, it remains largely synchronous. Consider if it's called from async context.
+    #     p.print("clear_logs is a blocking operation and not fully async.")
+    #     file_was_managed_open = self.file is not None and self.keep_file_open
+        
+    #     if file_was_managed_open:
+    #         try:
+    #             self.file.close()
+    #             await uasyncio.sleep_ms(0
+    #                 self.log_queue.append((level, message[i:i_plus], chunk_id, chunk_id_max))
+    #             except Exception as e:
+    #                 # print("ERROR in JSONLogger.log:",e,":",len(self.log_queue))
             
                 
     async def sync(self):
@@ -958,8 +1013,8 @@ class RxDeviceCAN:
             await uasyncio.sleep_ms(self.yielld_ms) # Yield
    
     async def get(self):
-        while self.irq_flag:
-            await uasyncio.sleep_ms(0) # Yield
+        # while self.irq_flag:
+        #     await uasyncio.sleep_ms(0) # Yield
         if self.rx_message_buffer_head == self.rx_message_buffer_tail:
             return None
         # irq_state = pyb.disable_irq()

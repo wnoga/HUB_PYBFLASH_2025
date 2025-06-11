@@ -484,22 +484,6 @@ class AFEDevice:
     def request_rename_file(self, new_name_suffix):
         self.logger.requestRenameFile(new_name_suffix)
 
-    def process_logger_requests(self):
-        if self.logger._requestNewFile:
-            self.logger._requestNewFile = False
-            micropython.schedule(self.logger.new_file, 0)
-        if self.logger._requestRenameFile:
-            new_name = self.logger._requestRenameFile
-            self.logger._requestRenameFile = False
-            micropython.schedule(self.logger.rename_current_file, new_name)
-
-    def process_logger_buffer(self):
-        if len(self.logger.buffer):
-            micropython.schedule(self.logger.process_log, 0)
-
-    def process_logger_sync(self):
-        micropython.schedule(self.logger.sync_process, 0)
-
     def execute(self, _):
         if len(self.to_execute) and self.executing is None:
             self.execute_timestamp = millis()
