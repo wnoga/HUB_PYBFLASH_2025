@@ -169,7 +169,7 @@ class AFEDevice:
         self.current_command = None
         self.last_command_time = 0
         self.can_interface.send(
-            bytearray([AFECommand.resetAll]), self.can_address, timeout=1000)
+            bytearray([AFECommand.resetAll]), self.can_address, timeout_ms=1000)
         self.init_after_restart()
 
     def print_all_channel_settings(self):
@@ -915,7 +915,7 @@ class AFEDevice:
     # AFE state management
     async def manage_state(self):
         if self.use_afe_can_watchdog:
-            if is_timeout(self.afe_can_watchdog_timeout_ms,int(round(self.afe_can_watchdog_timeout_ms/10.0))):
+            if is_timeout(self.afe_can_watchdog_timestamp_ms,int(round(self.afe_can_watchdog_timeout_ms/10.0))):
                 self.afe_can_watchdog_timestamp_ms = millis()
                 commandKwargs = {"timeout_ms": 10220,
                                  "preserve": True,

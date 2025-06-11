@@ -976,6 +976,7 @@ if __name__ == "__main__":
 
 class RxDeviceCAN:
     def __init__(self, can_bus: pyb.CAN, use_rxcallback=True):
+        self._send_ref = self._send
         self.handle_can_rx_ref = self.handle_can_rx
         self.can_bus: pyb.CAN = can_bus
         self.use_rxcallback = use_rxcallback
@@ -1003,17 +1004,40 @@ class RxDeviceCAN:
             # Register CAN RX interrupt, call safe ISR wrapper
             self.can_bus.rxcallback(0, self.handle_can_rx_irq)
             
-    async def send(self,toSend:bytearray, can_address, timeout,**kwargs):
+    def _send(self, args_tuple):
+        """
+        Internal method to perform the CAN send operation.
+        This is called by micropython.schedule.
+        args_tuple is expected to be (toSend, can_address, bus_timeout_ms).
+        """
+        toSend, can_address, bus_timeout_ms = args_tuple
+        try:
+            self.can_bus.send(toSend, can_address, timeout=bus_timeout_ms)
+        except Exception as e:
+            p.print("Error in RxDeviceCAN._send (scheduled for {}): {}".format(can_address, e))
+   
+    async def send(self, toSend: bytearray, can_address, timeout_ms):
+        """
+        Asynchronously schedules a CAN message send.
+        timeout_ms is used for both the scheduling attempt loop and the CAN bus operation itself.
+        Returns None on successful scheduling, -1 on scheduling timeout.
+        """
         timestamp_ms = millis()
+        print("Sending",toSend)
         while True:
             try:
-                micropython.schedule(self.can_bus.send, toSend,can_address,timeout,**kwargs)
-                return None # return None as success
-            except:
-                pass
-            if is_timeout(timestamp_ms,timeout):
-                return -1 # return error
-            await uasyncio.sleep_ms(self.yielld_ms) # Yield
+                micropython.schedule(self._send_ref, (toSend, can_address, timeout_ms))
+                return None  # Successful scheduling
+            except RuntimeError:  # micropython.schedule queue is full
+                pass  # Will retry after a short sleep
+            except Exception as e: # Other unexpected error during scheduling
+                p.print("Error during micropython.schedule in RxDeviceCAN.send: {}".format(e))
+                pass # Will retry
+            if is_timeout(timestamp_ms, timeout_ms):
+                p.print("Timeout: RxDeviceCAN failed to schedule send to {} within {}ms".format(can_address, timeout_ms))
+                return -1  # Scheduling failed due to timeout
+            await uasyncio.sleep_ms(1) # Yield before retrying schedule
+   
    
     async def get(self):
         # while self.irq_flag:

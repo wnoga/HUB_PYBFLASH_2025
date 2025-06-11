@@ -189,15 +189,15 @@ class HUBDevice:
         # Process the received data using the AFE device's method
         afe.process_received_data(message)
         # except Exception as e:
-        #     p.print("process_received_messages: {}".format(e))
-        
+        # p.print("process_received_messages: {}".format(e))
+
     async def process_received_messages_async(self):
         self.process_received_messages(None)
         
     def discover_devices(self, timer=None):
         """ Periodically discover AFEs on the CAN bus. """
         # Check if discovery is active
-        if not self.discovery_active:
+        if not self.discovery_active: #
             return  # Exit early if discovery is not active
 
         # Check if all devices are discovered
@@ -206,7 +206,7 @@ class HUBDevice:
             return
 
         if self.use_tx_delay:
-            if is_delay(self.last_tx_time,self.tx_delay_ms):
+            if is_delay(self.last_tx_time, self.tx_delay_ms):
                 return
         if self.can_bus.state() > 1:
             # self.logger.log(VerbosityLevel["ERROR"],"CAN BUS ERROR {}".format(self.can_bus.state()))
@@ -220,20 +220,57 @@ class HUBDevice:
 
             if not any(afe.is_online and afe.device_id == self.current_discovery_id for afe in self.afe_devices):
                 # Send get ID msg to discover new AFE
-                self.can_bus.send(
-                    b"\x00\x11", self.current_discovery_id << 2, timeout=self.tx_timeout_ms)
-                self.last_tx_time = millis()
-                self.logger.log(VerbosityLevel["DEBUG"], "Sending discovery message to ID: {}".format(
-                    self.current_discovery_id))
+                # self.can_bus.send(
+                #     b"\x00\x11", self.current_discovery_id << 2, timeout=self.tx_timeout_ms)
+                # self.last_tx_time = millis()
+                # self.logger.log(VerbosityLevel["DEBUG"], "Sending discovery message to ID: {}".format(
+                #     self.current_discovery_id))
+                pass # Will be handled by async version
             else:
                 self.logger.log(VerbosityLevel["DEBUG"], "AFE with ID {} already discovered".format(
                     self.current_discovery_id))
 
             self.current_discovery_id += 1  # Increment ID for the next iteration
-
         except Exception as e:
             self.logger.log(
                 VerbosityLevel["ERROR"], "discover_devices: HUB Error sending: {}".format(e))
+
+    async def discover_devices_async(self): # Renamed to avoid conflict if old one is kept temporarily
+        """ Periodically discover AFEs on the CAN bus. """
+        if not self.discovery_active:
+            return
+
+        if len(self.afe_devices) >= self.afe_devices_max: # Use >= for safety
+            self.stop_discovery()
+            return
+
+        if self.use_tx_delay and is_delay(self.last_tx_time, self.tx_delay_ms):
+            return
+
+        if self.can_bus.state() > 1:
+            if self.can_bus.state() > 2: # Corresponds to pyb.CAN.BUS_OFF or more severe
+                self.logger.log(VerbosityLevel["ERROR"], "CAN bus error state {}, attempting restart.".format(self.can_bus.state()))
+                self.can_bus.restart()
+            else:
+                self.logger.log(VerbosityLevel["WARNING"], "CAN bus warning state {}.".format(self.can_bus.state()))
+            return
+
+        if self.current_discovery_id > self.afe_id_max:
+            self.current_discovery_id = self.afe_id_min
+
+        if not any(afe.is_online and afe.device_id == self.current_discovery_id for afe in self.afe_devices):
+            send_result = await self.can_interface.send(
+                toSend=b"\x00\x11", # Command to request AFE presence/ID
+                can_address=self.current_discovery_id << 2,
+                timeout_ms=self.tx_timeout_ms
+            )
+            if send_result is None: # Indicates successful scheduling by can_interface
+                self.last_tx_time = millis()
+                self.logger.log(VerbosityLevel["DEBUG"], "Sent discovery to ID: {}".format(self.current_discovery_id))
+            # else:
+            #     self.logger.log(VerbosityLevel["ERROR"], "Failed to send discovery to ID: {}".format(self.current_discovery_id))
+
+        self.current_discovery_id += 1
 
     def start_discovery(self):
         """ Start the device discovery process. """
@@ -766,9 +803,9 @@ class HUBDevice:
         # #     self.handle_can_rx_polling_schedule(0)
         # micropython.schedule(self._dequeue_message_copy, 0)
         # self.rxDeviceCAN.main_process()
-        await self._dequeue_message_copy(0)
-        
-        self.discover_devices()
+        await self._dequeue_message_copy(0) # Ensure message is dequeued before processing
+
+        await self.discover_devices_async() # Changed to async version
         # if self.rx_process_active:
         #     micropython.schedule(self.process_received_messages, 0)
         # self.process_received_messages_async()
