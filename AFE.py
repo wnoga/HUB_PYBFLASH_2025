@@ -19,6 +19,8 @@ from my_utilities import RxDeviceCAN
 
 class AFEDevice:
     def __init__(self, can_interface: RxDeviceCAN, device_id, logger: JSONLogger, config_path=None):
+        if not isinstance(can_interface, RxDeviceCAN):
+            raise RuntimeError("can_interface must be an instance of RxDeviceCAN")
         self.can_interface = can_interface
         self.device_id = device_id  # Channel number
         self.unique_id = [0, 0, 0]  # 3*32-bit = 96-bit STM32 Unique ID

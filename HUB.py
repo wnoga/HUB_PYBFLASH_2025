@@ -46,7 +46,7 @@ class HUBDevice:
 
         self.logger = logger
         self.use_rxcallback = use_rxcallback
-        self.rxDeviceCAN = rxDeviceCAN
+        self.can_interface = rxDeviceCAN
 
         self.message_queue = []
         self.message_queue_max = 128
@@ -125,7 +125,7 @@ class HUBDevice:
             p.print("Error clearing logs: {}".format(e))
 
     async def _dequeue_message_copy(self, _):
-        self.msg_to_process = await self.rxDeviceCAN.get()
+        self.msg_to_process = await self.can_interface.get()
         return self.msg_to_process
     
     # async def _dequeue_message(self):
@@ -174,7 +174,7 @@ class HUBDevice:
         afe = self.get_afe_by_id(afe_id)
         if afe is None:  # Add new discovered AFE
             # Create a new AFE device instance with the discovered ID
-            afe = AFEDevice(self.can_bus, afe_id, logger=self.logger)
+            afe = AFEDevice(self.can_interface, afe_id, logger=self.logger)
             self.logger.log(VerbosityLevel["INFO"],
                             {
                                 "device_id": 0,
