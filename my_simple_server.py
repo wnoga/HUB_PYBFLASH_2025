@@ -43,7 +43,8 @@ class AsyncWebServer:
         self.sync_ntp_loop_yield_wait_s = 10
         self.sync_ntp_every_s = 10*60
         
-        self.AsyncWebServer_cb_retval = {}
+        self.procedure_results = {} # Stores results from hub callbacks
+        self.procedure_events = {}  # Stores uasyncio.Event for synchronization
         
     def get_webpage_address(self):
         """
@@ -79,21 +80,31 @@ class AsyncWebServer:
         self.lan_connected = True
         
     def hub_cb(self,msg:dict=None):
-        device_id = msg.get("device_id",None)
+        device_id = msg.get("device_id", None)
         if not device_id:
-            # p.print("FAILED EXECUTED CALLBACK ON SERVER: {}".format(msg))
+            p.print("hub_cb: device_id missing in callback message.")
             return
-        self.AsyncWebServer_cb_retval[device_id] = None
-        # p.print("EXECUTED CALLBACK ON SERVER: {}".format(msg))
+
+        # Prepare the result to be sent back to the web client
         my_dict = msg.copy()
-        if 'frame' in my_dict:
+        if 'frame' in my_dict: # Assuming 'frame' is internal and not for web client
             my_dict.pop('frame')
-        if 'callback' in my_dict:
+        if 'callback' in my_dict: # The callback itself shouldn't be in the response
             my_dict.pop('callback')
+        
         try:
-            self.AsyncWebServer_cb_retval[device_id] = ujson.dumps(my_dict).encode()
-        except:
-            pass
+            # Store the processed result for handle_procedure to pick up
+            self.procedure_results[device_id] = ujson.dumps(my_dict).encode()
+        except Exception as e:
+            p.print("hub_cb: Error serializing result for AFE {}: {}".format(device_id, e))
+            self.procedure_results[device_id] = ujson.dumps({"status": "ERROR", "info": "Failed to serialize AFE response"}).encode()
+
+        # Signal the waiting handle_procedure task
+        event = self.procedure_events.get(device_id)
+        if event:
+            event.set()
+        else:
+            p.print("hub_cb: No event found for AFE {}. Result stored but not awaited.".format(device_id))
 
     async def handle_procedure(self, request_line):
         request = None
@@ -112,15 +123,31 @@ class AsyncWebServer:
         elif procedure == "default_get_measurement_last":
             afe_id = request.get("afe_id",None)
             if afe_id is None:
-                return None
-            self.AsyncWebServer_cb_retval[afe_id] = None
+                return ujson.dumps({"status": "ERROR", "info": "afe_id missing"}).encode()
+            
+            event = uasyncio.Event()
+            self.procedure_events[afe_id] = event
+            self.procedure_results.pop(afe_id, None) # Clear previous result
+
             self.hub.default_get_measurement_last(afe_id,callback=self.hub_cb)
-            timestamp_ms = millis()
-            while self.AsyncWebServer_cb_retval[afe_id] is None:
-                await uasyncio.sleep_ms(1)
-                if is_timeout(timestamp_ms,20000):
-                    return None
-            return self.AsyncWebServer_cb_retval[afe_id]
+            
+            try:
+                await uasyncio.wait_for(event.wait(), timeout=20.0) # 20 second timeout
+                result_data = self.procedure_results.pop(afe_id, None)
+                # Event is removed from dict by hub_cb or here on timeout/error
+                if self.procedure_events.get(afe_id) == event: # Check if event is still ours
+                    self.procedure_events.pop(afe_id, None)
+                return result_data
+            except uasyncio.TimeoutError:
+                p.print("Timeout waiting for procedure result for AFE {}".format(afe_id))
+                self.procedure_events.pop(afe_id, None) 
+                self.procedure_results.pop(afe_id, None)
+                return ujson.dumps({"status": "ERROR", "info": "Timeout waiting for AFE response"}).encode()
+            except Exception as e:
+                p.print("Error waiting for event for AFE {}: {}".format(afe_id, e))
+                self.procedure_events.pop(afe_id, None)
+                self.procedure_results.pop(afe_id, None)
+                return ujson.dumps({"status": "ERROR", "info": "Server error during procedure"}).encode()
             
         return None
 
@@ -257,12 +284,12 @@ class AsyncWebServer:
             return False
 
         p.print("Attempting to sync NTP...")
+        s = None # Initialize s
         try:
             # Create a UDP socket
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.settimeout(5) # 5 second timeout
 
-            # Get server IP
             addr = socket.getaddrinfo(NTP_HOST, 123)[0][-1]
 
             # NTP request packet (minimal: version 3, client mode)
@@ -271,9 +298,7 @@ class AsyncWebServer:
 
             s.sendto(msg, addr)
             await uasyncio.sleep_ms(0) # Yield
-            data, server_addr = s.recvfrom(48)
-            s.close()
-            await uasyncio.sleep_ms(0) # Yield
+            data, _ = s.recvfrom(48) # server_addr is not used
 
             if data:
                 # Extract the transmit timestamp (bytes 40-43)
@@ -292,6 +317,11 @@ class AsyncWebServer:
         except Exception as e:
             p.print("NTP sync failed: {}".format(e))
             return False
+        finally:
+            if s:
+                s.close()
+                await uasyncio.sleep_ms(0) # Yield after close
+
 
     async def start(self):
         await self.connect_ethernet() # Call with await

@@ -492,23 +492,30 @@ class JSONLogger:
         
         try:
             if self.file is None: # Attempt to open/reopen if not already
-                try:
-                    self.file = open(self.filename, "a") # Append mode
-                    await uasyncio.sleep_ms(0)
-                    p.print("Re-opened log file {} for append in _log (keep_open=True)".format(self.filename))
-                except Exception as e_open:
-                    p.print("ERROR in _log: Failed to open file {} (keep_open=True): {}".format(self.filename, e_open))
-                    await self.request_new_file()
-                    return -1
-            if self.file is None:
-                 p.print("ERROR in _log: File handle is None for {}.".format(self.filename))
-                 return -1
+                if self.keep_file_open: # Only attempt to reopen if in this mode
+                    try:
+                        self.file = open(self.filename, "a")
+                        await uasyncio.sleep_ms(0)
+                        # p.print(f"Re-opened log file {self.filename} in _log (keep_open=True)") # Can be verbose
+                    except Exception as e_open:
+                        p.print("ERROR in _log: Failed to open/reopen file {} (keep_open=True): {}".format(self.filename, e_open))
+                        await self.request_new_file() # Request a new file to be created by machine()
+                        return -1 # Indicate failure
+                else: # If not keep_file_open, self.file should have been set by machine()
+                    p.print("ERROR in _log: self.file is None for {} (keep_file_open=False). This indicates an issue in machine().".format(self.filename))
+                    return -1 # Indicate failure
+
+            if self.file is None: # Double check after potential open attempt
+                 p.print("ERROR in _log: File handle is None for {} after open attempt.".format(self.filename))
+                 return -1 # Indicate failure
 
             self.cursor_position_last = self.file.tell()
             toLog = ""
+            # Ensure message is a string before concatenation
+            message_str = str(message) if not isinstance(message, str) else message
             if msg_id == 0:
                 toLog = log_entry
-            toLog += message
+            toLog += message_str
             if msg_id == msg_id_max:
                 toLog += '\n'
                 # print(toLog)
@@ -606,14 +613,18 @@ class JSONLogger:
                     try:
                         # Schedule the append operation.
                         # Assumes self.sheduled_append and this call signature are correct for your MicroPython port.
-                        micropython.schedule(self.sheduled_append_ref, (level, current_chunk_data, chunk_id, chunk_id_max))
+                        micropython.schedule(self.sheduled_append_ref, (level, current_chunk_data, chunk_id, chunk_id_max)) # type: ignore
                         break
                     except RuntimeError as e_sched: # micropython.schedule can raise RuntimeError if its internal queue is full
                         p.print("ERROR in JSONLogger.log: Failed to schedule log append (RuntimeError): {}".format(e_sched))
+                        # Sleep only if schedule failed due to being full, then retry
+                        try:
+                            time.sleep_ms(1) # Yield to other tasks/threads
+                        except NameError: # Fallback
+                            pass
                     except Exception as e: # Catch other potential errors during scheduling
                         p.print("ERROR in JSONLogger.log: Unexpected error during scheduling: {}".format(e))
-                        break
-                    time.sleep_ms(1) # Yield to other tasks/threads
+                        break # Break on other unexpected errors
             
                 
     async def sync(self):
@@ -729,33 +740,57 @@ class JSONLogger:
 
     async def _print_last_line(self, path=None):
         try:
-            if path is None:
-                self.sync()
-            else:
-                # use print_last_lines for external files
-                self._print_last_lines(N=1, path=path)
+            file_to_read = path or self.filename
+            if not file_to_read:
+                p.print("Error in _print_last_line: No file specified or set.")
                 return
-            with open(self.filename, "r") as file:  # for internal file use cursor position
+
+            if path is None and self.keep_file_open:
+                await self.sync()
+            
+            # For external files or when not using keep_file_open, rely on _print_last_lines
+            if path or not self.keep_file_open:
+                await self._print_last_lines(N=1, path=file_to_read)
+                return
+
+            # This part is for internal file with cursor position (keep_file_open=True)
+            with open(file_to_read, "r") as file:
+                await uasyncio.sleep_ms(0) # Yield after open
                 file.seek(self.cursor_position_last)
                 for line in file:
                     p.print(line.strip())
-        except OSError:
-            p.print("Error: Cannot read JSON log file.")
+                    await uasyncio.sleep_ms(0) # Yield after processing line
+        except OSError as e:
+            p.print("Error reading log file in _print_last_line ({}): {}".format(file_to_read if 'file_to_read' in locals() else 'N/A', e))
+        except Exception as e_gen:
+            p.print("Generic error in _print_last_line: {}".format(e_gen))
 
     async def _print_last_lines(self, N=10, path=None):
         try:
-            if path is None:
-                self.sync()
-            with open(path or self.filename, "r") as file:
-                for _ in range(self.file_rows - N):
-                    file.readline()
+            file_to_read = path or self.filename
+            if not file_to_read:
+                p.print("Error in _print_last_lines: No file specified or set.")
+                return
+
+            if path is None and self.keep_file_open: # sync only if we were keeping file open
+                await self.sync()
+
+            with open(file_to_read, "r") as file: # BLOCKING
+                await uasyncio.sleep_ms(0) # Yield after open
+                lines_to_skip = max(0, self.file_rows - N)
+                for _ in range(lines_to_skip):
+                    if not file.readline(): break # EOF
+                    await uasyncio.sleep_ms(0) # Yield
                 while True:
                     line = file.readline()
                     if not line:
                         break
                     p.print(line.strip())
-        except OSError:
-            p.print("Error: Cannot read JSON log file.")
+                    await uasyncio.sleep_ms(0) # Yield
+        except OSError as e:
+            p.print("Error reading log file in _print_last_lines ({}): {}".format(file_to_read if 'file_to_read' in locals() else 'N/A', e))
+        except Exception as e_gen:
+            p.print("Generic error in _print_last_lines: {}".format(e_gen))
             
     def print_last_lines(self, N=1):
         while self.request_print_last_lines:
@@ -854,15 +889,39 @@ class JSONLogger:
             new_path = await self.get_new_file_path()
             await self.rename_current_filename(new_path)
         if not self.keep_file_open:
-            self.file = open(self.filename, "a")
-        while await self._process_log_queue(): # Process one item from buffer
-            await uasyncio.sleep_ms(0)
+            # Ensure filename is valid before attempting to open
+            if not self.filename or not self._path_exists(self.parent_dir): # Check parent dir too
+                p.print("Error in machine (keep_file_open=False): Invalid filename or directory. Attempting to create new file.")
+                await self.new_file() # This sets self.filename and ensures dir
+                if not self.filename:
+                    p.print("Critical Error in machine (keep_file_open=False): Could not establish a valid log file. Skipping log cycle.")
+                    return
+            try:
+                self.file = open(self.filename, "a") # BLOCKING
+                await uasyncio.sleep_ms(0) # YIELD after open
+            except Exception as e:
+                p.print("Error opening log file {} in machine (keep_file_open=False): {}".format(self.filename, e))
+                self.file = None # Ensure file is None so subsequent operations don't fail badly
+                # Consider requesting a new file or logging an error and returning
+                # await self.request_new_file() # This might be too aggressive, could loop if disk is full
+
+        if self.file: # Only process queue if file is open
+            while await self._process_log_queue(): # Process one item from buffer
+                await uasyncio.sleep_ms(0) # Yield after each item processed
+        
         if self.keep_file_open:
             await self.sync_process() # Sync file to card periodically
         else:
-            self.file.flush()
-            self.file.close()
-            self.file = None
+            if self.file: # Only flush/close if file was successfully opened
+                try:
+                    self.file.flush() # BLOCKING
+                    await uasyncio.sleep_ms(0) # YIELD after flush
+                    self.file.close() # BLOCKING
+                    await uasyncio.sleep_ms(0) # YIELD after close
+                except Exception as e:
+                    p.print("Error flushing/closing log file {} (keep_file_open=False): {}".format(self.filename, e))
+                finally:
+                    self.file = None # Ensure self.file is None even if close fails
             
         if self.request_print_last_lines:
             await self._print_last_lines(self.request_print_last_lines)
@@ -1023,7 +1082,6 @@ class RxDeviceCAN:
         Returns None on successful scheduling, -1 on scheduling timeout.
         """
         timestamp_ms = millis()
-        print("Sending",toSend)
         while True:
             try:
                 micropython.schedule(self._send_ref, (toSend, can_address, timeout_ms))
