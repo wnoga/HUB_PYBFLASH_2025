@@ -485,7 +485,7 @@ class AFEDevice:
         self.logger.requestRenameFile(new_name_suffix)
 
     async def execute(self, _):
-        if len(self.to_execute) and self.executing is None:
+        if self.to_execute and self.executing is None:
             self.execute_timestamp = millis()
             cmd = self.to_execute.pop(0)
             self.executing = cmd
@@ -493,9 +493,12 @@ class AFEDevice:
             if self.executing["timeout_start_on_send_ms"] is not None:
                 self.executing["timestamp_ms"] = millis()
                 self.executing["timeout_ms"] = self.executing["timeout_start_on_send_ms"]
-            if await self.can_interface.send( # Added await
-                cmd["frame"], cmd["can_address"], timeout=cmd["can_timeout_ms"]):
-                self.executing_error_handler()
+            try:
+                if await self.can_interface.send( # Added await
+                    cmd.get("frame"), cmd.get("can_address"), cmd.get("can_timeout_ms",self.default_command_timeout_ms)):
+                    self.executing_error_handler()
+            except Exception as e:
+                print("Error executing command {} -> {} : {}".format(e,type(cmd),cmd))
             else:
                 self.logger.log(VerbosityLevel["DEBUG"],
                                 self.default_log_dict(

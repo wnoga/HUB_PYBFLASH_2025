@@ -118,7 +118,7 @@ class PrintButLouder:
             self.queue.pop(0)
         unlock()
 
-    async def process_queue(self):
+    async def machine(self):
         if not self.queue:
             return
         lock()
@@ -578,7 +578,10 @@ class JSONLogger:
             #     # print(self.json_buffer)
             # except Exception as e:
             #     pass
-            message = str(message)
+            if isinstance(message, dict):
+                message = json.dumps(message)
+            else:
+                message = str(message)
             message_length = len(message)
             chunk_id_max = int(message_length // chunk_size)
 
@@ -1000,7 +1003,7 @@ class RxDeviceCAN:
             # Register CAN RX interrupt, call safe ISR wrapper
             self.can_bus.rxcallback(0, self.handle_can_rx_irq)
             
-    async def send(self,toSend:bytearray, can_address: int, timeout: int,**kwargs):
+    async def send(self,toSend:bytearray, can_address, timeout,**kwargs):
         timestamp_ms = millis()
         while True:
             try:
