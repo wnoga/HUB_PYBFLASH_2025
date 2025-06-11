@@ -398,6 +398,8 @@ class AFEDevice:
                 value. Defaults to False.
             can_timeout_ms (int, optional): The timeout for CAN communication. Defaults to None.
         """
+        if len(self.to_execute) > self.executed_max_len:
+            self.to_execute.pop(0)
         self.to_execute.append(
             self.prepare_command(command, data, **kwargs)
         )
@@ -965,7 +967,7 @@ class AFEDevice:
 
         # Try send commands
         if self.use_tx_delay:
-            if is_delay(self.execute_timestamp,self.tx_timeout_ms):
+            if is_delay(self.execute_timestamp, self.tx_timeout_ms):
                 pass
             else:
                 # micropython.schedule(self.execute, 0)

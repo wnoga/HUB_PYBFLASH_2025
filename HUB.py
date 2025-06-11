@@ -797,16 +797,16 @@ class HUBDevice:
 
     async def main_loop(self):
         while self.run:
-            try:
-                # print("  H")
-                # print_lock.acquire()
-                await self.main_process()
-                # p.process_queue()
-                # self.logger.machine()
-                wdt.feed()
-                # time.sleep_us(10)
-            except Exception as e:
-                p.print("HUB main_loop: {}".format(e))
+            # try:
+            # print("  H")
+            # print_lock.acquire()
+            await self.main_process()
+            # p.process_queue()
+            # self.logger.machine()
+            wdt.feed()
+            # time.sleep_us(10)
+            # except Exception as e:
+            #     p.print("HUB main_loop: {}".format(e))
             await uasyncio.sleep_ms(0)
             # print_lock.release()
             # time.sleep_ms(1)

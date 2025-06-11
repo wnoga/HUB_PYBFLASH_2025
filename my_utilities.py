@@ -21,9 +21,13 @@ except:
 import time
 
 def is_timeout(timestamp_ms, timeout_ms):
+    if timeout_ms == 0:
+        return False
     return time.ticks_diff(time.ticks_ms(), timestamp_ms) > timeout_ms
 
 def is_delay(timestamp_ms, delay_ms):
+    if delay_ms == 0:
+        return False
     return time.ticks_diff(time.ticks_ms(), timestamp_ms) < delay_ms
 
 
@@ -371,15 +375,23 @@ class JSONLogger:
         self.last_sync = 0
         self.sync_every_ms = 1000
         self.buffer = []
-        self.burst_delay_ms = 0
+        self.burst_delay_ms = 1
         self.burst_timestamp_ms = 0
         self._requestNewFile = False
+        self.log_queue = []  # Introduce a log queue
         self._requestRenameFile = False
         self.file_rows = 0
         self.cursor_position = 0
         self.cursor_position_last = 0
         self.rtc_synced = False
         self.keep_file_open = keep_file_open
+        
+        self.log_queue_max_len = 128
+        self.lock_process_log_queue = False
+        
+        self.request_print_last_lines = 0
+        
+        # self.json_buffer = bytearray(2**13)
 
         if self.keep_file_open:
             self.file = None # File will be opened by new_file or on first log
@@ -458,7 +470,7 @@ class JSONLogger:
         p.print("New logger file target set to:", self.filename)
         await uasyncio.sleep_ms(0) # Yield
 
-    async def _log(self, level: int, message):
+    async def _log(self, level: int, message, msg_id=0, msg_id_max=0):
         if self.burst_delay_ms: # Rate limiting
             if is_delay(self.burst_timestamp_ms, self.burst_delay_ms):
                 return 0  # Zero item saved
@@ -471,8 +483,10 @@ class JSONLogger:
                 return -1
 
         log_timestamp = millis()
-        log_entry = {"timestamp": log_timestamp, "rtc_timestamp": rtc_unix_timestamp(), "level": level, "message": message}
-        toLog = json.dumps(log_entry)
+        # log_entry = {"timestamp": log_timestamp, "rtc_timestamp": rtc_unix_timestamp(), "level": level, "message": message}
+        # toLog = json.dumps(log_entry)
+        log_entry = '"timestamp":{},"rtc_timestamp":{},"level":{},"message":'.format(
+            log_timestamp,rtc_datetime_pretty(),level)
         
         try:
             if self.file is None: # Attempt to open/reopen if not already
@@ -489,7 +503,15 @@ class JSONLogger:
                  return -1
 
             self.cursor_position_last = self.file.tell()
-            self.file.write(str(toLog) + "\n")
+            toLog = ""
+            if msg_id == 0:
+                toLog = log_entry
+            toLog += message
+            if msg_id == msg_id_max:
+                toLog += '\n'
+                # print(toLog)
+            # print(msg_id,msg_id_max, toLog)
+            self.file.write(toLog)
             await uasyncio.sleep_ms(0) # Yield after write
             self.file_rows += 1
             self.cursor_position = self.file.tell()
@@ -501,7 +523,7 @@ class JSONLogger:
             #     await uasyncio.sleep_ms(0)
             #     current_file_handle = None
         except Exception as e:
-            p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename, e, log_entry))
+            p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename, e, log_entry[:512]))
             # if self.keep_file_open and self.file:
             #     try: self.file.close()
             #     except: pass
@@ -511,31 +533,75 @@ class JSONLogger:
             #     except: pass
             # await self.request_new_file()
             return -1 # skip this row
+        
         if level >= self.print_verbosity_level:
-            p.print("LOG:", toLog)
+            p.print("LOG:", message)
+            
         return 1  # One item saved
-
-    async def process_log(self, _):
-        if len(self.buffer) == 0:
-            return False
-        
-        toLog = self.buffer[0]
-        log_level = toLog[0]
-        log_message = toLog[1]
-        
-        log_result = await self._log(log_level, log_message)
-        
-        if log_result:  # Successfully written or rejected
-            lock()
-            self.buffer.pop(0)
+    async def _process_log_queue(self):
+        # while self.lock_process_log_queue:
+        #     await uasyncio.sleep_ms(10)
+        # self.lock_process_log_queue = True
+        if self.log_queue:
+            lock() # Acquire lock for safe file writing
+            level, message, chunk_id, chunk_id_max = self.log_queue.pop(0)
             unlock()
-            return True  # Item processed
-        return False # Item not processed (burst delay or error)
+            # print("Processing")
+            # self.lock_process_log_queue = False
+            await self._log(level, message, chunk_id, chunk_id_max)
+        await uasyncio.sleep_ms(0) # Yield
+        return len(self.log_queue)
 
-    def log(self, level: int, message):
+    def log(self, level: int, message: str):
         if self._should_log(level):
-            self.buffer.append([level, message])
-
+            while len(self.log_queue) >= self.log_queue_max_len:
+                # uasyncio.sleep_ms(10)
+                # time.sleep_ms(1)
+                pass
+                # while self.lock_process_log_queue:
+                #     await uasyncio.sleep_ms(10)
+                # print(len(self.log_queue))
+                # self._process_log_queue()
+                
+                # await uasyncio.sleep_ms(100)
+            chunk_size = 512
+            # try:
+            #     self.json_buffer = str(message[:2**13])
+            #     # # Dump message to the pre-allocated buffer
+            #     # if isinstance(message, str):
+            #     #     self.json_buffer = message
+            #     # elif isinstance(message, dict):
+            #     #     # json.dump writes to the buffer, handling encoding
+            #     #     # json.dump(message, fp=self.json_buffer)
+            #     #     self.json_buffer = str(message)
+            #     #     # print(len(self.json_buffer))
+            #     #     # print(self.json_buffer.decode())
+            #     # else:
+            #     #     print(message)
+            #     # print(self.json_buffer)
+            # except Exception as e:
+            #     pass
+            message = str(message)
+            # print(message)
+                # print("ERROR in JSONLogger.log dumps: ", e)
+            # print(self.json_buffer.decode())
+            # message_length = len(self.json_buffer) # Get length of the dumped JSON string
+            # print(message_length)
+            message_length = len(message)
+            chunk_id_max = int(message_length // chunk_size)
+            for i in range(0, message_length, chunk_size):
+                chunk_id = int(i // chunk_size)
+                i_plus = i + chunk_size
+                if i_plus > message_length:
+                    i_plus = message_length
+                # print(chunk_id, chunk_id_max, message_length, message)
+                # print(str(self.json_buffer[i:i_plus]))
+                try:
+                    self.log_queue.append((level, message[i:i_plus], chunk_id, chunk_id_max))
+                except Exception as e:
+                    print("ERROR in JSONLogger.log:",e,":",len(self.log_queue))
+            
+                
     async def sync(self):
         if self.file is not None:
             if self.keep_file_open: # Only flush if we are keeping it open
@@ -593,23 +659,23 @@ class JSONLogger:
         # For keep_file_open=True, new_file or _log will handle re-creating/re-opening.
         # For keep_file_open=False, _log will create on next write.
 
-    def print_lines(self, path=None):
-        try:
-            if path is None:
-                self.sync()
-            with open(path or self.filename, "r") as file:
-                for line in file:
-                    p.print(line.strip())  # Print each line
-        except OSError:
-            p.print("Error: Cannot read JSON log file.")
+    # def print_lines(self, path=None):
+    #     try:
+    #         if path is None:
+    #             self.sync()
+    #         with open(path or self.filename, "r") as file:
+    #             for line in file:
+    #                 p.print(line.strip())  # Print each line
+    #     except OSError:
+    #         p.print("Error: Cannot read JSON log file.")
 
-    def print_last_line(self, path=None):
+    async def _print_last_line(self, path=None):
         try:
             if path is None:
                 self.sync()
             else:
                 # use print_last_lines for external files
-                self.print_last_lines(N=1, path=path)
+                self._print_last_lines(N=1, path=path)
                 return
             with open(self.filename, "r") as file:  # for internal file use cursor position
                 file.seek(self.cursor_position_last)
@@ -618,7 +684,7 @@ class JSONLogger:
         except OSError:
             p.print("Error: Cannot read JSON log file.")
 
-    def print_last_lines(self, N=10, path=None):
+    async def _print_last_lines(self, N=10, path=None):
         try:
             if path is None:
                 self.sync()
@@ -632,6 +698,11 @@ class JSONLogger:
                     p.print(line.strip())
         except OSError:
             p.print("Error: Cannot read JSON log file.")
+            
+    def print_last_lines(self, N=1):
+        while self.request_print_last_lines:
+            pass
+        self.request_print_last_lines = N
 
     async def rename_current_file(self, new_name_suffix):
         new_full_path = "{}/{}".format(self.parent_dir, new_name_suffix)
@@ -712,13 +783,13 @@ class JSONLogger:
     async def machine(self):
         if self._requestNewFile or (not self.filename):
             self._requestNewFile = False
-            while await self.process_log(0):
+            while await self._process_log_queue():
                 await uasyncio.sleep_ms(0)
             await self.sync()
             await self.new_file()
         if self._requestRenameFile:
             self._requestRenameFile = False
-            while await self.process_log(0):
+            while await self._process_log_queue():
                 await uasyncio.sleep_ms(0)
                 pass
             await self.sync()
@@ -726,7 +797,7 @@ class JSONLogger:
             await self.rename_current_filename(new_path)
         if not self.keep_file_open:
             self.file = open(self.filename, "a")
-        while await self.process_log(0): # Process one item from buffer
+        while await self._process_log_queue(): # Process one item from buffer
             await uasyncio.sleep_ms(0)
         if self.keep_file_open:
             await self.sync_process() # Sync file to card periodically
@@ -734,8 +805,14 @@ class JSONLogger:
             self.file.flush()
             self.file.close()
             self.file = None
+            
+        if self.request_print_last_lines:
+            await self._print_last_lines(self.request_print_last_lines)
+            self.request_print_last_lines = 0
+            
 
-        # await uasyncio.sleep_ms(0) # Yield is already in sync_process if sync happens
+
+        await uasyncio.sleep_ms(0) # Yield is already in sync_process if sync happens
 
 
 # cmndavrg = AFECommandAverage()

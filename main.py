@@ -61,6 +61,9 @@ server = None # Initialize to None
 from HUB import initialize_can_hub # HUBDevice and RxDeviceCAN are returned by this
 # from HUB import RxDeviceCAN # Not needed separately if obtained from initialize_can_hub
 
+use_lan_server = False
+use_async_server = True
+
 use_rxcallback = True
 can, hub, rxDeviceCAN = initialize_can_hub(
     can_bus=can_bus,
@@ -89,7 +92,13 @@ async def periodic_tasks_loop():
         await logger.machine()  # logger.machine() can have blocking I/O
         # await uasyncio.sleep_ms(0)  # Yield after logger processing
 
+        # Process logger queue -  This reduces the work per cycle & allows other operations to run.
+        # if logger.log_queue:
+        #     await logger._process_log_queue()
+        
         await p.process_queue()  # p.process_queue() can have blocking I/O
+
+
         # await uasyncio.sleep_ms(0)  # Yield after print queue processing
         # except Exception as e:
         #     print("Error in periodic_tasks_loop:", e)
@@ -99,15 +108,13 @@ async def periodic_tasks_loop():
 async def main():
     global can,hub,rxDeviceCAN,server
     p.print("Main async task started.")
-
-    use_lan_server = False
     
     if use_lan_server:
         from my_simple_server import MySimpleServer
         server = MySimpleServer(hub)
         server.running = True
         
-    use_async_server = True
+    
     if use_async_server:
         from my_simple_server import AsyncWebServer
         server = AsyncWebServer(hub)
