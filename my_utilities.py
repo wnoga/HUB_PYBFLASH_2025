@@ -157,10 +157,11 @@ class AFECommand:
     startADC = 0x4
     getTimestamp = 0x5
     getSyncTimestamp = 0x6
+    resetCAN = 0x7
     getSensorDataSi_last_byMask = 0x30
     getSensorDataSi_average_byMask = 0x31
     getSensorDataSiAndTimestamp_average_byMask = 0x3b
-    AFECommand_getSensorDataSi_periodic = 0x3f
+    getSensorDataSi_periodic = 0x3f
     setSensorDataSi_periodic_last = 0x40
     setSensorDataSiAndTimestamp_periodic_last = 0x41
     setSensorDataSi_periodic_average = 0x42
@@ -571,9 +572,9 @@ class JSONLogger:
         #     await uasyncio.sleep_ms(10)
         # self.lock_process_log_queue = True
         if self.log_queue:
-            lock() # Acquire lock for safe file writing
+            # lock() # Acquire lock for safe file writing
             level, message, chunk_id, chunk_id_max = self.log_queue.pop(0)
-            unlock()
+            # unlock()
             # print("Processing")
             # self.lock_process_log_queue = False
             await self._log(level, message, chunk_id, chunk_id_max)

@@ -609,6 +609,14 @@ class AFEDevice:
                 elif chunk_id == 2:
                     parsed_data["msg_recieved_by_AFE_timestamp_ms"] = self.bytes_to_u32(
                         chunk_payload[1:])
+                    
+            elif command == AFECommand.resetCAN:
+                retval = {"reason":"AFE CAN Error","timestamp_ms":millis()}
+                self.logger.log(VerbosityLevel["ERROR"],
+                    self.default_log_dict({
+                        "error": "AFE {} CAN bus reset".format(device_id),
+                        "retval": self.trim_dict_for_logger(retval)
+                    }))
 
             elif command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
                 pass
@@ -721,7 +729,7 @@ class AFEDevice:
                         chunk_payload[1:])
                 pass
 
-            elif command == AFECommand.AFECommand_getSensorDataSi_periodic:
+            elif command == AFECommand.getSensorDataSi_periodic:
                 try:
                     unmasked_channels = self.unmask_channel(chunk_payload[0])
                     if not "last_data" in self.periodic_data:
@@ -852,7 +860,7 @@ class AFEDevice:
                     # if "timestamp_ms" in self.periodic_data:
                     try:
                         toLog = self.default_log_dict({
-                            "command": AFECommand.AFECommand_getSensorDataSi_periodic,
+                            "command": AFECommand.getSensorDataSi_periodic,
                             "retval": self.trim_dict_for_logger(self.periodic_data),
                         })
                         channel_timestamp = self.periodic_data.get("timestamp_ms",None)
