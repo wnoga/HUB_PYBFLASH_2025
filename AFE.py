@@ -91,7 +91,7 @@ class AFEDevice:
         toReturn = {
             "device_id": self.device_id,
             "timestamp_ms": timestamp_ms or millis(),
-            "rtc_unix_timestamp": unix_timestamp or rtc_unix_timestamp()
+            "rtc_timestamp": unix_timestamp or rtc_unix_timestamp()
         }
         if extra_fields:
             for k, v in extra_fields.items():
