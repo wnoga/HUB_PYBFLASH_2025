@@ -45,6 +45,7 @@ class AsyncWebServer:
         
         self.procedure_results = {} # Stores results from hub callbacks
         self.procedure_events = {}  # Stores uasyncio.Event for synchronization
+        self.max_procedures_keep_len = 32
         
     def get_webpage_address(self):
         """
@@ -92,6 +93,13 @@ class AsyncWebServer:
         if 'callback' in my_dict: # The callback itself shouldn't be in the response
             my_dict.pop('callback')
         
+        # Limit the size of procedure_results
+        if device_id not in self.procedure_results and len(self.procedure_results) >= self.max_procedures_keep_len:
+            p.print(f"AsyncWebServer: procedure_results cache full. Evicting an arbitrary item before adding for AFE {device_id}.")
+            try:
+                self.procedure_results.popitem() # Removes an arbitrary (key, value) pair
+            except KeyError: # pragma: no cover
+                pass # Dictionary was empty, should not happen if len >= max_len
         try:
             # Store the processed result for handle_procedure to pick up
             self.procedure_results[device_id] = ujson.dumps(my_dict).encode()
@@ -125,6 +133,11 @@ class AsyncWebServer:
             if afe_id is None:
                 return ujson.dumps({"status": "ERROR", "info": "afe_id missing"}).encode()
             
+            # Limit the number of concurrent procedures
+            if afe_id not in self.procedure_events and len(self.procedure_events) >= self.max_procedures_keep_len:
+                p.print(f"AsyncWebServer: Max concurrent procedures reached for procedure_events. Rejecting new procedure for AFE {afe_id}.")
+                return ujson.dumps({"status": "ERROR", "info": "Server busy, max concurrent procedures reached"}).encode()
+
             event = uasyncio.Event()
             self.procedure_events[afe_id] = event
             self.procedure_results.pop(afe_id, None) # Clear previous result

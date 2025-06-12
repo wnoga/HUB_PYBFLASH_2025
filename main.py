@@ -14,7 +14,7 @@ import _thread
 from my_utilities import p, wdt
 from my_utilities import JSONLogger
 from my_utilities import rtc_unix_timestamp, rtc, rtc_datetime_pretty
-
+from my_RxDeviceCAN import RxDeviceCAN
 # from my_utilities import lock
 import time
 

@@ -17,8 +17,8 @@ from my_utilities import VerbosityLevel
 from my_utilities import AFECommandChannelMask
 from my_utilities import lock, unlock
 from my_utilities import extract_bracketed
-from my_utilities import RxDeviceCAN
 from my_utilities import millis, is_timeout, is_delay
+from my_RxDeviceCAN import RxDeviceCAN
 
 class HUBDevice:
     """

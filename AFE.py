@@ -15,7 +15,7 @@ from my_utilities import SensorChannel, AFECommandChannelMask, AFECommandAverage
 from my_utilities import extract_bracketed
 from my_utilities import rtc, rtc_synced, rtc_unix_timestamp
 from my_utilities import get_e_ADC_CHANNEL
-from my_utilities import RxDeviceCAN
+from my_RxDeviceCAN import RxDeviceCAN
 
 class AFEDevice:
     def __init__(self, can_interface: RxDeviceCAN, device_id, logger: JSONLogger, config_path=None):
