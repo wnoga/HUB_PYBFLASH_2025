@@ -20,7 +20,7 @@ import time
 
 can_bus = pyb.CAN(1)
 logger = JSONLogger(keep_file_open=True)
-print("RESTART")
+# print("RESTART") # This would need to be `await p.print` within an async context
 # wdt.feed()
 if False:
     from my_database import SimpleFileDB, StatusFlags
@@ -65,13 +65,6 @@ use_lan_server = False
 use_async_server = True
 
 use_rxcallback = True
-can, hub, rxDeviceCAN = initialize_can_hub(
-    can_bus=can_bus,
-    logger=logger,
-    use_rxcallback=use_rxcallback,
-    use_automatic_restart=True
-)
-hub.afe_devices_max = 2
 
 # Configure HUB
 hub.discovery_active = True
@@ -94,7 +87,7 @@ hub.afe_id_max = 37 # Ensure this is less than afe_devices_max for discovery to 
 
 async def periodic_tasks_loop():
     """Handles periodic background tasks like watchdog, logging, and printing."""
-    p.print("Periodic tasks loop started.")
+    await p.print("Periodic tasks loop started.") # Added await
     while True:
         wdt.feed()
         # try:
@@ -111,13 +104,21 @@ async def periodic_tasks_loop():
 
         # await uasyncio.sleep_ms(0)  # Yield after print queue processing
         # except Exception as e:
-        #     print("Error in periodic_tasks_loop:", e)
+        #     await p.print("Error in periodic_tasks_loop:", e) # Added await
         await uasyncio.sleep_ms(50) # Overall frequency for this loop
 
 
 async def main():
     global can,hub,rxDeviceCAN,server
-    p.print("Main async task started.")
+    await p.print("Main async task started.") # Added await
+    
+    can, hub, rxDeviceCAN = await initialize_can_hub( # Added await
+        can_bus=can_bus,
+        logger=logger,
+        use_rxcallback=use_rxcallback,
+        use_automatic_restart=True
+    )
+    hub.afe_devices_max = 2 # Configure after hub is initialized
     
     if use_lan_server:
         from my_simple_server import MySimpleServer
@@ -134,20 +135,23 @@ async def main():
     tasks = []
     
     tasks.append(uasyncio.create_task(hub.main_loop()))
-    p.print("hub.main_loop task created.")
+    await p.print("hub.main_loop task created.") # Added await
 
     if use_lan_server and server:
         tasks.append(uasyncio.create_task(server.main_loop()))
-        p.print("server.main_loop task created.")
+        await p.print("server.main_loop task created.") # Added await
         tasks.append(uasyncio.create_task(server.sync_ntp_loop()))
-        p.print("server.sync_ntp_loop task created.")
+        await p.print("server.sync_ntp_loop task created.") # Added await
     
     if use_async_server and server:
         tasks.append(uasyncio.create_task(server.start()))
     
     # if not use_rxcallback:
     tasks.append(uasyncio.create_task(rxDeviceCAN.main_loop()))
-    p.print("rxDeviceCAN.main_loop task created.")
+    await p.print("rxDeviceCAN.main_loop task created.") # Added await
+    
+    tasks.append(uasyncio.create_task(logger.writer_main_loop()))
+    await p.print("logger.writer_main_loop task created.") # Added await
 
     tasks.append(uasyncio.create_task(periodic_tasks_loop()))
     p.print("periodic_tasks_loop task created.")

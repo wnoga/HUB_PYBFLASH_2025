@@ -78,8 +78,8 @@ class HUBDevice:
 
         self.logger_sync_active = True
 
-    def powerOn(self):
-        self.logger.log(VerbosityLevel["INFO"],
+    async def powerOn(self): # Changed to async def
+        await self.logger.log(VerbosityLevel["INFO"], # Added await
                         {
             "device_id": 0,
             "timestamp_ms": millis(),
@@ -88,8 +88,8 @@ class HUBDevice:
         pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
         pyb.Pin.cpu.E12.value(1)
 
-    def powerOff(self):
-        self.logger.log(VerbosityLevel["INFO"],
+    async def powerOff(self): # Changed to async def
+        await self.logger.log(VerbosityLevel["INFO"], # Added await
                         {
             "device_id": 0,
             "timestamp_ms": millis(),
@@ -98,22 +98,22 @@ class HUBDevice:
         pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
         pyb.Pin.cpu.E12.value(0)
 
-    def reset_all(self):
-        self.stop_discovery()
+    async def reset_all(self): # Changed to async def
+        await self.stop_discovery() # Added await
         self.afe_devices = []
         self.message_queue = []
         self.current_discovery_id = 1
 
-    def close_all(self):
-        self.logger.log(VerbosityLevel["INFO"], {
+    async def close_all(self): # Changed to async def
+        await self.logger.log(VerbosityLevel["INFO"], { # Added await
             "device_id": 0,
                         "info": "CLOSE ALL", "timestamp_ms": millis()})
         self.logger.request_new_file()
-        self.logger.machine()
+        await self.logger.machine() # Added await
         self.use_automatic_restart = False
         for afe in self.afe_devices:
-            afe.restart_device()
-        self.powerOff()
+            await afe.restart_device() # Added await
+        await self.powerOff() # Added await
 
     def clear_all_logs(self):
         try:
@@ -121,7 +121,8 @@ class HUBDevice:
             for filename in os.listdir("/sd/logs"):
                 os.remove("/sd/logs/" + filename)
         except Exception as e:
-            p.print("Error clearing logs: {}".format(e))
+            # This function is not async, p.print() is async.
+            print("Error clearing logs: {}".format(e)) # Using standard print for non-async context
 
     async def _dequeue_message_copy(self, _):
         self.msg_to_process = await self.can_interface.get()
@@ -149,7 +150,7 @@ class HUBDevice:
                 return afe
         return None
 
-    def process_received_messages(self, timer=None):
+    async def process_received_messages(self, timer=None): # Changed to async def
         """
         Process messages received from the CAN bus.
 
@@ -174,7 +175,7 @@ class HUBDevice:
         if afe is None:  # Add new discovered AFE
             # Create a new AFE device instance with the discovered ID
             afe = AFEDevice(self.can_interface, afe_id, logger=self.logger)
-            self.logger.log(VerbosityLevel["INFO"],
+            await self.logger.log(VerbosityLevel["INFO"], # Added await
                             {
                                 "device_id": 0,
                                 "timestamp_ms": millis(),
@@ -186,12 +187,12 @@ class HUBDevice:
             if not self.afe0:
                 self.afe0 = afe
         # Process the received data using the AFE device's method
-        afe.process_received_data(message)
+        await afe.process_received_data(message) # Added await
         # except Exception as e:
         # p.print("process_received_messages: {}".format(e))
 
-    async def process_received_messages_async(self):
-        self.process_received_messages(None)
+    # async def process_received_messages_async(self): # This seems redundant if process_received_messages is async
+    #     await self.process_received_messages(None)
         
     def discover_devices(self, timer=None):
         """ Periodically discover AFEs on the CAN bus. """
@@ -248,10 +249,10 @@ class HUBDevice:
 
         if self.can_bus.state() > 1:
             if self.can_bus.state() > 2: # Corresponds to pyb.CAN.BUS_OFF or more severe
-                self.logger.log(VerbosityLevel["ERROR"], "CAN bus error state {}, attempting restart.".format(self.can_bus.state()))
+                await self.logger.log(VerbosityLevel["ERROR"], "CAN bus error state {}, attempting restart.".format(self.can_bus.state())) # Added await
                 self.can_bus.restart()
             else:
-                self.logger.log(VerbosityLevel["WARNING"], "CAN bus warning state {}.".format(self.can_bus.state()))
+                await self.logger.log(VerbosityLevel["WARNING"], "CAN bus warning state {}.".format(self.can_bus.state())) # Added await
             return
 
         if self.current_discovery_id > self.afe_id_max:
@@ -265,20 +266,20 @@ class HUBDevice:
             )
             if send_result is None: # Indicates successful scheduling by can_interface
                 self.last_tx_time = millis()
-                self.logger.log(VerbosityLevel["DEBUG"], "Sent discovery to ID: {}".format(self.current_discovery_id))
+                await self.logger.log(VerbosityLevel["DEBUG"], "Sent discovery to ID: {}".format(self.current_discovery_id)) # Added await
             # else:
-            #     self.logger.log(VerbosityLevel["ERROR"], "Failed to send discovery to ID: {}".format(self.current_discovery_id))
+            #     await self.logger.log(VerbosityLevel["ERROR"], "Failed to send discovery to ID: {}".format(self.current_discovery_id))
 
         self.current_discovery_id += 1
 
-    def start_discovery(self):
+    async def start_discovery(self): # Changed to async def
         """ Start the device discovery process. """
         self.discovery_active = True
 
-    def stop_discovery(self):
+    async def stop_discovery(self): # Changed to async def
         """ Stop the device discovery process. """
         self.discovery_active = False
-        p.print("STOP DISCOVERY")
+        await p.print("STOP DISCOVERY") # Added await
 
     def get_afe_by_id(self, afe_id) -> AFEDevice:
         if len(self.afe_devices) == 0:
@@ -288,7 +289,7 @@ class HUBDevice:
                 return afe
         return None
 
-    def get_configuration_from_files(self, afe_id, callibration_data_file_csv="dane_kalibracyjne.csv", TempLoop_file_csv="TempLoop.csv", UID=None):
+    async def get_configuration_from_files(self, afe_id, callibration_data_file_csv="dane_kalibracyjne.csv", TempLoop_file_csv="TempLoop.csv", UID=None): # Changed to async def
         """
         Retrieves calibration data for a specific AFE from CSV files.
 
@@ -330,11 +331,11 @@ class HUBDevice:
             for g in ['M', 'S']:
                 for k, v in c0[g].items():
                     if k not in callibration[g]:  # no key
-                        self.logger.log(
+                        await self.logger.log( # Added await
                             VerbosityLevel["WARNING"], "Calibration data: AFE {}: No key: {}".format(afe_id, k))
                         callibration[g][k] = ''
                     elif len(str(callibration[g][k])) == 0:  # empty string:
-                        self.logger.log(
+                        await self.logger.log( # Added await
                             VerbosityLevel["WARNING"], "Calibration data: AFE {}: No value {}, set to {}".format(afe_id, k, v))
                         callibration[g][k] = v  # set default value
         return callibration
@@ -342,7 +343,7 @@ class HUBDevice:
     def _get_subdevice_ch_id(self, g):
         return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
 
-    def default_get_measurement(self, afe_id=35, callback=None):
+    async def default_get_measurement(self, afe_id=35, callback=None): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
@@ -350,15 +351,15 @@ class HUBDevice:
                          "preserve": True, "timeout_start_on": 10000}
         if callback is not None:
             commandKwargs["callback"] = callback
-        afe.enqueue_command(AFECommand.getSensorDataSi_last_byMask, [
+        await afe.enqueue_command(AFECommand.getSensorDataSi_last_byMask, [ # Added await
                             0xFF], **commandKwargs)
-        afe.enqueue_command(AFECommand.getSensorDataSi_average_byMask, [
+        await afe.enqueue_command(AFECommand.getSensorDataSi_average_byMask, [ # Added await
                             0xFF], **commandKwargs)
 
     def default_callback_return(self, msg=None):
         return msg
 
-    def default_get_measurement_last(self, afe_id=35, callback=None):
+    async def default_get_measurement_last(self, afe_id=35, callback=None): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
@@ -366,13 +367,13 @@ class HUBDevice:
                          "preserve": True, "timeout_start_on": 5000}
         if callback is not None:
             commandKwargs["callback"] = callback
-        afe.enqueue_command(AFECommand.getSensorDataSi_last_byMask, [
+        await afe.enqueue_command(AFECommand.getSensorDataSi_last_byMask, [ # Added await
                             0xFF], **commandKwargs)
 
-    def callback_1(self, msg=None):
+    async def callback_1(self, msg=None): # Changed to async def
         msg["callback"] = None
         msg = json.dumps(msg)
-        p.print("callback:", msg)
+        await p.print("callback:", msg) # Added await
 
     def default_start_measurement(self, afe_id=35,
                                   enable_temperature_loop=True,
@@ -381,27 +382,27 @@ class HUBDevice:
                                   **args):
         pass
 
-    def default_hv_set(self, afe_id=35, enable=False):
+    async def default_hv_set(self, afe_id=35, enable=False): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
         for g in ["M", "S"]:
-            afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g ==
+            await afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g == # Added await
                                  'M' else afe.AFEGPIO_EN_HV1, 1 if enable else 0)
 
-    def default_cal_in_set(self, afe_id=35, enable=False):
+    async def default_cal_in_set(self, afe_id=35, enable=False): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
         for g in ["M", "S"]:
-            afe.enqueue_gpio_set(afe.AFEGPIO_EN_CAL_IN0 if g ==
+            await afe.enqueue_gpio_set(afe.AFEGPIO_EN_CAL_IN0 if g == # Added await
                                  'M' else afe.AFEGPIO_EN_CAL_IN1, 1 if enable else 0)
 
-    def default_set_dac(self, afe_id=35, dac_master=2481, dac_slave=2481):
+    async def default_set_dac(self, afe_id=35, dac_master=2481, dac_slave=2481): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        afe.logger.log(VerbosityLevel["INFO"],
+        await afe.logger.log(VerbosityLevel["INFO"], # Added await
                        {
                            "device_id": afe.device_id,
                            "timestamp_ms": millis(),
@@ -411,18 +412,18 @@ class HUBDevice:
                          "preserve": False, "timeout_start_on_send_ms": 2000}
 
         for g in ["M", "S"]:
-            afe.enqueue_u16_for_channel(AFECommand.setDACValueRaw_bySubdeviceMask, self._get_subdevice_ch_id(
+            await afe.enqueue_u16_for_channel(AFECommand.setDACValueRaw_bySubdeviceMask, self._get_subdevice_ch_id( # Added await
                 g), dac_master if g == 'M' else dac_slave, **commandKwargs)
-            afe.enqueue_command(AFECommand.setDAC_bySubdeviceMask, [
+            await afe.enqueue_command(AFECommand.setDAC_bySubdeviceMask, [ # Added await
                                 self._get_subdevice_ch_id(g), 1], **commandKwargs)
-            afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g ==
+            await afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g == # Added await
                                  'M' else afe.AFEGPIO_EN_HV1, 1, **commandKwargs)
 
-    def default_start_temperature_loop(self, afe_id=35):
+    async def default_start_temperature_loop(self, afe_id=35): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        afe.logger.log(VerbosityLevel["INFO"],
+        await afe.logger.log(VerbosityLevel["INFO"], # Added await
                        {
                            "device_id": afe.device_id,
                            "timestamp_ms": millis(),
@@ -432,7 +433,7 @@ class HUBDevice:
                          "preserve": True, "timeout_start_on_send_ms": 2000}
 
         for g in ["M", "S"]:
-            afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus, [
+            await afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus, [ # Added await
                                 self._get_subdevice_ch_id(g), 1], **commandKwargs)
 
     # def default_manual_blocking_measurement_loop(self, afe_id=35):
@@ -444,11 +445,11 @@ class HUBDevice:
     #         self.default_get_measurement(afe_id)
     #         time.sleep(5.0)
 
-    def default_periodic_measurement_download_all(self, afe_id=35, ms=10000):
+    async def default_periodic_measurement_download_all(self, afe_id=35, ms=10000): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        afe.logger.log(VerbosityLevel["INFO"],
+        await afe.logger.log(VerbosityLevel["INFO"], # Added await
                        {
                            "device_id": afe.device_id,
                            "timestamp_ms": millis(),
@@ -456,14 +457,14 @@ class HUBDevice:
         })
         commandKwargs = {"timeout_ms": 10220,
                          "preserve": True, "timeout_start_on_send_ms": 2000}
-        afe.enqueue_u32_for_channel(
+        await afe.enqueue_u32_for_channel( # Added await
             AFECommand.setChannel_period_ms_byMask, 0xFF, ms, **commandKwargs)
 
-    def default_setCanMsgBurstDelay_ms(self, afe_id=35, ms=10):
+    async def default_setCanMsgBurstDelay_ms(self, afe_id=35, ms=10): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        afe.logger.log(VerbosityLevel["INFO"],
+        await afe.logger.log(VerbosityLevel["INFO"], # Added await
                        {
                            "device_id": afe.device_id,
                            "timestamp_ms": millis(),
@@ -473,14 +474,14 @@ class HUBDevice:
                          "preserve": True,
                          "timeout_start_on_send_ms": 2000,
                          "error_callback": self.callback_afe_error}
-        afe.enqueue_u32_for_channel(
+        await afe.enqueue_u32_for_channel( # Added await
             AFECommand.setCanMsgBurstDelay_ms, 0x00, ms, **commandKwargs)
 
-    def default_setAfe_can_watchdog_timeout_ms(self, afe_id=35, ms=60000):
+    async def default_setAfe_can_watchdog_timeout_ms(self, afe_id=35, ms=60000): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        afe.logger.log(VerbosityLevel["INFO"],
+        await afe.logger.log(VerbosityLevel["INFO"], # Added await
                        {
                            "device_id": afe.device_id,
                            "timestamp_ms": millis(),
@@ -490,10 +491,10 @@ class HUBDevice:
                          "preserve": True,
                          "timeout_start_on_send_ms": 2000,
                          "error_callback": self.callback_afe_error}
-        afe.enqueue_u32_for_channel(
+        await afe.enqueue_u32_for_channel( # Added await
             AFECommand.setAfe_can_watchdog_timeout_ms, 0x00, ms, **commandKwargs)
 
-    def default_accept(self, afe_id=35):
+    async def default_accept(self, afe_id=35): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
@@ -502,9 +503,9 @@ class HUBDevice:
                          "timeout_start_on_send_ms": 2000,
                          "error_callback": self.callback_afe_error,
                          "callback": afe.callback_is_configured}
-        afe.enqueue_command(AFECommand.getTimestamp, None, **commandKwargs)
+        await afe.enqueue_command(AFECommand.getTimestamp, None, **commandKwargs) # Added await
 
-    def default_get_UID(self, afe_id=35):
+    async def default_get_UID(self, afe_id=35): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
@@ -512,9 +513,9 @@ class HUBDevice:
                          "preserve": True,
                          "error_callback": self.callback_afe_error
                          }
-        afe.enqueue_command(AFECommand.getSerialNumber, None, **commandKwargs)
+        await afe.enqueue_command(AFECommand.getSerialNumber, None, **commandKwargs) # Added await
 
-    def defualt_getSyncTimestamp(self, afe_id=35):
+    async def defualt_getSyncTimestamp(self, afe_id=35): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
@@ -522,9 +523,9 @@ class HUBDevice:
                          "preserve": True,
                          "error_callback": self.callback_afe_error
                          }
-        afe.enqueue_command(AFECommand.getSyncTimestamp, None, **commandKwargs)
+        await afe.enqueue_command(AFECommand.getSyncTimestamp, None, **commandKwargs) # Added await
 
-    def default_afe_pause(self, afe_id=35):
+    async def default_afe_pause(self, afe_id=35): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
@@ -532,61 +533,61 @@ class HUBDevice:
                     "preserve": True,
                     "error_callback": None
                     }
-        afe.enqueue_u32_for_channel(
+        await afe.enqueue_u32_for_channel( # Added await
             AFECommand.setChannel_period_ms_byMask,
             0xFF, 0, **commandKwargs)
 
-    def default_full(self, afe_id=35):
+    async def default_full(self, afe_id=35):
         afe = self.get_afe_by_id(afe_id)
         # if afe:
         #     if (afe.init_timestamp_ms - millis()) < afe.init_wait_ms:
         #         return
         #     afe.init_timestamp_ms = millis()
-        self.powerOn()
-        self.default_afe_pause(afe_id)
-        self.default_setCanMsgBurstDelay_ms(afe_id, 0)
-        self.default_setAfe_can_watchdog_timeout_ms(afe_id, 1000000)
+        await self.powerOn() # Added await
+        await self.default_afe_pause(afe_id) # Added await
+        await self.default_setCanMsgBurstDelay_ms(afe_id, 0) # Added await
+        await self.default_setAfe_can_watchdog_timeout_ms(afe_id, 1000000) # Added await
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        afe.begin_configuration(timeout_ms=20000)
-        self.default_get_UID(afe_id)
-        self.default_procedure(afe_id)
-        self.default_set_dac(afe_id)
-        self.default_start_temperature_loop(afe_id)
-        self.default_setCanMsgBurstDelay_ms(afe_id, 50)
-        self.default_accept(afe_id)
-        self.defualt_getSyncTimestamp(afe_id)
+        await afe.begin_configuration(timeout_ms=20000)
+        await self.default_get_UID(afe_id) # Added await
+        await self.default_procedure(afe_id) # Added await
+        await self.default_set_dac(afe_id) # Added await
+        await self.default_start_temperature_loop(afe_id) # Added await
+        await self.default_setCanMsgBurstDelay_ms(afe_id, 50) # Added await
+        await self.default_accept(afe_id) # Added await
+        await self.defualt_getSyncTimestamp(afe_id) # Added await
 
 
-    def reset(self, afe_id=35):
+    async def reset(self, afe_id=35): # Changed to async def
         for afe in self.afe_devices:
             if afe.device_id == afe_id:
-                afe.enqueue_command(0x03)
+                await afe.enqueue_command(0x03) # Added await
 
-    def test1(self, afe_id=35, command=0xF8):
+    async def test1(self, afe_id=35, command=0xF8): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        afe.enqueue_command(command)
+        await afe.enqueue_command(command) # Added await
 
-    def test2(self, afe_id=35, command=0xF9):
+    async def test2(self, afe_id=35, command=0xF9): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        afe.enqueue_command(command, preserve=True)
+        await afe.enqueue_command(command, preserve=True) # Added await
 
-    def test3(self, afe_id=35, command=0xF7, mask=0xFF):
+    async def test3(self, afe_id=35, command=0xF7, mask=0xFF): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        afe.enqueue_command(command, [mask], preserve=True)
+        await afe.enqueue_command(command, [mask], preserve=True) # Added await
 
-    def test4(self, afe_id=35):
+    async def test4(self, afe_id=35): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        self.reset(afe_id)
+        await self.reset(afe_id) # Added await
         pyb.delay(500)
         self.default_procedure(afe_id)
         self.default_set_dac(afe_id)
@@ -595,18 +596,18 @@ class HUBDevice:
             self.default_get_measurement(afe_id)
             pyb.delay(500)
 
-    def d(self, cmd, data=None):
+    async def d(self, cmd, data=None): # Changed to async def
         afe = self.get_afe_by_id(35)
         if afe is None:
             return
-        afe.enqueue_command(cmd, data, preserve=True)
+        await afe.enqueue_command(cmd, data, preserve=True) # Added await
 
-    def callback_afe_error(self, kwargs=None):
-        p.print("callback_afe_error: {}".format(kwargs))
+    async def callback_afe_error(self, kwargs=None): # Changed to async def
+        await p.print("callback_afe_error: {}".format(kwargs)) # Added await
         afe: AFEDevice = kwargs["afe"]
-        afe.restart_device()
+        await afe.restart_device() # Added await
 
-    def default_procedure(self, afe_id=35):
+    async def default_procedure(self, afe_id=35): # Changed to async def
         """
         Sets up the default procedure for an AFE device.
 
@@ -635,9 +636,9 @@ class HUBDevice:
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
-        configuration = self.get_configuration_from_files(afe_id)
+        configuration = await self.get_configuration_from_files(afe_id) # Added await
         afe.configuration = configuration.copy()
-        afe.logger.log(VerbosityLevel["INFO"],
+        await afe.logger.log(VerbosityLevel["INFO"], # Added await
                        {
                            "device_id": afe.device_id,
                            "timestamp_ms": millis(),
@@ -668,39 +669,39 @@ class HUBDevice:
 
                 if ks == "T_measured_a":
                     ch_id = get_T_measured_ch_id(g)
-                    afe.enqueue_float_for_channel(
+                    await afe.enqueue_float_for_channel( # Added await
                         AFECommand.setChannel_a_byMask, ch_id, v, **commandKwargs)
                 elif ks == "T_measured_b":
                     ch_id = get_T_measured_ch_id(g)
-                    afe.enqueue_float_for_channel(
+                    await afe.enqueue_float_for_channel( # Added await
                         AFECommand.setChannel_b_byMask, ch_id, v, **commandKwargs)
                 elif ks == "offset":
                     ch_id = self._get_subdevice_ch_id(g)
-                    afe.enqueue_u16_for_channel(
+                    await afe.enqueue_u16_for_channel( # Added await
                         AFECommand.setAD8402Value_byte_byMask, ch_id, int(v), **commandKwargs)
                 elif ks == "U_measured_a":
                     ch_id = get_U_measured_ch_id(g)
-                    afe.enqueue_float_for_channel(
+                    await afe.enqueue_float_for_channel( # Added await
                         AFECommand.setChannel_a_byMask, ch_id, v, **commandKwargs)
                 elif ks == "U_measured_b":
                     ch_id = get_U_measured_ch_id(g)
-                    afe.enqueue_float_for_channel(
+                    await afe.enqueue_float_for_channel( # Added await
                         AFECommand.setChannel_b_byMask, ch_id, v, **commandKwargs)
                 elif ks == "I_measured_a":
                     ch_id = get_I_measured_ch_id(g)
-                    afe.enqueue_float_for_channel(
+                    await afe.enqueue_float_for_channel( # Added await
                         AFECommand.setChannel_a_byMask, ch_id, v, **commandKwargs)
                 elif ks == "I_measured_b":
                     ch_id = get_I_measured_ch_id(g)
-                    afe.enqueue_float_for_channel(
+                    await afe.enqueue_float_for_channel( # Added await
                         AFECommand.setChannel_b_byMask, ch_id, v, **commandKwargs)
                 elif ks == "U_set_a":
                     ch_id = self._get_subdevice_ch_id(g)
-                    afe.enqueue_float_for_channel(
+                    await afe.enqueue_float_for_channel( # Added await
                         AFECommand.setRegulator_a_dac_byMask, ch_id, v, **commandKwargs)
                 elif ks == "U_set_b":
                     ch_id = self._get_subdevice_ch_id(g)
-                    afe.enqueue_float_for_channel(
+                    await afe.enqueue_float_for_channel( # Added await
                         AFECommand.setRegulator_b_dac_byMask, ch_id, v, **commandKwargs)
                 elif ks == "V_opt":
                     ch_id = self._get_subdevice_ch_id(g)
@@ -708,7 +709,7 @@ class HUBDevice:
                         AFECommand.setRegulator_V_opt_byMask, ch_id, v, **commandKwargs)
                 elif ks == "dV/dT":
                     ch_id = self._get_subdevice_ch_id(g)
-                    afe.enqueue_float_for_channel(
+                    await afe.enqueue_float_for_channel( # Added await
                         AFECommand.setRegulator_dV_dT_byMask, ch_id, v, **commandKwargs)
                 elif ks == "avg_number":  # Maximum nuber of samples used in averaging
                     avg_number = v
@@ -723,16 +724,16 @@ class HUBDevice:
                         v = "NONE"
                     avg_mode = AFECommandAverage[v]
                     ch_id = self._get_subdevice_ch_id(g)
-                    afe.enqueue_command(AFECommand.setAveragingMode_byMask, [ch_id,
+                    await afe.enqueue_command(AFECommand.setAveragingMode_byMask, [ch_id, # Added await
                                                                              avg_mode
                                                                              ], **commandKwargs)
                 elif ks == "avg_alpha":  # Average parameter, usually weight
                     ch_id = get_general_ch_id_mask(g)
                     if v is '':
-                        afe.enqueue_float_for_channel(
+                        await afe.enqueue_float_for_channel( # Added await
                             AFECommand.setAveragingAlpha_byMask, ch_id, 1.0/(10000*100.0), **commandKwargs)
                     else:
-                        afe.enqueue_float_for_channel(
+                        await afe.enqueue_float_for_channel( # Added await
                             AFECommand.setAveragingAlpha_byMask, ch_id, v, **commandKwargs)
                 elif ks == "time_sample":  # time sample
                     ch_id = get_general_ch_id_mask(g)
@@ -757,29 +758,29 @@ class HUBDevice:
                         else:  # assume value is in SI [s]
                             time_sample_ms = v*1000
                     time_sample_ms = int(round(time_sample_ms))
-                    afe.enqueue_u32_for_channel(
+                    await afe.enqueue_u32_for_channel( # Added await
                         AFECommand.setChannel_dt_ms_byMask, ch_id, time_sample_ms, **commandKwargs)
                 else:
                     continue
                 for uch in afe.unmask_channel(ch_id):
-                    self.logger.log(VerbosityLevel["DEBUG"], {
+                    await self.logger.log(VerbosityLevel["DEBUG"], { # Added await
                                     "device_id": afe.device_id,
                                     "timestamp_ms": millis(),
                                     "debug": "AFE {} {} Loading {} (CH{} ? {}) value {}".format(
                                         afe_id, g, k, uch, e_ADC_CHANNEL[uch], v)
                                     })
                 
-            afe.enqueue_u32_for_channel(
+            await afe.enqueue_u32_for_channel( # Added await
                 AFECommand.setAveraging_max_dt_ms_byMask, get_general_ch_id_mask(g), int(round(time_sample_ms * avg_number)), **commandKwargs)
-            afe.enqueue_float_for_channel(
+            await afe.enqueue_float_for_channel( # Added await
                 AFECommand.setChannel_multiplicator_byMask, get_general_ch_id_mask(g), 1.0, **commandKwargs)
-        afe.enqueue_command(AFECommand.startADC, [
+        await afe.enqueue_command(AFECommand.startADC, [ # Added await
             0xFF, 0xFF], **commandKwargs)
 
-    def parse(self, msg):
-        p.print("Parsed: {}".format(msg))
+    async def parse(self, msg): # Changed to async def
+        await p.print("Parsed: {}".format(msg)) # Added await
 
-    def send_back_data(self, afe_id: int):
+    async def send_back_data(self, afe_id: int): # Changed to async def
         """
         Sends back the last received message from a specific AFE.
 
@@ -791,7 +792,7 @@ class HUBDevice:
             return
         toSend = afe.executed.copy()  # get all executed commands
         afe.executed = []  # clear executed commands
-        p.print("Send back: {}".format(json.dumps(toSend)))
+        await p.print("Send back: {}".format(json.dumps(toSend))) # Added await
 
     async def main_process(self, timer=None):
         # if self.use_rxcallback:
@@ -807,20 +808,20 @@ class HUBDevice:
         await self.discover_devices_async() # Changed to async version
         # if self.rx_process_active:
         #     micropython.schedule(self.process_received_messages, 0)
-        # self.process_received_messages_async()
-        self.process_received_messages(0)
+        # await self.process_received_messages_async() # This was redundant
+        await self.process_received_messages(0) # Added await
         # uasyncio.create_task(self.process_received_messages_async())
         if self.afe_manage_active:
             for afe in self.afe_devices:
                 await afe.manage_state() # Added await
                 if self.use_automatic_restart:
                     if not afe.is_configuration_started:
-                        self.default_full(afe_id=afe.device_id)
+                        await self.default_full(afe_id=afe.device_id)
                         # p.print("AFE {} was restarted".format(
                         #     afe.device_id))
                     if afe.is_configured and afe.periodic_measurement_download_is_enabled is False:
                         afe.periodic_measurement_download_is_enabled = True
-                        afe.start_periodic_measurement_by_config()
+                        await afe.start_periodic_measurement_by_config() # Added await
                         # report_every_ms = afe.configuration.get()
 
                         # self.default_periodic_measurement_download_all(
@@ -850,14 +851,14 @@ class HUBDevice:
             # time.sleep_us(1)
 
 
-def initialize_can_hub(can_bus: pyb.CAN, logger, use_rxcallback=True, **kwargs):
+async def initialize_can_hub(can_bus: pyb.CAN, logger, use_rxcallback=True, **kwargs): # Changed to async def
     """ Initialize the CAN bus and HUB. """
     can_bus.init(pyb.CAN.NORMAL, extframe=False, prescaler=54,
                  sjw=1, bs1=7, bs2=2, auto_restart=True)
     # can_bus.setfilter(0, can_bus.MASK32, 0, (0, 0))
     can_bus.setfilter(0, can_bus.MASK16, 0, (0, 0, 0, 0))
 
-    p.print("CAN Bus Initialized")
+    await p.print("CAN Bus Initialized") # Added await
     logger.verbosity_level = VerbosityLevel["INFO"]
     # logger.verbosity_level = VerbosityLevel["DEBUG"]
     # logger.print_verbosity_level = VerbosityLevel["DEBUG"]

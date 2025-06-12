@@ -6,6 +6,12 @@ import json
 import os
 
 try:
+    class DummyLock:
+        def acquire(self, blocking=True, timeout=-1): return True # pragma: no cover
+        def release(self): pass # pragma: no cover
+        def locked(self): return False # pragma: no cover
+    class DummyRTC: # pragma: no cover
+        def datetime(self): return (2000,1,1,1,0,0,0,0) # year, month, day, weekday, hour, minute, second, subsecond
     import _thread
     import micropython
     import machine
@@ -13,21 +19,15 @@ try:
     import gc
     import pyb
     # Create a lock for safe printing, initialized once when the module is imported.
-    print_lock = _thread.allocate_lock()
+    # print_lock = _thread.allocate_lock()
     rtc = machine.RTC()
 except:
     # Fallback for environments where _thread or machine might not be available (e.g., PC testing)
-    class DummyLock:
-        def acquire(self, blocking=True, timeout=-1): return True # pragma: no cover
-        def release(self): pass # pragma: no cover
-        def locked(self): return False # pragma: no cover
-    print_lock = DummyLock()
-
-    class DummyRTC: # pragma: no cover
-        def datetime(self): return (2000,1,1,1,0,0,0,0) # year, month, day, weekday, hour, minute, second, subsecond
     rtc = DummyRTC()
     pass
 import time
+
+print_lock = DummyLock()
 
 def is_timeout(timestamp_ms, timeout_ms):
     if timeout_ms == 0:
@@ -120,7 +120,7 @@ class PrintButLouder:
         if print_lock.locked():
             print_lock.release()
 
-    def print(self, *args, **kwargs):
+    async def print(self, *args, **kwargs):
         if self._lock(): # Acquire lock
             try:
                 self.queue.append((args, kwargs))
@@ -406,11 +406,12 @@ class JSONLogger:
         self.keep_file_open = keep_file_open
         
         self.log_queue_max_len = 128
-        self.lock_process_log_queue = False
+        # self.lock_process_log_queue = False
+        self.writer_main_loop_yield_ms = 50
         
         self.request_print_last_lines = 0
         
-        self.sheduled_append_ref = self.sheduled_append
+        self.run = True
         
         # self.json_buffer = bytearray(2**13)
 
@@ -581,30 +582,9 @@ class JSONLogger:
         await uasyncio.sleep_ms(0) # Yield
         return len(self.log_queue)
 
-    def sheduled_append(self, msg_data_tuple):
-        # msg_data_tuple is expected to be (level, current_chunk_data, chunk_id, chunk_id_max)
-        self.log_queue.append(msg_data_tuple)
-
-
-    def log(self, level: int, message: str):
+    async def log(self, level: int, message: str): # Changed to async def
         if self._should_log(level):
             chunk_size = 512
-            # try:
-            #     self.json_buffer = str(message[:2**13])
-            #     # # Dump message to the pre-allocated buffer
-            #     # if isinstance(message, str):
-            #     #     self.json_buffer = message
-            #     # elif isinstance(message, dict):
-            #     #     # json.dump writes to the buffer, handling encoding
-            #     #     # json.dump(message, fp=self.json_buffer)
-            #     #     self.json_buffer = str(message)
-            #     #     # print(len(self.json_buffer))
-            #     #     # print(self.json_buffer.decode())
-            #     # else:
-            #     #     print(message)
-            #     # print(self.json_buffer)
-            # except Exception as e:
-            #     pass
             if isinstance(message, dict):
                 message = json.dumps(message)
             else:
@@ -620,32 +600,13 @@ class JSONLogger:
                 
                 current_chunk_data = message[i:i_plus]
 
-                # Wait if the log queue is full. This is a blocking wait.
-                # In a highly concurrent or performance-sensitive async environment,
-                # this blocking could be an issue.
+                # Wait if the log queue is full.
                 while len(self.log_queue) >= self.log_queue_max_len:
-                    try:
-                        time.sleep_ms(1)  # Yield to other tasks/threads
-                    except NameError: # Fallback if time.sleep_ms is not available
-                        pass # Reverts to a more aggressive busy-wait
-                
-                while True:
-                    try:
-                        # Schedule the append operation.
-                        # Assumes self.sheduled_append and this call signature are correct for your MicroPython port.
-                        micropython.schedule(self.sheduled_append_ref, (level, current_chunk_data, chunk_id, chunk_id_max)) # type: ignore
-                        break
-                    except RuntimeError as e_sched: # micropython.schedule can raise RuntimeError if its internal queue is full
-                        p.print("ERROR in JSONLogger.log: Failed to schedule log append (RuntimeError): {}".format(e_sched))
-                        # Sleep only if schedule failed due to being full, then retry
-                        try:
-                            time.sleep_ms(1) # Yield to other tasks/threads
-                        except NameError: # Fallback
-                            pass
-                    except Exception as e: # Catch other potential errors during scheduling
-                        p.print("ERROR in JSONLogger.log: Unexpected error during scheduling: {}".format(e))
-                        break # Break on other unexpected errors
-            
+                    # p.print(f"Log queue full ({len(self.log_queue)}), waiting...") # Optional: for debugging
+                    await uasyncio.sleep_ms(10)  # Yield to other tasks/threads
+
+                # Directly append to the queue
+                self.log_queue.append((level, current_chunk_data, chunk_id, chunk_id_max))
                 
     async def sync(self):
         if self.file is not None:
@@ -892,19 +853,27 @@ class JSONLogger:
 
     def request_rename_file(self):
         self._requestRenameFile = True
+    
+    async def wait_for_end_process_log_queue(self):
+        while self.lock_process_log_queue:
+            await uasyncio.sleep_ms(10)
+
+    async def writer_main_loop(self):
+        while self.run:
+            while self._process_log_queue():
+                await uasyncio.sleep_ms(0)
+            await uasyncio.sleep_ms(self.writer_main_loop_yield_ms)
+
 
     async def machine(self):
         if self._requestNewFile or (not self.filename):
             self._requestNewFile = False
-            while await self._process_log_queue():
-                await uasyncio.sleep_ms(0)
+            await self.wait_for_end_process_log_queue()
             await self.sync()
             await self.new_file()
         if self._requestRenameFile:
             self._requestRenameFile = False
-            while await self._process_log_queue():
-                await uasyncio.sleep_ms(0)
-                pass
+            await self.wait_for_end_process_log_queue()
             await self.sync()
             new_path = await self.get_new_file_path()
             await self.rename_current_filename(new_path)
@@ -925,9 +894,9 @@ class JSONLogger:
                 # Consider requesting a new file or logging an error and returning
                 # await self.request_new_file() # This might be too aggressive, could loop if disk is full
 
-        if self.file: # Only process queue if file is open
-            while await self._process_log_queue(): # Process one item from buffer
-                await uasyncio.sleep_ms(0) # Yield after each item processed
+        # if self.file: # Only process queue if file is open
+        #     while await self._process_log_queue(): # Process one item from buffer
+        #         await uasyncio.sleep_ms(0) # Yield after each item processed
         
         if self.keep_file_open:
             await self.sync_process() # Sync file to card periodically

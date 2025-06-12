@@ -56,8 +56,8 @@ class AsyncWebServer:
             return "http://{}:{}".format(self.lan.ifconfig()[0],self.port)
         return None
     
-    def print_webpage_address(self):
-        p.print(self.get_webpage_address())
+    async def print_webpage_address(self): # Changed to async def
+        await p.print(self.get_webpage_address()) # Added await
 
     async def connect_ethernet(self):
         # The next line was already present
@@ -66,24 +66,24 @@ class AsyncWebServer:
             ip, subnet, gateway, dns = self.static_ip_config
             self.lan.ifconfig((ip, subnet, gateway, dns))
 
-        p.print("Waiting for Ethernet connection...", end="")
+        await p.print("Waiting for Ethernet connection...", end="") # Added await
         timeout = 10
         while not self.lan.isconnected() and timeout > 0:
-            p.print(".", end="")
+            await p.print(".", end="") # Added await
             await uasyncio.sleep(1) # Use asynchronous sleep
             timeout -= 1
-        p.print("") # Newline after dots
+        await p.print("") # Newline after dots, Added await
 
         if not self.lan.isconnected():
             raise RuntimeError("Ethernet connection failed")
 
-        p.print("Ethernet connected. IP:", self.lan.ifconfig()[0])
+        await p.print("Ethernet connected. IP:", self.lan.ifconfig()[0]) # Added await
         self.lan_connected = True
         
-    def hub_cb(self,msg:dict=None):
+    async def hub_cb(self,msg:dict=None): # Changed to async def
         device_id = msg.get("device_id", None)
         if not device_id:
-            p.print("hub_cb: device_id missing in callback message.")
+            await p.print("hub_cb: device_id missing in callback message.") # Added await
             return
 
         # Prepare the result to be sent back to the web client
@@ -95,7 +95,7 @@ class AsyncWebServer:
         
         # Limit the size of procedure_results
         if device_id not in self.procedure_results and len(self.procedure_results) >= self.max_procedures_keep_len:
-            p.print(f"AsyncWebServer: procedure_results cache full. Evicting an arbitrary item before adding for AFE {device_id}.")
+            await p.print(f"AsyncWebServer: procedure_results cache full. Evicting an arbitrary item before adding for AFE {device_id}.") # Added await
             try:
                 self.procedure_results.popitem() # Removes an arbitrary (key, value) pair
             except KeyError: # pragma: no cover
@@ -104,7 +104,7 @@ class AsyncWebServer:
             # Store the processed result for handle_procedure to pick up
             self.procedure_results[device_id] = ujson.dumps(my_dict).encode()
         except Exception as e:
-            p.print("hub_cb: Error serializing result for AFE {}: {}".format(device_id, e))
+            await p.print("hub_cb: Error serializing result for AFE {}: {}".format(device_id, e)) # Added await
             self.procedure_results[device_id] = ujson.dumps({"status": "ERROR", "info": "Failed to serialize AFE response"}).encode()
 
         # Signal the waiting handle_procedure task
@@ -112,7 +112,7 @@ class AsyncWebServer:
         if event:
             event.set()
         else:
-            p.print("hub_cb: No event found for AFE {}. Result stored but not awaited.".format(device_id))
+            await p.print("hub_cb: No event found for AFE {}. Result stored but not awaited.".format(device_id)) # Added await
 
     async def handle_procedure(self, request_line):
         request = None
@@ -135,14 +135,14 @@ class AsyncWebServer:
             
             # Limit the number of concurrent procedures
             if afe_id not in self.procedure_events and len(self.procedure_events) >= self.max_procedures_keep_len:
-                p.print(f"AsyncWebServer: Max concurrent procedures reached for procedure_events. Rejecting new procedure for AFE {afe_id}.")
+                await p.print(f"AsyncWebServer: Max concurrent procedures reached for procedure_events. Rejecting new procedure for AFE {afe_id}.") # Added await
                 return ujson.dumps({"status": "ERROR", "info": "Server busy, max concurrent procedures reached"}).encode()
 
             event = uasyncio.Event()
             self.procedure_events[afe_id] = event
             self.procedure_results.pop(afe_id, None) # Clear previous result
 
-            self.hub.default_get_measurement_last(afe_id,callback=self.hub_cb)
+            await self.hub.default_get_measurement_last(afe_id,callback=self.hub_cb) # Added await
             
             try:
                 await uasyncio.wait_for(event.wait(), timeout=20.0) # 20 second timeout
@@ -152,12 +152,12 @@ class AsyncWebServer:
                     self.procedure_events.pop(afe_id, None)
                 return result_data
             except uasyncio.TimeoutError:
-                p.print("Timeout waiting for procedure result for AFE {}".format(afe_id))
+                await p.print("Timeout waiting for procedure result for AFE {}".format(afe_id)) # Added await
                 self.procedure_events.pop(afe_id, None) 
                 self.procedure_results.pop(afe_id, None)
                 return ujson.dumps({"status": "ERROR", "info": "Timeout waiting for AFE response"}).encode()
             except Exception as e:
-                p.print("Error waiting for event for AFE {}: {}".format(afe_id, e))
+                await p.print("Error waiting for event for AFE {}: {}".format(afe_id, e)) # Added await
                 self.procedure_events.pop(afe_id, None)
                 self.procedure_results.pop(afe_id, None)
                 return ujson.dumps({"status": "ERROR", "info": "Server error during procedure"}).encode()
@@ -257,7 +257,7 @@ class AsyncWebServer:
         try:
             request_line = await uasyncio.wait_for(reader.readline(), 5)
             if not request_line: # Client closed connection before sending anything
-                p.print("Client {} disconnected before sending request.".format(peername))
+                await p.print("Client {} disconnected before sending request.".format(peername)) # Added await
                 # writer.close() # Ensure writer is closed in finally block
                 # await writer.wait_closed()
                 return
@@ -275,13 +275,13 @@ class AsyncWebServer:
                 await self.send_control_web_page(writer)
         except OSError as e:
             if e.args[0] == 104:  # ECONNRESET
-                p.print("Connection reset by peer {}.".format(peername))
+                await p.print("Connection reset by peer {}.".format(peername)) # Added await
             else:
-                p.print("OSError in handle_client for {}: {}".format(peername,e))
+                await p.print("OSError in handle_client for {}: {}".format(peername,e)) # Added await
         except uasyncio.TimeoutError:
-            p.print("Timeout in handle_client for {}.".format(peername))
+            await p.print("Timeout in handle_client for {}.".format(peername)) # Added await
         except Exception as e:
-            p.print("Error handling client {}: {}".format(peername,e))
+            await p.print("Error handling client {}: {}".format(peername,e)) # Added await
         finally:
             try:
                 await writer.aclose()
@@ -293,10 +293,10 @@ class AsyncWebServer:
         global rtc_synced, p, rtc
         """Syncs the RTC with an NTP server."""
         if not self.lan_connected:
-            p.print("NTP sync: LAN not connected.")
+            await p.print("NTP sync: LAN not connected.") # Added await
             return False
 
-        p.print("Attempting to sync NTP...")
+        await p.print("Attempting to sync NTP...") # Added await
         s = None # Initialize s
         try:
             # Create a UDP socket
@@ -321,14 +321,14 @@ class AsyncWebServer:
                 tm = time.gmtime(secs_since_2000)
                 rtc.datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
                 self.ntp_synced = True
-                p.print("NTP sync successful. Time set to: {}".format(time.gmtime()))
+                await p.print("NTP sync successful. Time set to: {}".format(time.gmtime())) # Added await
                 rtc_synced = True # Update global flag
                 if not self.hub.logger.rtc_synced:
                     self.hub.logger.rtc_synced = True
                     self.hub.logger.request_rename_file()
                 return True
         except Exception as e:
-            p.print("NTP sync failed: {}".format(e))
+            await p.print("NTP sync failed: {}".format(e)) # Added await
             return False
         finally:
             if s:
@@ -345,21 +345,21 @@ class AsyncWebServer:
         while True:
             try:
                 if not self.lan_connected:
-                    p.print("Attempting to reconnect Ethernet...")
+                    await p.print("Attempting to reconnect Ethernet...") # Added await
                     try:
                         await self.connect_ethernet() # Call with await
                     except RuntimeError:
-                        p.print("Ethernet reconnection failed. Retrying in 10s.")
+                        await p.print("Ethernet reconnection failed. Retrying in 10s.") # Added await
                         await asyncio.sleep(100)
                         continue
 
                 if self.server is None:
-                    p.print("Attempting to start server...")
+                    await p.print("Attempting to start server...") # Added await
                     try:
                         self.server = await asyncio.start_server(self.handle_client, "0.0.0.0", self.port)
-                        p.print("Server running at http://{}:{}".format(self.lan.ifconfig()[0],self.port))
+                        await p.print("Server running at http://{}:{}".format(self.lan.ifconfig()[0],self.port)) # Added await
                     except Exception as e:
-                        p.print("Failed to start server: {}. Retrying in 10s.".format(e))
+                        await p.print("Failed to start server: {}. Retrying in 10s.".format(e)) # Added await
                         self.server = None # Ensure server is None if start failed
                         await asyncio.sleep(100)
                         continue
@@ -367,7 +367,7 @@ class AsyncWebServer:
                 # Periodically check LAN connection status
                 if is_timeout(self.last_lan_check_ms, 5000):
                     if not self.lan.isconnected():
-                        p.print("Ethernet disconnected.")
+                        await p.print("Ethernet disconnected.") # Added await
                         self.lan_connected = False
                         if self.server:
                             self.server.close()
@@ -375,7 +375,7 @@ class AsyncWebServer:
                             self.server = None
                     self.last_lan_check_ms = millis()
             except Exception as e:
-                p.print("HUB main_loop:",e)
+                await p.print("AsyncWebServer main_loop (start method):",e) # Added await, clarified source
             await asyncio.sleep_ms(self.main_loop_yield_wait_ms) # Yield control
     def run(self):
         try:

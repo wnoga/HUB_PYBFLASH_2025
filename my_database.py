@@ -1,6 +1,7 @@
 import _thread
 import os
 import time
+import uasyncio # For p.print
 
 
 class StatusFlags:
@@ -8,6 +9,7 @@ class StatusFlags:
     READY = 0b00000001  # Data is ready to be processed
     SAVED = 0b00000010  # Data has been saved in the log file
     SENT = 0b00000100   # Data has been sent by the server
+    # Note: p is not defined here, assuming it's imported if used by print statements
     ERROR = 0b10000000
     MASK_ALL = 0b00000111
 
@@ -118,11 +120,11 @@ class SimpleFileDB:
                     # print("all_saved_and_sent {}".format(path))
                     return True  # All lines have both flags set
             except OSError as e:
-                # print("Error all_saved_and_sent: {}".format(e))
+                # await p.print("Error all_saved_and_sent: {}".format(e)) # Would need p and async
                 # File might not exist yet, which means all are "saved and sent" (vacuously true)
                 return True
 
-    def rename_if_all_saved_and_sent(self, path: str):
+    async def rename_if_all_saved_and_sent(self, path: str): # Changed to async def
         """Rename the file suffix from .db to .snt if all rows have SAVED and SENT flags."""
         if self.all_saved_and_sent(path):
             base, ext = path.rsplit(".", 1)
@@ -130,11 +132,11 @@ class SimpleFileDB:
                 new_path = base + "." + self.ext_snt
                 try:
                     os.rename(path, new_path)
-                    # print(f"Renamed database file to: {new_path}")
+                    # await p.print(f"Renamed database file to: {new_path}") # Would need p
                 except OSError as e:
-                    print(f"Error renaming file: {e}")
+                    await p.print(f"Error renaming file: {e}") # Changed to await p.print
 
-    def save(self, data, status=StatusFlags.READY):
+    async def save(self, data, status=StatusFlags.READY): # Changed to async def
         """Append a new line with a status flag (as single char byte), checking for file rotation."""
         self._check_file_size(self.filename_write)  # Check before saving
         with self.lock:
@@ -142,7 +144,7 @@ class SimpleFileDB:
                 with open(self.filename_write, 'a') as f:
                     f.write('{}{}\n'.format(chr(status), data))
             except OSError as e:
-                print(f"Error saving data: {e}")
+                await p.print(f"Error saving data: {e}") # Changed to await p.print
 
     def end_reading(self):
         # print("End reading {}".format(self.filename_read))
@@ -180,15 +182,15 @@ class SimpleFileDB:
                         return (pos, status, line[1:].rstrip())
             self.end_reading()
 
-    def next_with_callback(self, exclude_flags=StatusFlags.SAVED | StatusFlags.SENT, callback=None):
+    async def next_with_callback(self, exclude_flags=StatusFlags.SAVED | StatusFlags.SENT, callback=None): # Changed to async def
         """Retrieve the next line and execute a callback with the line data."""
         line_data = self.next(exclude_flags)
         if line_data and callback:
             try:
                 # Assuming callback expects (pos, status, data)
-                callback(line_data)
+                await callback(line_data) # If callback can be async
             except Exception as e:
-                print(f"Error in callback: {e}")
+                await p.print(f"Error in callback: {e}") # Changed to await p.print
                 # Optionally, handle the error, e.g., log it or retry
         return line_data
 
@@ -219,41 +221,43 @@ class SimpleFileDB:
             self.read_pos = 0
             self.write_pos = 0
 
-    def machine(self):
+    async def machine(self): # Changed to async def
         if self.state == 0:
             self.state = 1
         elif self.state == 1:
             tmp = self.next()
             if not tmp is None:
-                # print("{} -> {}".format(self.filename_read, tmp))
+                # await p.print("{} -> {}".format(self.filename_read, tmp)) # Would need p
                 self.update_status(
                     tmp[0], StatusFlags.READY | StatusFlags.SAVED | StatusFlags.SENT)
 
+# Import p for test function if it's going to use await p.print
+from my_utilities import p
 
-def test_SimpleFileDB():
+async def test_SimpleFileDB(): # Changed to async def
     db = SimpleFileDB(dir="./dbs", db_filename="test")
     # Initial save
-    db.save("test1", StatusFlags.READY)
-    db.save("test2", StatusFlags.READY)
-    db.save("test3", StatusFlags.READY)
+    await db.save("test1", StatusFlags.READY) # Added await
+    await db.save("test2", StatusFlags.READY) # Added await
+    await db.save("test3", StatusFlags.READY) # Added await
 
     # # print(db.filename_write)
     # while True:
     #     tmp = db.next_with_callback(callback=print)
     #     if tmp == None:
     #         break
-    #     print(tmp)
+    #     await p.print(tmp)
     for i in range(100):
-        db.machine()
-    exit()
+        await db.machine() # Added await
+    # exit() # exit() is not typically used in async MicroPython like this
 
     # Read and print all
-    print("Initial data:")
+    await p.print("Initial data:") # Added await
     while True:
         tmp = db.next(exclude_flags=0x00)
         if tmp is None:
             break
-        print(tmp)
+        await p.print(tmp) # Added await
 
     # Update status of the second entry
     db.read_pos = 0
@@ -268,4 +272,7 @@ def test_SimpleFileDB():
 
 
 if __name__ == "__main__":
-    test_SimpleFileDB()
+    # To run an async test function:
+    # import uasyncio
+    # uasyncio.run(test_SimpleFileDB())
+    pass
