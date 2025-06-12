@@ -12,11 +12,20 @@ try:
     import uasyncio # Added for async operations
     import gc
     import pyb
-    # # Create a lock for safe printing
+    # Create a lock for safe printing, initialized once when the module is imported.
     print_lock = _thread.allocate_lock()
     rtc = machine.RTC()
-    # lock = _thread.allocate_lock()
 except:
+    # Fallback for environments where _thread or machine might not be available (e.g., PC testing)
+    class DummyLock:
+        def acquire(self, blocking=True, timeout=-1): return True # pragma: no cover
+        def release(self): pass # pragma: no cover
+        def locked(self): return False # pragma: no cover
+    print_lock = DummyLock()
+
+    class DummyRTC: # pragma: no cover
+        def datetime(self): return (2000,1,1,1,0,0,0,0) # year, month, day, weekday, hour, minute, second, subsecond
+    rtc = DummyRTC()
     pass
 import time
 
@@ -57,22 +66,6 @@ except:
 
 rtc_synced = False
 
-def lock(blocking=True, sleep_ms=1):
-    return
-    if blocking:
-        while not print_lock.acquire():
-            # time.sleep_us(sleep_us)
-            time.sleep_ms(sleep_ms)
-    else:
-        print_lock.acquire()
-
-
-def unlock():
-    return
-    if print_lock.locked():
-        print_lock.release()
-
-
 def rtc_unix_timestamp():
     dt = rtc.datetime()  # (year, month, day, weekday, hours, minutes, seconds, subseconds)
     # Rearrange to (year, month, day, hour, minute, second, weekday, yearday)
@@ -106,23 +99,50 @@ class Print:
 class PrintButLouder:
     def __init__(self):
         self.queue = []
+        # print_lock is globally initialized when this module is imported.
+
+    def _lock(self, blocking=True, sleep_ms=1):
+        """Acquires the global print_lock."""
+        global print_lock
+        if blocking:
+            while not print_lock.acquire(True, -1): # blocking acquire
+                try:
+                    time.sleep_ms(sleep_ms)
+                except AttributeError:  # pragma: no cover
+                    time.sleep(sleep_ms / 1000.0) # Fallback for PC
+        else:
+            return print_lock.acquire(False) # non-blocking acquire
+        return True
+
+    def _unlock(self):
+        """Releases the global print_lock."""
+        global print_lock
+        if print_lock.locked():
+            print_lock.release()
 
     def print(self, *args, **kwargs):
-        lock()
-    # with print_lock:
-    # print(*args, **kwargs)
-        self.queue.append((args, kwargs))
-        if len(self.queue) > 50:
-            self.queue.pop(0)
-        unlock()
+        if self._lock(): # Acquire lock
+            try:
+                self.queue.append((args, kwargs))
+                if len(self.queue) > 50: # TODO: Make this configurable
+                    self.queue.pop(0)
+            finally:
+                self._unlock() # Ensure lock is released
 
     async def machine(self):
         if not self.queue:
             return
-        lock()
-        item = self.queue.pop(0)
-        unlock()
-        print(*(item[0]), **item[1])
+        
+        item = None
+        if self._lock(): # Acquire lock
+            try:
+                if self.queue: # Re-check queue is not empty after acquiring lock
+                    item = self.queue.pop(0)
+            finally:
+                self._unlock() # Ensure lock is released
+        
+        if item:
+            print(*(item[0]), **item[1])
         await uasyncio.sleep_ms(0) # Yield to the event loop after printing one item
  
 

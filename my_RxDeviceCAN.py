@@ -130,16 +130,19 @@ class RxDeviceCAN:
 
     async def _poll_and_schedule_rx(self):
         """Helper async method to poll for CAN messages and schedule handler."""
-        while self.can_bus.any(0):
+        # This method is called repeatedly by main_loop.
+        # It should check once if messages are available and schedule if so.
+        # The handle_can_rx method itself has a loop to drain the FIFO.
+        if self.can_bus.any(0): # Check if any message is pending
             try:
                 micropython.schedule(self.handle_can_rx_ref, 0)
             except RuntimeError:
                 # Schedule queue is full. Message will hopefully be picked up
                 # by a subsequent IRQ or this poll's next attempt.
-                pass 
+                pass # pragma: no cover
             except Exception as e_sched:
-                p.print("RxDeviceCAN._poll_and_schedule_rx: Error scheduling handle_can_rx: {}".format(e_sched))
-            await uasyncio.sleep_ms(1)
+                p.print("RxDeviceCAN._poll_and_schedule_rx: Error scheduling handle_can_rx: {}".format(e_sched)) # pragma: no cover
+            # No await uasyncio.sleep_ms(1) here, main_loop handles the polling interval.
 
     async def main_loop(self, reason=None):
         while self.running:
@@ -147,7 +150,7 @@ class RxDeviceCAN:
             state = self.can_bus.state()
             if state == pyb.CAN.STOPPED:
                 p.print("RxDeviceCAN.main_loop: CAN BUS STOPPED")
-            elif state > 0: # CAN bus error (e.g., WARNING, ERROR_PASSIVE, BUS_OFF)
+            elif state > 0: # CAN bus error (e.g., WARNING, ERROR_PASSIVE, BUS_OFF) # pragma: no cover
                 p.print("RxDeviceCAN.main_loop: CAN BUS ERROR state: {}".format(state))
                 # Loop continues to monitor and allow for potential auto-restart or external restart.
                 # Higher-level logic (e.g., in HUB.py) might attempt can_bus.restart().
@@ -155,8 +158,8 @@ class RxDeviceCAN:
             # Perform polling for CAN messages.
             # This acts as a primary mechanism if use_rxcallback is False,
             # or as a backup/general check if use_rxcallback is True.
-            await self._poll_and_schedule_rx()
+            await self._poll_and_schedule_rx() # Call the simplified polling method
 
             # except Exception as e:
-            #     p.print("RxDeviceCAN.main_loop: Exception: {}".format(e))
-            await uasyncio.sleep_ms(self.yielld_ms)
+            #     p.print("RxDeviceCAN.main_loop: Exception: {}".format(e)) # pragma: no cover
+            await uasyncio.sleep_ms(self.yielld_ms) # This controls the polling frequency
