@@ -178,11 +178,11 @@ class AFEDevice:
             tmp += "\t{}->{}\n".format(ch.name, ch.config)
         await p.print(tmp) # Added await
 
-    def start_periodic_measurement_for_channels(self, report_every_ms, channels=0xFF):
-        self.enqueue_u32_for_channel(
+    async def start_periodic_measurement_for_channels(self, report_every_ms, channels=0xFF): # Changed to async def
+        await self.enqueue_u32_for_channel( # Added await
             AFECommand.setSensorDataSi_periodic_average, channels, report_every_ms)
 
-    def start_periodic_measurement_by_config(self):
+    async def start_periodic_measurement_by_config(self): # Changed to async def
         report_every_ms = {}
         for g in ["M", "S"]:
             for k, v in self.configuration[g].items():
@@ -224,15 +224,15 @@ class AFEDevice:
                          "timeout_start_on_send_ms": 3000,
                          "callback_error": self.start_periodic_measurement_by_config}
         if report_every_ms.get("M") == report_every_ms.get("S"):
-            self.enqueue_u32_for_channel(
+            await self.enqueue_u32_for_channel( # Added await
                 AFECommand.setChannel_period_ms_byMask,
                 0xFF, report_every_ms.get("M"), **commandKwargs)
         else:
-            self.enqueue_u32_for_channel(
+            await self.enqueue_u32_for_channel( # Added await
                 AFECommand.setChannel_period_ms_byMask,
                 AFECommandChannelMask.master, report_every_ms.get("M"),
                 **commandKwargs)
-            self.enqueue_u32_for_channel(
+            await self.enqueue_u32_for_channel( # Added await
                 AFECommand.setChannel_period_ms_byMask,
                 AFECommandChannelMask.slave, report_every_ms.get("S"),
                 **commandKwargs)
@@ -899,8 +899,8 @@ class AFEDevice:
 
             received_data = None
 
-    def start_periodic_measurement_download(self, interval_ms=2500):
-        self.enqueue_command(
+    async def start_periodic_measurement_download(self, interval_ms=2500): # Changed to async def
+        await self.enqueue_command( # Added await
             AFECommand.setSensorDataSi_all_periodic_average,
             list(struct.pack('<I', interval_ms)))
         self.periodic_measurement_download_is_enabled = True
@@ -935,7 +935,7 @@ class AFEDevice:
                                  "timeout_start_on_send_ms": 2000,
                                  "error_callback": None,
                                  "callback": None}
-                self.enqueue_command(
+                await self.enqueue_command( # Added await
                     AFECommand.getTimestamp, None, **commandKwargs) # This is already async due to enqueue_command
 
         if not self.is_configured:
