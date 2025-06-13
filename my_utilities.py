@@ -15,7 +15,7 @@ try:
     import _thread
     import micropython
     import machine
-    import uasyncio # Added for async operations
+    # import uasyncio # Added for async operations
     import gc
     import pyb
     # Create a lock for safe printing, initialized once when the module is imported.
@@ -25,6 +25,56 @@ except:
     # Fallback for environments where _thread or machine might not be available (e.g., PC testing)
     rtc = DummyRTC()
     pass
+try:
+    import uasyncio
+except ImportError:
+    import asyncio
+    # --- Mock uasyncio module (using Python's asyncio) ---
+    class UasyncioShim:
+        def __init__(self):
+            self._loop = None
+
+        def get_event_loop(self):
+            if self._loop is None:
+                try:
+                    self._loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    self._loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(self._loop)
+            return self # In MicroPython, get_event_loop() often returns the loop itself which has create_task etc.
+
+        def create_task(self, coro):
+            if self._loop is None: # Ensure loop exists if get_event_loop wasn't called explicitly before create_task
+                self.get_event_loop()
+            return self._loop.create_task(coro)
+
+        async def sleep(self, t_s):
+            await asyncio.sleep(t_s)
+
+        async def sleep_ms(self, t_ms):
+            await asyncio.sleep(t_ms / 1000.0)
+
+        def run_forever(self): # This method is on the loop object
+            if self._loop:
+                try:
+                    print("SIM: Starting asyncio event loop run_forever().")
+                    self._loop.run_forever()
+                except KeyboardInterrupt:
+                    print("SIM: asyncio loop interrupted.")
+                finally:
+                    if self._loop.is_running():
+                        self._loop.stop()
+                    # self._loop.close() # Closing should be handled carefully, esp. if run in a thread
+                    print("SIM: asyncio loop finished run_forever().")
+            else:
+                print("SIM: uasyncio.run_forever() called but no loop was properly retrieved/set.")
+
+        def run(self, coro): # For uasyncio.run(main())
+            return asyncio.run(coro)
+        # import asyncio as uasyncio
+    uasyncio = UasyncioShim()
+
+
 import time
 
 print_lock = DummyLock()

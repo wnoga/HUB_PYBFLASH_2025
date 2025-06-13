@@ -209,10 +209,10 @@ class HUBDevice:
         if self.use_tx_delay:
             if is_delay(self.last_tx_time, self.tx_delay_ms):
                 return
-        if self.can_bus.state() > 1:
+        if self.can_interface.state() > 1:
             # self.logger.log(VerbosityLevel["ERROR"],"CAN BUS ERROR {}".format(self.can_bus.state()))
-            if self.can_bus.state() > 2:
-                self.can_bus.restart()
+            if self.can_interface.state() > 2:
+                self.can_interface.restart()
             return
         try:
             # Check if AFE with current ID is already discovered or if we've exceeded the maximum ID
@@ -221,7 +221,7 @@ class HUBDevice:
 
             if not any(afe.is_online and afe.device_id == self.current_discovery_id for afe in self.afe_devices):
                 # Send get ID msg to discover new AFE
-                self.can_bus.send(
+                self.can_interface.send(
                     b"\x00\x11", self.current_discovery_id << 2, timeout=self.tx_timeout_ms)
                 self.last_tx_time = millis()
                 # self.logger.log(VerbosityLevel["DEBUG"], "Sending discovery message to ID: {}".format(
@@ -248,12 +248,12 @@ class HUBDevice:
         if self.use_tx_delay and is_delay(self.last_tx_time, self.tx_delay_ms):
             return
 
-        if self.can_bus.state() > 1:
-            if self.can_bus.state() > 2: # Corresponds to pyb.CAN.BUS_OFF or more severe
-                await self.logger.log(VerbosityLevel["ERROR"], "CAN bus error state {}, attempting restart.".format(self.can_bus.state())) # Added await
-                self.can_bus.restart()
+        if self.can_interface.state() > 1:
+            if self.can_interface.state() > 2: # Corresponds to pyb.CAN.BUS_OFF or more severe
+                await self.logger.log(VerbosityLevel["ERROR"], "CAN bus error state {}, attempting restart.".format(self.can_interface.state())) # Added await
+                self.can_interface.restart()
             else:
-                await self.logger.log(VerbosityLevel["WARNING"], "CAN bus warning state {}.".format(self.can_bus.state())) # Added await
+                await self.logger.log(VerbosityLevel["WARNING"], "CAN bus warning state {}.".format(self.can_interface.state())) # Added await
             return
 
         if self.current_discovery_id > self.afe_id_max:

@@ -174,3 +174,13 @@ class RxDeviceCAN:
             # except Exception as e:
             #     p.print("RxDeviceCAN.main_loop: Exception: {}".format(e)) # pragma: no cover
             await uasyncio.sleep_ms(self.yielld_ms) # This controls the polling frequency
+
+    def state(self):
+        """Returns the current state of the CAN bus."""
+        return self.can_bus.state()
+
+    def restart(self):
+        """Restarts the CAN bus.
+        This can be used to recover from error states like BUS_OFF.
+        """
+        self.can_bus.restart()

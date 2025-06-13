@@ -425,13 +425,16 @@ class MockAsyncWebServer:
         print("SIM: AsyncWebServer.start() called - server mock running")
         while True:
             await uasyncio.sleep(1)
-
+            
+from my_utilities import PrintButLouder
+p = PrintButLouder()
 
 # --- Helper to inject mocks into sys.modules ---
 def _setup_mocks():
     # Create a module-like object for my_utilities
     my_utilities_module = type(sys)('my_utilities')
-    my_utilities_module.p = MockP()
+    # my_utilities_module.p = MockP()
+    my_utilities_module.p = p
     my_utilities_module.wdt = MockWDT()
     my_utilities_module.JSONLogger = MockJSONLogger
     my_utilities_module.rtc_unix_timestamp = rtc_unix_timestamp
