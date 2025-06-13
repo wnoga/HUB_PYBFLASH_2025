@@ -778,7 +778,7 @@ class JSONLogger:
                     await uasyncio.sleep_ms(0) # Yield after flush
                     self.last_sync = millis()
                 except Exception as e:
-                    p.print("Error in sync (keep_open=True): {}".format(e))
+                    await p.print("Error in sync (keep_open=True): {}".format(e))
         # If not keep_file_open, _log handles flush and close, so sync is a no-op.
 
     async def sync_process(self):
@@ -973,7 +973,7 @@ class JSONLogger:
         self._requestRenameFile = True
     
     async def wait_for_end_process_log_queue(self):
-        while self.lock_process_log_queue:
+        while self.log_queue:
             await uasyncio.sleep_ms(10)
 
     async def writer_main_loop(self):

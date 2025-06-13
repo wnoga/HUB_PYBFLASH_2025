@@ -1,9 +1,17 @@
 import asyncio
-import time
 import datetime
 import sys
 import threading
 import struct # For packing UID in CAN response
+import utime_compat
+
+# --- CRITICAL: Mock 'time' module EARLY ---
+# This ensures that any subsequent import of 'my_utilities' (either by this
+# sim script or by the application code) will use the compatible time functions.
+sys.modules['time'] = utime_compat
+# --- End CRITICAL ---
+import my_utilities as actual_my_utilities
+
 
 # --- Mock micropython module ---
 class MicropythonModule:
@@ -211,7 +219,7 @@ class PybModule:
 
     def millis(self):
         # print("SIM: pyb.millis() called") # Can be too verbose
-        return int(time.monotonic() * 1000)
+        return utime_compat.ticks_ms()
 
 pyb = PybModule()
 
@@ -344,20 +352,6 @@ def rtc_datetime_pretty():
     dt_tuple = rtc.datetime()
     return f"{dt_tuple[0]}-{dt_tuple[1]:02d}-{dt_tuple[2]:02d} {dt_tuple[4]:02d}:{dt_tuple[5]:02d}:{dt_tuple[6]:02d}"
 
-# Simulator's versions of millis, is_timeout, and is_delay for the my_utilities mock
-def sim_millis():
-    """Uses the mocked pyb.millis()"""
-    return pyb.millis()
-
-def sim_ticks_diff(new, old):
-    """Basic ticks_diff for monotonic time, assumes no wraparound in sim context."""
-    return new - old
-
-def sim_is_timeout(timestamp_ms, timeout_ms):
-    return timeout_ms != 0 and sim_ticks_diff(sim_millis(), timestamp_ms) > timeout_ms
-
-def sim_is_delay(timestamp_ms, delay_ms):
-    return delay_ms != 0 and sim_ticks_diff(sim_millis(), timestamp_ms) < delay_ms
 
 # my_RxDeviceCAN
 # This mock is kept if you want to stub out your RxDeviceCAN.
@@ -426,23 +420,54 @@ class MockAsyncWebServer:
         while True:
             await uasyncio.sleep(1)
             
-from my_utilities import PrintButLouder
-p = PrintButLouder()
+# Use PrintButLouder and JSONLogger from the actual_my_utilities,
+# which are now initialized with the mocked 'time' module (utime_compat).
+p_instance = actual_my_utilities.PrintButLouder()
+JSONLogger_class = actual_my_utilities.JSONLogger
 
 # --- Helper to inject mocks into sys.modules ---
 def _setup_mocks():
+    # 'time' is already mocked at the top of the script.
+
     # Create a module-like object for my_utilities
     my_utilities_module = type(sys)('my_utilities')
-    # my_utilities_module.p = MockP()
-    my_utilities_module.p = p
+
+    # Populate with mocks or sim-compatible versions derived from actual_my_utilities
+    my_utilities_module.p = p_instance # Use the instance created above
     my_utilities_module.wdt = MockWDT()
-    my_utilities_module.JSONLogger = MockJSONLogger
+    my_utilities_module.JSONLogger = JSONLogger_class # Use the class imported above
+    
+    # RTC related things (rtc, rtc_unix_timestamp, rtc_datetime_pretty are defined in this sim script)
     my_utilities_module.rtc_unix_timestamp = rtc_unix_timestamp
     my_utilities_module.rtc = rtc
     my_utilities_module.rtc_datetime_pretty = rtc_datetime_pretty
-    my_utilities_module.millis = sim_millis
-    my_utilities_module.is_timeout = sim_is_timeout
-    my_utilities_module.is_delay = sim_is_delay
+    
+    my_utilities_module.millis = pyb.millis # Will use utime_compat.ticks_ms via pyb mock
+
+    # --- Crucial: Add functions and constants from actual_my_utilities ---
+    # These will be used by HUB.py, AFE.py etc., and will correctly use the mocked 'time'.
+    my_utilities_module.is_timeout = actual_my_utilities.is_timeout
+    my_utilities_module.is_delay = actual_my_utilities.is_delay
+    
+    # Other classes/constants/functions needed by application code from my_utilities:
+    my_utilities_module.PrintButLouder = actual_my_utilities.PrintButLouder
+    my_utilities_module.VerbosityLevel = actual_my_utilities.VerbosityLevel
+    my_utilities_module.AFECommand = actual_my_utilities.AFECommand
+    my_utilities_module.AFECommandChannel = actual_my_utilities.AFECommandChannel
+    my_utilities_module.AFECommandChannelMask = actual_my_utilities.AFECommandChannelMask
+    my_utilities_module.AFECommandSubdevice = actual_my_utilities.AFECommandSubdevice
+    my_utilities_module.AFECommandGPIO = actual_my_utilities.AFECommandGPIO
+    my_utilities_module.AFECommandAverage = actual_my_utilities.AFECommandAverage
+    my_utilities_module.CommandStatus = actual_my_utilities.CommandStatus
+    my_utilities_module.ResetReason = actual_my_utilities.ResetReason
+    my_utilities_module.SensorChannel = actual_my_utilities.SensorChannel
+    my_utilities_module.extract_bracketed = actual_my_utilities.extract_bracketed
+    my_utilities_module.read_callibration_csv = actual_my_utilities.read_callibration_csv
+    my_utilities_module.channel_name_xxx = actual_my_utilities.channel_name_xxx
+    my_utilities_module.e_ADC_CHANNEL = actual_my_utilities.e_ADC_CHANNEL
+    my_utilities_module.get_e_ADC_CHANNEL = actual_my_utilities.get_e_ADC_CHANNEL
+    my_utilities_module.rtc_synced = actual_my_utilities.rtc_synced # Global var from my_utilities
+
     sys.modules['my_utilities'] = my_utilities_module
 
     # If you want to use the *actual* my_RxDeviceCAN.py, comment out or remove the next two lines.
@@ -465,6 +490,7 @@ def _setup_mocks():
     sys.modules['uasyncio'] = uasyncio
     sys.modules['micropython'] = micropython
     sys.modules['_thread'] = _thread
+    # sys.modules['time'] = utime_compat # This is now done at the top of the script
 
 _setup_mocks()
 

@@ -19,7 +19,9 @@ from my_RxDeviceCAN import RxDeviceCAN
 import time
 
 can_bus = pyb.CAN(1)
-logger = JSONLogger(keep_file_open=True)
+logger = JSONLogger(keep_file_open=True
+                    ,parent_dir="/tmp/HUB_simulator/"
+                    )
 # print("RESTART") # This would need to be `await p.print` within an async context
 # wdt.feed()
 if False:
