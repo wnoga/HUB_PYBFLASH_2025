@@ -480,7 +480,7 @@ class JSONLogger:
         except OSError as e:
             # This might be an issue if p.print itself is not fully initialized or causes recursion
             # Consider a simpler print for critical bootstrap errors.
-            print(f"CRITICAL: Failed to create log directory {self.parent_dir}: {e}")
+            print("CRITICAL: Failed to create log directory {}: {}".format(self.parent_dir,e))
 
     def _get_unique_filename(self, filename):
         base, ext = filename.rsplit(
@@ -574,7 +574,7 @@ class JSONLogger:
         try:
             toLog = json.dumps(log_entry_dict) + "\n"
         except Exception as e_json:
-            await p.print(f"ERROR in _log: JSON dump failed: {e_json} for data: {log_entry_dict}")
+            await p.print("ERROR in _log: JSON dump failed: {} for data: {}".format(e_json, log_entry_dict))
             return -1
 
         current_file_handle = None
@@ -590,13 +590,13 @@ class JSONLogger:
                     self.file = open(self.filename, "a")
                     await uasyncio.sleep_ms(0)
                 except Exception as e_open:
-                    await p.print(f"ERROR in _log: Failed to reopen file {self.filename} (keep_open=True): {e_open}")
+                    await p.print("ERROR in _log: Failed to reopen file {} (keep_open=True): {}".format(self.filename,e_open))
                     await self.request_new_file()
                     return -1
             current_file_handle = self.file
         else: # Not keep_file_open, open/close per write
             if not self.filename: # Ensure filename is valid
-                 await p.print(f"Error in _log (keep_file_open=False): Filename not set before open attempt.")
+                 await p.print("Error in _log (keep_file_open=False): Filename not set before open attempt.")
                  await self.new_file() # Try to set it
                  if not self.filename:
                      await p.print("Critical Error in _log (keep_file_open=False): Could not establish a valid log file after new_file().")
@@ -606,11 +606,11 @@ class JSONLogger:
                 opened_in_scope = True
                 await uasyncio.sleep_ms(0)
             except Exception as e_open:
-                await p.print(f"ERROR in _log: Failed to open file {self.filename} (keep_file_open=False): {e_open}")
+                await p.print("ERROR in _log: Failed to open file {} (keep_file_open=False): {}".format(self.filename, e_open))
                 return -1
             
         if current_file_handle is None:
-            await p.print(f"ERROR in _log: File handle is None for {self.filename} before write attempt.")
+            await p.print("ERROR in _log: File handle is None for {} before write attempt.".format(self.filename))
             return -1
         try:
             self.cursor_position_last = self.file.tell()
@@ -652,7 +652,7 @@ class JSONLogger:
                 # Do not set self.file to None here if it wasn't self.file
 
         except Exception as e:
-            p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename, e, log_entry[:512]))
+            p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename, e, toLog[:512]))
             # if self.keep_file_open and self.file:
             #     try: self.file.close()
             #     except: pass
@@ -661,7 +661,7 @@ class JSONLogger:
             #     try: current_file_handle.close()
             #     except: pass
             # await self.request_new_file()
-            await p.print(f"ERROR in _log writing to {self.filename}: {e} -> {toLog[:200]}")
+            await p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename,e,toLog[:200]))
             if opened_in_scope and current_file_handle:
                 try: current_file_handle.close()
                 except: pass
