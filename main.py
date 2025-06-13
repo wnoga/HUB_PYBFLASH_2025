@@ -20,7 +20,7 @@ import time
 
 can_bus = pyb.CAN(1)
 logger = JSONLogger(keep_file_open=True
-                    ,parent_dir="/tmp/HUB_simulator/"
+                    # ,parent_dir="/tmp/HUB_simulator/"
                     )
 # print("RESTART") # This would need to be `await p.print` within an async context
 # wdt.feed()
@@ -108,21 +108,21 @@ async def main():
     # Create asyncio tasks list
     tasks = []
     
-    # ... other task creations ...
+    # # ... other task creations ...
     
-    async def simple_test_task_func():
-        count = 0
-        while True:
-            # Use standard print for direct output, bypassing p.print for this test
-            print(f"SIM_SIMPLE_TEST_TASK: Alive! Count: {count}, Current Time: {time.time()}")
-            count += 1
-            await uasyncio.sleep(2) # Sleep for a noticeable interval
+    # async def simple_test_task_func():
+    #     count = 0
+    #     while True:
+    #         # Use standard print for direct output, bypassing p.print for this test
+    #         print(f"SIM_SIMPLE_TEST_TASK: Alive! Count: {count}, Current Time: {time.time()}")
+    #         count += 1
+    #         await uasyncio.sleep(2) # Sleep for a noticeable interval
     
-    tasks.append(uasyncio.create_task(simple_test_task_func()))
-    # If p.print is working, this will show up (assuming periodic_tasks_loop is running):
-    await p.print("simple_test_task_func task created.") 
-    # Or use standard print for certainty during diagnostics:
-    print("INFO: simple_test_task_func task creation attempted.")
+    # tasks.append(uasyncio.create_task(simple_test_task_func()))
+    # # If p.print is working, this will show up (assuming periodic_tasks_loop is running):
+    # await p.print("simple_test_task_func task created.") 
+    # # Or use standard print for certainty during diagnostics:
+    # print("INFO: simple_test_task_func task creation attempted.")
     
     
     can, hub, rxDeviceCAN = await initialize_can_hub( # Added await
