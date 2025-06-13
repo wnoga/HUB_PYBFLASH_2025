@@ -652,7 +652,7 @@ class JSONLogger:
                 # Do not set self.file to None here if it wasn't self.file
 
         except Exception as e:
-            p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename, e, toLog[:512]))
+            p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename, e, toLog[:512])) # Todo check toLog
             # if self.keep_file_open and self.file:
             #     try: self.file.close()
             #     except: pass

@@ -95,7 +95,7 @@ class AsyncWebServer:
         
         # Limit the size of procedure_results
         if device_id not in self.procedure_results and len(self.procedure_results) >= self.max_procedures_keep_len:
-            await p.print(f"AsyncWebServer: procedure_results cache full. Evicting an arbitrary item before adding for AFE {device_id}.") # Added await
+            await p.print("AsyncWebServer: procedure_results cache full. Evicting an arbitrary item before adding for AFE {device_id}.".format(device_id)) # Added await
             try:
                 self.procedure_results.popitem() # Removes an arbitrary (key, value) pair
             except KeyError: # pragma: no cover
@@ -135,7 +135,7 @@ class AsyncWebServer:
             
             # Limit the number of concurrent procedures
             if afe_id not in self.procedure_events and len(self.procedure_events) >= self.max_procedures_keep_len:
-                await p.print(f"AsyncWebServer: Max concurrent procedures reached for procedure_events. Rejecting new procedure for AFE {afe_id}.") # Added await
+                await p.print("AsyncWebServer: Max concurrent procedures reached for procedure_events. Rejecting new procedure for AFE {}.".format(afe_id)) # Added await
                 return ujson.dumps({"status": "ERROR", "info": "Server busy, max concurrent procedures reached"}).encode()
 
             event = uasyncio.Event()
