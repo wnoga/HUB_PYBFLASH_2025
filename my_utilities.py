@@ -1072,19 +1072,19 @@ def read_callibration_csv(file):
     return callib_data, callib_data_mean
 
 
-if __name__ == "__main__":
-    import sys
-    callibration_data_file_csv = sys.argv[1]
-    TempLoop_file_csv = sys.argv[2]
+# if __name__ == "__main__":
+#     import sys
+#     callibration_data_file_csv = sys.argv[1]
+#     TempLoop_file_csv = sys.argv[2]
 
-    callib_data, callib_data_mean = read_callibration_csv(
-        callibration_data_file_csv)
-    TempLoop_data, TempLoop_data_mean = read_callibration_csv(
-        TempLoop_file_csv)
+#     callib_data, callib_data_mean = read_callibration_csv(
+#         callibration_data_file_csv)
+#     TempLoop_data, TempLoop_data_mean = read_callibration_csv(
+#         TempLoop_file_csv)
 
-    await p.print("Callibration data:\n", json.dumps(callib_data, indent=4)) # await p.print
-    await p.print("TempLoop data:\n", json.dumps(TempLoop_data, indent=4)) # await p.print
+#     await p.print("Callibration data:\n", json.dumps(callib_data, indent=4)) # await p.print
+#     await p.print("TempLoop data:\n", json.dumps(TempLoop_data, indent=4)) # await p.print
 
-    await p.print("Callibration data mean:\n", # await p.print
-            json.dumps(callib_data_mean, indent=4))
-    await p.print("TempLoop data mean:\n", json.dumps(TempLoop_data_mean, indent=4)) # await p.print
+#     await p.print("Callibration data mean:\n", # await p.print
+#             json.dumps(callib_data_mean, indent=4))
+#     await p.print("TempLoop data mean:\n", json.dumps(TempLoop_data_mean, indent=4)) # await p.print

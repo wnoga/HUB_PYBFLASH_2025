@@ -197,6 +197,7 @@ class HUBDevice:
     def discover_devices(self, timer=None):
         """ Periodically discover AFEs on the CAN bus. """
         # Check if discovery is active
+        # print("XXXXXXXXXXXXX Sending discovery message to ID: {}".format(self.current_discovery_id))
         if not self.discovery_active: #
             return  # Exit early if discovery is not active
 
@@ -220,9 +221,9 @@ class HUBDevice:
 
             if not any(afe.is_online and afe.device_id == self.current_discovery_id for afe in self.afe_devices):
                 # Send get ID msg to discover new AFE
-                # self.can_bus.send(
-                #     b"\x00\x11", self.current_discovery_id << 2, timeout=self.tx_timeout_ms)
-                # self.last_tx_time = millis()
+                self.can_bus.send(
+                    b"\x00\x11", self.current_discovery_id << 2, timeout=self.tx_timeout_ms)
+                self.last_tx_time = millis()
                 # self.logger.log(VerbosityLevel["DEBUG"], "Sending discovery message to ID: {}".format(
                 #     self.current_discovery_id))
                 pass # Will be handled by async version

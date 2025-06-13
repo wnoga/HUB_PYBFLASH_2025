@@ -1,7 +1,18 @@
 import pyb
 import micropython
 import uasyncio
-from my_utilities import p, millis, is_timeout, is_delay
+# try:
+from my_utilities import p
+from my_utilities import millis
+from my_utilities import is_timeout
+from my_utilities import is_delay
+# except ImportError:
+#     # from micropython_sim import p
+#     # from micropython_sim import millis
+#     # from micropython_sim import is_timeout
+#     # from micropython_sim import is_delay
+#     pass
+
 
 class RxDeviceCAN:
     def __init__(self, can_bus: pyb.CAN, use_rxcallback=True):

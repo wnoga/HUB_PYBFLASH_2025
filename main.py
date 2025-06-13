@@ -66,15 +66,6 @@ use_async_server = True
 
 use_rxcallback = True
 
-# Configure HUB
-hub.discovery_active = True
-hub.rx_process_active = True
-hub.use_tx_delay = True
-hub.afe_manage_active = True
-hub.tx_delay_ms = 1
-hub.afe_id_min = 35
-hub.afe_id_max = 37 # Ensure this is less than afe_devices_max for discovery to stop if all found
-
 # from my_utilities import VerbosityLevel
 # def test():
 #     logger.log(VerbosityLevel["CRITICAL"],"test {}".format(rtc_datetime_pretty()))
@@ -119,6 +110,17 @@ async def main():
         use_automatic_restart=True
     )
     hub.afe_devices_max = 2 # Configure after hub is initialized
+
+    # Configure HUB (moved here after hub is initialized)
+    hub.discovery_active = True
+    hub.rx_process_active = True
+    hub.use_tx_delay = True
+    hub.afe_manage_active = True
+    hub.tx_delay_ms = 1
+    hub.afe_id_min = 35
+    hub.afe_id_max = 37 # Ensure this is less than afe_devices_max for discovery to stop if all found
+    await p.print("HUB configured.")
+
     
     if use_lan_server:
         from my_simple_server import MySimpleServer
@@ -154,7 +156,7 @@ async def main():
     await p.print("logger.writer_main_loop task created.") # Added await
 
     tasks.append(uasyncio.create_task(periodic_tasks_loop()))
-    p.print("periodic_tasks_loop task created.")
+    await p.print("periodic_tasks_loop task created.")
     
     # tasks.append(uasyncio.create_task(clock_printer()))
     
