@@ -301,6 +301,10 @@ class ThreadModule:
             ThreadModule._active_threads.append(thread)
             return thread_id
 
+    def allocate_lock(self):
+        print("SIM: _thread.allocate_lock() called")
+        return threading.Lock()
+
 _thread = ThreadModule()
 
 
@@ -339,7 +343,9 @@ class MockJSONLogger:
             await uasyncio.sleep_ms(100)
 
 def rtc_unix_timestamp():
-    return int(time.time())
+    return datetime.datetime.now().timestamp()
+
+    # return int(time.time())
 
 class MockRTC:
     def datetime(self):
@@ -477,9 +483,9 @@ def _setup_mocks():
     # my_RxDeviceCAN_module.RxDeviceCAN = MockRxDeviceCAN # Kept
     # sys.modules['my_RxDeviceCAN'] = my_RxDeviceCAN_module # Kept
 
-    HUB_module = type(sys)('HUB')
-    HUB_module.initialize_can_hub = mock_initialize_can_hub
-    sys.modules['HUB'] = HUB_module
+    # HUB_module = type(sys)('HUB')
+    # HUB_module.initialize_can_hub = mock_initialize_can_hub
+    # sys.modules['HUB'] = HUB_module
 
     my_simple_server_module = type(sys)('my_simple_server')
     my_simple_server_module.MySimpleServer = MockMySimpleServer

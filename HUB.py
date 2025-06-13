@@ -1,6 +1,6 @@
 import json
 import time
-import machine
+# import machine
 import pyb
 import struct
 import random
@@ -39,6 +39,8 @@ class HUBDevice:
         self.afe_devices: list[AFEDevice] = []
         self.afe_devices_max = 8
         self.use_automatic_restart = use_automatic_restart
+        
+        self.main_loop_yield_ms = 1
 
         self.rx_timeout_ms = 1000
         self.run = True
@@ -796,6 +798,7 @@ class HUBDevice:
         await p.print("Send back: {}".format(json.dumps(toSend))) # Added await
 
     async def main_process(self, timer=None):
+        # print("QQQQQQQQQQQQQQ")
         # if self.use_rxcallback:
         #     micropython.schedule(self._dequeue_message_copy, 0)
         # #     micropython.schedule(self.handle_can_rx_polling_schedule, 0)
@@ -845,7 +848,7 @@ class HUBDevice:
             # time.sleep_us(10)
             # except Exception as e:
             #     p.print("HUB main_loop: {}".format(e))
-            await uasyncio.sleep_ms(0)
+            await uasyncio.sleep_ms(self.main_loop_yield_ms)
             # print_lock.release()
             # time.sleep_ms(1)
             # time.sleep(0.01)

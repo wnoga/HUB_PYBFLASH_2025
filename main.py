@@ -104,6 +104,26 @@ async def periodic_tasks_loop():
 async def main():
     global can,hub,rxDeviceCAN,server
     await p.print("Main async task started.") # Added await
+
+    # Create asyncio tasks list
+    tasks = []
+    
+    # ... other task creations ...
+    
+    async def simple_test_task_func():
+        count = 0
+        while True:
+            # Use standard print for direct output, bypassing p.print for this test
+            print(f"SIM_SIMPLE_TEST_TASK: Alive! Count: {count}, Current Time: {time.time()}")
+            count += 1
+            await uasyncio.sleep(2) # Sleep for a noticeable interval
+    
+    tasks.append(uasyncio.create_task(simple_test_task_func()))
+    # If p.print is working, this will show up (assuming periodic_tasks_loop is running):
+    await p.print("simple_test_task_func task created.") 
+    # Or use standard print for certainty during diagnostics:
+    print("INFO: simple_test_task_func task creation attempted.")
+    
     
     can, hub, rxDeviceCAN = await initialize_can_hub( # Added await
         can_bus=can_bus,
@@ -134,9 +154,6 @@ async def main():
         from my_simple_server import AsyncWebServer
         server = AsyncWebServer(hub)
         # server.run()
-
-    # Create asyncio tasks
-    tasks = []
     
     tasks.append(uasyncio.create_task(hub.main_loop()))
     await p.print("hub.main_loop task created.") # Added await

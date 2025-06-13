@@ -91,7 +91,17 @@ def localtime(secs=None):
 
 def mktime(tuple_time):
     """Convert a time tuple (local time) to seconds since Epoch."""
-    return int(_time.mktime(tuple_time))
+    # MicroPython's mktime typically takes an 8-tuple:
+    # (year, month, mday, hour, minute, second, weekday, yearday)
+    # Standard Python's time.mktime expects a 9-tuple, with tm_isdst as the last element.
+    if len(tuple_time) == 8:
+        # Append -1 for tm_isdst to let the library determine DST
+        py_tuple_time = tuple_time + (-1,)
+    elif len(tuple_time) == 9:
+        py_tuple_time = tuple_time
+    else:
+        raise TypeError("mktime expects an 8-tuple or 9-tuple")
+    return int(_time.mktime(py_tuple_time))
 
 def gmtime(secs=None):
     """Convert seconds since Epoch to a time tuple (UTC)."""

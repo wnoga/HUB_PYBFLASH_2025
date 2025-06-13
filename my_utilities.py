@@ -358,7 +358,7 @@ class AFECommandGPIO:
 
 
 def millis():
-    return pyb.millis()
+    return time.ticks_ms()
 
 
 def extract_bracketed(text):
@@ -978,7 +978,7 @@ class JSONLogger:
 
     async def writer_main_loop(self):
         while self.run:
-            while self._process_log_queue():
+            while await self._process_log_queue():
                 await uasyncio.sleep_ms(0)
             await uasyncio.sleep_ms(self.writer_main_loop_yield_ms)
 
