@@ -159,7 +159,17 @@ class AsyncWebServer:
                 self.procedure_events.pop(afe_id, None)
                 self.procedure_results.pop(afe_id, None)
                 return ujson.dumps({"status": "ERROR", "info": "Server error during procedure"}).encode()
-            
+        elif procedure == "hub_close_all":
+            await self.hub.close_all()
+            return ujson.dumps({"status": "OK"}).encode()
+        
+        elif procedure == "default_procedure":
+            afe_id = request.get("afe_id",None)
+            if not afe_id:
+                return ujson.dumps({"status": "ERROR"}).encode()
+            await self.hub.default_procedure(afe_id)
+            return ujson.dumps({"status": "OK"}).encode()
+        
         return None
 
     async def send_control_web_page(self, writer):
