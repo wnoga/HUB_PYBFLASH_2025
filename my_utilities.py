@@ -617,7 +617,6 @@ class JSONLogger:
             toLog = ""
             # Ensure message is a string before concatenation
             if isinstance(message_chunk, dict):
-                # message_str = json.dumps(message_chunk)
                 log_entry_dict["message"] = message_chunk
                 current_file_handle.write(json.dumps(log_entry_dict) + "\n")
             else:
@@ -627,21 +626,12 @@ class JSONLogger:
                 toLog += message_str
                 if chunk_id == chunk_id_max:
                     toLog += "}\n"
-                    # print(toLog)
-                # print(msg_id,msg_id_max, toLog)
                 self.file.write(toLog)
-                self.cursor_position_last = current_file_handle.tell()
                 current_file_handle.write(toLog)
             await uasyncio.sleep_ms(0) # Yield after write
             self.file_rows += 1
             self.cursor_position = self.file.tell()
 
-            # if not self.keep_file_open: # Close if opened in this scope
-            #     current_file_handle.flush()
-            #     await uasyncio.sleep_ms(0)
-            #     current_file_handle.close()
-            #     await uasyncio.sleep_ms(0)
-            #     current_file_handle = None
             self.cursor_position = current_file_handle.tell()
 
             if opened_in_scope: # if not keep_file_open, flush and close
@@ -653,14 +643,6 @@ class JSONLogger:
 
         except Exception as e:
             p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename, e, toLog[:512])) # Todo check toLog
-            # if self.keep_file_open and self.file:
-            #     try: self.file.close()
-            #     except: pass
-            #     self.file = None
-            # elif not self.keep_file_open and current_file_handle:
-            #     try: current_file_handle.close()
-            #     except: pass
-            # await self.request_new_file()
             await p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename,e,toLog[:200]))
             if opened_in_scope and current_file_handle:
                 try: current_file_handle.close()
@@ -893,8 +875,8 @@ class JSONLogger:
             await p.print("Generic error in _print_last_lines: {}".format(e_gen)) # await p.print
             
     def print_last_lines(self, N=1):
-        while self.request_print_last_lines:
-            pass
+        # while self.request_print_last_lines:
+        #     pass
         self.request_print_last_lines = N
 
     async def rename_current_file(self, new_name_suffix):
