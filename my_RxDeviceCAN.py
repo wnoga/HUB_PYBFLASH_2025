@@ -90,7 +90,9 @@ class RxDeviceCAN:
 
     def handle_can_rx(self,_=None):
         try:
+            cnt = 0
             while self.can_bus.any(0):
+                cnt += 1
                 self.can_bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
                 self.rx_message_buffer_head += 1
                 if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
@@ -99,22 +101,11 @@ class RxDeviceCAN:
                     self.rx_message_buffer_tail += 1
                     if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
                         self.rx_message_buffer_tail = 0
+            if cnt > 1:
+                print("handled {} CAN RX".format(cnt))
         except Exception as e:
             p.print("handle_can_rx: {}",e)
             pass
-
-    # def handle_can_rx_polling(self):
-    #     try:
-    #         if self.can_bus.any(0):
-    #             self.handle_can_rx()
-    #             return True
-    #     except Exception as e:
-    #         print("handle_can_rx_polling: {}".format(e))
-    #     return False
-
-    # # SCHEDULED version, safe in main thread
-    # def handle_can_rx_polling_schedule(self, _):
-    #     self.handle_can_rx_polling()
 
     # ISR → only schedules processing
     def handle_can_rx_irq(self, bus: pyb.CAN, reason=None):

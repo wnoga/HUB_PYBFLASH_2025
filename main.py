@@ -61,43 +61,19 @@ server = None # Initialize to None
 
 # Initialize components
 from HUB import initialize_can_hub # HUBDevice and RxDeviceCAN are returned by this
-# from HUB import RxDeviceCAN # Not needed separately if obtained from initialize_can_hub
 
 use_lan_server = False
 use_async_server = True
 
 use_rxcallback = True
 
-# from my_utilities import VerbosityLevel
-# def test():
-#     logger.log(VerbosityLevel["CRITICAL"],"test {}".format(rtc_datetime_pretty()))
-
-# async def clock_printer():
-#     while True:
-#         print(rtc_datetime_pretty())
-        
-#         await uasyncio.sleep(5)
-
 async def periodic_tasks_loop():
     """Handles periodic background tasks like watchdog, logging, and printing."""
     await p.print("Periodic tasks loop started.") # Added await
     while True:
         wdt.feed()
-        # try:
-        # for _ in range(10):
         await logger.machine()  # logger.machine() can have blocking I/O
-        # await uasyncio.sleep_ms(0)  # Yield after logger processing
-
-        # Process logger queue -  This reduces the work per cycle & allows other operations to run.
-        # if logger.log_queue:
-        #     await logger._process_log_queue()
-        
         await p.machine()  # p.process_queue() can have blocking I/O
-
-
-        # await uasyncio.sleep_ms(0)  # Yield after print queue processing
-        # except Exception as e:
-        #     await p.print("Error in periodic_tasks_loop:", e) # Added await
         await uasyncio.sleep_ms(50) # Overall frequency for this loop
 
 
@@ -107,23 +83,6 @@ async def main():
 
     # Create asyncio tasks list
     tasks = []
-    
-    # # ... other task creations ...
-    
-    # async def simple_test_task_func():
-    #     count = 0
-    #     while True:
-    #         # Use standard print for direct output, bypassing p.print for this test
-    #         print(f"SIM_SIMPLE_TEST_TASK: Alive! Count: {count}, Current Time: {time.time()}")
-    #         count += 1
-    #         await uasyncio.sleep(2) # Sleep for a noticeable interval
-    
-    # tasks.append(uasyncio.create_task(simple_test_task_func()))
-    # # If p.print is working, this will show up (assuming periodic_tasks_loop is running):
-    # await p.print("simple_test_task_func task created.") 
-    # # Or use standard print for certainty during diagnostics:
-    # print("INFO: simple_test_task_func task creation attempted.")
-    
     
     can, hub, rxDeviceCAN = await initialize_can_hub( # Added await
         can_bus=can_bus,
@@ -153,21 +112,21 @@ async def main():
     if use_async_server:
         from my_simple_server import AsyncWebServer
         server = AsyncWebServer(hub)
-        # server.run()
-    
+
     tasks.append(uasyncio.create_task(hub.main_loop()))
     await p.print("hub.main_loop task created.") # Added await
 
     if use_lan_server and server:
         tasks.append(uasyncio.create_task(server.main_loop()))
         await p.print("server.main_loop task created.") # Added await
-        tasks.append(uasyncio.create_task(server.sync_ntp_loop()))
-        await p.print("server.sync_ntp_loop task created.") # Added await
     
     if use_async_server and server:
         tasks.append(uasyncio.create_task(server.start()))
+        
+    if server:
+        tasks.append(uasyncio.create_task(server.sync_ntp_loop()))
+        await p.print("server.sync_ntp_loop task created.") # Added await
     
-    # if not use_rxcallback:
     tasks.append(uasyncio.create_task(rxDeviceCAN.main_loop()))
     await p.print("rxDeviceCAN.main_loop task created.") # Added await
     
@@ -176,8 +135,7 @@ async def main():
 
     tasks.append(uasyncio.create_task(periodic_tasks_loop()))
     await p.print("periodic_tasks_loop task created.")
-    
-    # tasks.append(uasyncio.create_task(clock_printer()))
+
     
     
 
@@ -186,16 +144,4 @@ loop.create_task(main())
 # uasyncio.loop_forever()
 
 # loop.run_forever()
-# _thread.start_new_thread(hub.main_loop, ())
-_thread.start_new_thread(loop.run_forever, ())
-
-# if __name__ == "__main__":
-#     try:
-#         uasyncio.run(main())
-#     except KeyboardInterrupt:
-#         p.print("Main program interrupted.")
-#     finally:
-#         p.print("Cleaning up and exiting main program.")
-#         # Perform any cleanup if necessary, e.g., closing server explicitly if not handled by tasks
-#         # Note: uasyncio tasks might need explicit cancellation for cleaner shutdown,
-#         # but for embedded systems, a hard reset or power cycle is common.
+_thread.start_new_thread(loop.run_forever, ()) # allow interactive mode (REPL)

@@ -5,6 +5,7 @@ import random
 import pyb
 # import machine # machine is not directly used here, pyb.millis is
 import micropython
+import uasyncio
 
 from my_utilities import AFECommand, AFECommandGPIO, AFECommandChannel, AFECommandSubdevice, JSONLogger
 from my_utilities import millis, is_timeout, is_delay

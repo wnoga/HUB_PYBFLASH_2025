@@ -724,7 +724,8 @@ class JSONLogger:
             else:
                 while len(self.log_queue) >= self.log_queue_max_len:
                     await uasyncio.sleep_ms(10)  # Yield to other tasks/threads
-                await self._log(level, message, 0, 0)
+                # await self._log(level, message, 0, 0)
+                self.log_queue.append((level, message, 0, 0))
                 
     async def sync(self):
         if self.file is not None:

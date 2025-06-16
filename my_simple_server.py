@@ -14,9 +14,7 @@ from my_utilities import millis, is_timeout, is_delay
 from my_utilities import p, VerbosityLevel
 from my_utilities import rtc, rtc_synced, rtc_datetime_pretty, rtc_unix_timestamp
 
-import network
 import uasyncio as asyncio
-import time
 
 # NTP constants
 NTP_DELTA = 2208988800  # Seconds between NTP epoch (1900) and Unix epoch (1970)
@@ -337,10 +335,10 @@ class AsyncWebServer:
 
 
     async def start(self):
-        await self.connect_ethernet() # Call with await
+        # await self.connect_ethernet() # Call with await
         
-        # Start NTP sync loop
-        asyncio.create_task(self.sync_ntp_loop())
+        # # Start NTP sync loop
+        # asyncio.create_task(self.sync_ntp_loop())
         
         while True:
             try:
