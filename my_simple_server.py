@@ -345,11 +345,6 @@ class AsyncWebServer:
 
 
     async def start(self):
-        # await self.connect_ethernet() # Call with await
-        
-        # # Start NTP sync loop
-        # asyncio.create_task(self.sync_ntp_loop())
-        
         while True:
             try:
                 if not self.lan_connected:
@@ -385,14 +380,13 @@ class AsyncWebServer:
             except Exception as e:
                 await p.print("AsyncWebServer main_loop (start method):",e) # Added await, clarified source
             await asyncio.sleep_ms(self.main_loop_yield_wait_ms) # Yield control
+    
     def run(self):
         try:
             asyncio.run(self.start())
         except KeyboardInterrupt:
             print("Server stopped")
 
-
-# === Example usage ===
     async def sync_ntp_loop(self):
         """Periodically syncs RTC with NTP."""
         while True:

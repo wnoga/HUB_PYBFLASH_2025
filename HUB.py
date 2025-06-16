@@ -1,6 +1,5 @@
 import json
 import time
-# import machine
 import pyb
 import struct
 import random
@@ -129,11 +128,6 @@ class HUBDevice:
     async def _dequeue_message_copy(self, _):
         self.msg_to_process = await self.can_interface.get()
         return self.msg_to_process
-    
-    # async def _dequeue_message(self):
-    #     self.msg_to_process = self.rxDeviceCAN.get()
-    #     await uasyncio.sleep_ms(10)
-
 
     def _message_queue_len(self):
         return len(self.message_queue)
@@ -167,9 +161,7 @@ class HUBDevice:
         if self.msg_to_process is None:
             return
         message = self.msg_to_process.copy()
-        # print(message)
         self.msg_to_process = None
-        # try:
         if message is None:
             return
         afe_id = (message[0] >> 2) & 0xFF  # unmask the AFE ID
@@ -185,59 +177,12 @@ class HUBDevice:
             })
             # Add the new AFE device to the list of known devices
             self.afe_devices.append(afe)
-            # if afe_id == 35:
             if not self.afe0:
                 self.afe0 = afe
         # Process the received data using the AFE device's method
         await afe.process_received_data(message) # Added await
-        # except Exception as e:
-        # p.print("process_received_messages: {}".format(e))
-
-    # async def process_received_messages_async(self): # This seems redundant if process_received_messages is async
-    #     await self.process_received_messages(None)
         
-    def discover_devices(self, timer=None):
-        """ Periodically discover AFEs on the CAN bus. """
-        # Check if discovery is active
-        # print("XXXXXXXXXXXXX Sending discovery message to ID: {}".format(self.current_discovery_id))
-        if not self.discovery_active: #
-            return  # Exit early if discovery is not active
-
-        # Check if all devices are discovered
-        if len(self.afe_devices) == self.afe_devices_max:
-            self.stop_discovery()
-            return
-
-        if self.use_tx_delay:
-            if is_delay(self.last_tx_time, self.tx_delay_ms):
-                return
-        if self.can_interface.state() > 1:
-            # self.logger.log(VerbosityLevel["ERROR"],"CAN BUS ERROR {}".format(self.can_bus.state()))
-            if self.can_interface.state() > 2:
-                self.can_interface.restart()
-            return
-        try:
-            # Check if AFE with current ID is already discovered or if we've exceeded the maximum ID
-            if self.current_discovery_id > self.afe_id_max:
-                self.current_discovery_id = self.afe_id_min  # Reset to the minimum ID
-
-            if not any(afe.is_online and afe.device_id == self.current_discovery_id for afe in self.afe_devices):
-                # Send get ID msg to discover new AFE
-                self.can_interface.send(
-                    b"\x00\x11", self.current_discovery_id << 2, timeout=self.tx_timeout_ms)
-                self.last_tx_time = millis()
-                # self.logger.log(VerbosityLevel["DEBUG"], "Sending discovery message to ID: {}".format(
-                #     self.current_discovery_id))
-                pass # Will be handled by async version
-            else:
-                self.logger.log(VerbosityLevel["DEBUG"], "AFE with ID {} already discovered".format(
-                    self.current_discovery_id))
-
-            self.current_discovery_id += 1  # Increment ID for the next iteration
-        except Exception as e:
-            self.logger.log(
-                VerbosityLevel["ERROR"], "discover_devices: HUB Error sending: {}".format(e))
-
+        
     async def discover_devices_async(self): # Renamed to avoid conflict if old one is kept temporarily
         """ Periodically discover AFEs on the CAN bus. """
         if not self.discovery_active:
@@ -270,9 +215,6 @@ class HUBDevice:
             if send_result is None: # Indicates successful scheduling by can_interface
                 self.last_tx_time = millis()
                 await self.logger.log(VerbosityLevel["DEBUG"], "Sent discovery to ID: {}".format(self.current_discovery_id)) # Added await
-            # else:
-            #     await self.logger.log(VerbosityLevel["ERROR"], "Failed to send discovery to ID: {}".format(self.current_discovery_id))
-
         self.current_discovery_id += 1
 
     async def start_discovery(self): # Changed to async def
@@ -439,14 +381,6 @@ class HUBDevice:
             await afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus, [ # Added await
                                 self._get_subdevice_ch_id(g), 1], **commandKwargs)
 
-    # def default_manual_blocking_measurement_loop(self, afe_id=35):
-    #     afe = self.get_afe_by_id(afe_id)
-    #     if afe is None:
-    #         return
-    #     timestamp_ms = millis()
-    #     while (millis() - timestamp_ms) <= 10000:
-    #         self.default_get_measurement(afe_id)
-    #         time.sleep(5.0)
 
     async def default_periodic_measurement_download_all(self, afe_id=35, ms=10000): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
@@ -542,10 +476,6 @@ class HUBDevice:
 
     async def default_full(self, afe_id=35):
         afe = self.get_afe_by_id(afe_id)
-        # if afe:
-        #     if (afe.init_timestamp_ms - millis()) < afe.init_wait_ms:
-        #         return
-        #     afe.init_timestamp_ms = millis()
         await self.powerOn() # Added await
         await self.default_afe_pause(afe_id) # Added await
         await self.default_setCanMsgBurstDelay_ms(afe_id, 0) # Added await
@@ -798,38 +728,18 @@ class HUBDevice:
         await p.print("Send back: {}".format(json.dumps(toSend))) # Added await
 
     async def main_process(self, timer=None):
-        # print("QQQQQQQQQQQQQQ")
-        # if self.use_rxcallback:
-        #     micropython.schedule(self._dequeue_message_copy, 0)
-        # #     micropython.schedule(self.handle_can_rx_polling_schedule, 0)
-        # else:
-        #     self._dequeue_message_copy(0)
-        # #     self.handle_can_rx_polling_schedule(0)
-        # micropython.schedule(self._dequeue_message_copy, 0)
-        # self.rxDeviceCAN.main_process()
         await self._dequeue_message_copy(0) # Ensure message is dequeued before processing
-
         await self.discover_devices_async() # Changed to async version
-        # if self.rx_process_active:
-        #     micropython.schedule(self.process_received_messages, 0)
-        # await self.process_received_messages_async() # This was redundant
         await self.process_received_messages(0) # Added await
-        # uasyncio.create_task(self.process_received_messages_async())
         if self.afe_manage_active:
             for afe in self.afe_devices:
                 await afe.manage_state() # Added await
                 if self.use_automatic_restart:
                     if not afe.is_configuration_started:
                         await self.default_full(afe_id=afe.device_id)
-                        # p.print("AFE {} was restarted".format(
-                        #     afe.device_id))
                     if afe.is_configured and afe.periodic_measurement_download_is_enabled is False:
                         afe.periodic_measurement_download_is_enabled = True
                         await afe.start_periodic_measurement_by_config() # Added await
-                        # report_every_ms = afe.configuration.get()
-
-                        # self.default_periodic_measurement_download_all(
-                        #     afe_id=afe.device_id, ms=afe.configuration.get)
 
         if self.curent_function is not None:  # check if function is running
             if is_timeout(self.curent_function_timestamp_ms, self.curent_function_timeout_ms):
@@ -838,21 +748,9 @@ class HUBDevice:
 
     async def main_loop(self):
         while self.run:
-            # try:
-            # print("  H")
-            # print_lock.acquire()
             await self.main_process()
-            # p.process_queue()
-            # self.logger.machine()
             wdt.feed()
-            # time.sleep_us(10)
-            # except Exception as e:
-            #     p.print("HUB main_loop: {}".format(e))
             await uasyncio.sleep_ms(self.main_loop_yield_ms)
-            # print_lock.release()
-            # time.sleep_ms(1)
-            # time.sleep(0.01)
-            # time.sleep_us(1)
 
 
 async def initialize_can_hub(can_bus: pyb.CAN, logger, use_rxcallback=True, **kwargs): # Changed to async def

@@ -1,18 +1,11 @@
 import pyb
 import micropython
 import uasyncio
-# try:
+
 from my_utilities import p
 from my_utilities import millis
 from my_utilities import is_timeout
 from my_utilities import is_delay
-# except ImportError:
-#     # from micropython_sim import p
-#     # from micropython_sim import millis
-#     # from micropython_sim import is_timeout
-#     # from micropython_sim import is_delay
-#     pass
-
 
 class RxDeviceCAN:
     def __init__(self, can_bus: pyb.CAN, use_rxcallback=True):
@@ -72,11 +65,8 @@ class RxDeviceCAN:
 
 
     async def get(self):
-        # while self.irq_flag:
-        #     await uasyncio.sleep_ms(0) # Yield
         if self.rx_message_buffer_head == self.rx_message_buffer_tail:
             return None
-        # irq_state = pyb.disable_irq()
         tmp = [self.rx_message_buffer[self.rx_message_buffer_tail][0],
             self.rx_message_buffer[self.rx_message_buffer_tail][1],
             self.rx_message_buffer[self.rx_message_buffer_tail][2],
@@ -84,15 +74,12 @@ class RxDeviceCAN:
         self.rx_message_buffer_tail += 1
         if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
             self.rx_message_buffer_tail = 0
-        # pyb.enable_irq(irq_state)
         return tmp
     
 
     def handle_can_rx(self,_=None):
         try:
-            # cnt = 0
             while self.can_bus.any(0):
-                # cnt += 1
                 self.can_bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
                 self.rx_message_buffer_head += 1
                 if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
@@ -101,8 +88,6 @@ class RxDeviceCAN:
                     self.rx_message_buffer_tail += 1
                     if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
                         self.rx_message_buffer_tail = 0
-            # if cnt > 1:
-            #     print("handled {} CAN RX".format(cnt))
         except Exception as e:
             p.print("handle_can_rx: {}",e)
             pass
@@ -115,20 +100,6 @@ class RxDeviceCAN:
             # This can happen if the schedule queue is full.
             # Depending on the application, you might want to log this or take other action.
             pass # Silently ignore if queue is full, as the task will be picked up by polling or next IRQ.
-        # self.irq_flag = True
-        # # self.handle_can_rx()
-        # # while self.can_bus.any(0):
-        # self.can_bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
-        # self.rx_message_buffer_head += 1
-        # if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
-        #     self.rx_message_buffer_head = 0
-        # if self.rx_message_buffer_head == self.rx_message_buffer_tail:
-        #     self.rx_message_buffer_tail += 1
-        #     if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
-        #         self.rx_message_buffer_tail = 0
-        # self.irq_flag = False
-        # # except:
-        # #     pass  # Too many scheduled tasks or already pending
 
     async def _poll_and_schedule_rx(self):
         """Helper async method to poll for CAN messages and schedule handler."""
@@ -144,7 +115,6 @@ class RxDeviceCAN:
                 pass # pragma: no cover
             except Exception as e_sched:
                 p.print("RxDeviceCAN._poll_and_schedule_rx: Error scheduling handle_can_rx: {}".format(e_sched)) # pragma: no cover
-            # No await uasyncio.sleep_ms(1) here, main_loop handles the polling interval.
 
     async def main_loop(self, reason=None):
         while self.running:

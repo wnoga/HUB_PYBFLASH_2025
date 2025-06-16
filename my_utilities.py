@@ -396,42 +396,6 @@ class SensorChannel:
         self.config = {}
         self.name = e_ADC_CHANNEL[channel_id]
         self.last_recieved_data = {"last":{},"average":{}}
-        # # Use .get() to avoid KeyError if a key is missing
-        # self.time_interval_ms = kwargs.get("time_interval_ms", 0)
-        # self.alpha = kwargs.get("alpha", 0)
-        # self.multiplicator = kwargs.get("multiplicator", 1)
-        # self.a = kwargs.get("a", 0)
-        # self.b = kwargs.get("b", 0)
-        # averagingmodes = AFECommandAverage()
-        # self.averaging_mode = kwargs.get("averaging_mode", averagingmodes.NONE)
-        # self.latest_reading = SensorReading()
-
-        # # Measurement download settings
-        # self.periodic_interval_ms = kwargs.get("periodic_interval_ms", 0)
-        # self.periodic_sending_is_enabled = False
-
-# class EmptyLogger:
-#     def __init__(self,verbosity_level: int = VerbosityLevel["INFO"],**kwargs):
-#         self.verbosity_level = verbosity_level
-#         p.print("EMPTY LOGGER")
-#     def _should_log(self, level: int):
-#         return self.verbosity_level >= level
-#     def new_file(self):
-#         pass
-#     def log(self, level: int, message):
-#         if self._should_log(level):
-#             p.print("{} @ {}: {}".format(millis(), level, message))
-#     def sync(self):
-#         pass
-#     def close(self):
-#         pass
-#     def read_logs(self):
-#         pass
-#     def clear_logs(self):
-#         pass
-#     def print_lines(self):
-#         pass
-
 
 class JSONLogger:
     def __init__(self, filename="log.json", parent_dir="/sd/logs", verbosity_level=VerbosityLevel["INFO"], keep_file_open=True):
@@ -465,8 +429,6 @@ class JSONLogger:
         
         self.divide_log_by_chunk_size = 0
         
-        # self.json_buffer = bytearray(2**13)
-
         if self.keep_file_open:
             self.file = None # File will be opened by new_file or on first log
         else:
@@ -656,23 +618,12 @@ class JSONLogger:
         
         if level >= self.print_verbosity_level:
             p.print("LOG:", str(message_chunk)[:60], "...")
-            # Consider what to print here; message_chunk is just a part.
-            # For verbose console logging, one might want the full original message,
-            # but that's not available directly in _log.
-            # await p.print(f"LOG_CHUNK (L{level}): {message_chunk[:60]}...")
             pass
         return 1  # One item saved
     
     async def _process_log_queue(self):
-        # while self.lock_process_log_queue:
-        #     await uasyncio.sleep_ms(10)
-        # self.lock_process_log_queue = True
         if self.log_queue:
-            # lock() # Acquire lock for safe file writing
             level, message_chunk_data, chunk_id, chunk_id_max = self.log_queue.pop(0)
-            # unlock()
-            # print("Processing")
-            # self.lock_process_log_queue = False
             await self._log(level, message_chunk_data, chunk_id, chunk_id_max)
         await uasyncio.sleep_ms(0) # Yield
         return len(self.log_queue)
@@ -737,22 +688,7 @@ class JSONLogger:
                 self.file = None
         else: # not keep_file_open
             self.file = None # Should already be None
-
-    # async def clear_logs(self):
-    #     # This method is highly blocking and not easily made async without async os calls.
-    #     # For now, it remains largely synchronous. Consider if it's called from async context.
-    #     p.print("clear_logs is a blocking operation and not fully async.")
-    #     file_was_managed_open = self.file is not None and self.keep_file_open
         
-    #     if file_was_managed_open:
-    #         try:
-    #             self.file.close()
-    #             await uasyncio.sleep_ms(0
-    #                 self.log_queue.append((level, message[i:i_plus], chunk_id, chunk_id_max))
-    #             except Exception as e:
-    #                 # print("ERROR in JSONLogger.log:",e,":",len(self.log_queue))
-            
-                
     async def sync(self):
         if self.file is not None:
             if self.keep_file_open: # Only flush if we are keeping it open
@@ -807,18 +743,6 @@ class JSONLogger:
         self.file_rows = 0
         self.cursor_position = 0
         self.cursor_position_last = 0
-        # For keep_file_open=True, new_file or _log will handle re-creating/re-opening.
-        # For keep_file_open=False, _log will create on next write.
-
-    # def print_lines(self, path=None):
-    #     try:
-    #         if path is None:
-    #             self.sync()
-    #         with open(path or self.filename, "r") as file:
-    #             for line in file:
-    #                 await p.print(line.strip())  # Print each line
-    #     except OSError:
-    #         await p.print("Error: Cannot read JSON log file.")
 
     async def _print_last_line(self, path=None):
         try:
@@ -995,10 +919,6 @@ class JSONLogger:
                 # Consider requesting a new file or logging an error and returning
                 # await self.request_new_file() # This might be too aggressive, could loop if disk is full
 
-        # if self.file: # Only process queue if file is open
-        #     while await self._process_log_queue(): # Process one item from buffer
-        #         await uasyncio.sleep_ms(0) # Yield after each item processed
-        
         if self.keep_file_open:
             await self.sync_process() # Sync file to card periodically
         else:
@@ -1103,21 +1023,3 @@ def read_callibration_csv(file):
             callib_data_mean[g]['M/S'] = g
 
     return callib_data, callib_data_mean
-
-
-# if __name__ == "__main__":
-#     import sys
-#     callibration_data_file_csv = sys.argv[1]
-#     TempLoop_file_csv = sys.argv[2]
-
-#     callib_data, callib_data_mean = read_callibration_csv(
-#         callibration_data_file_csv)
-#     TempLoop_data, TempLoop_data_mean = read_callibration_csv(
-#         TempLoop_file_csv)
-
-#     await p.print("Callibration data:\n", json.dumps(callib_data, indent=4)) # await p.print
-#     await p.print("TempLoop data:\n", json.dumps(TempLoop_data, indent=4)) # await p.print
-
-#     await p.print("Callibration data mean:\n", # await p.print
-#             json.dumps(callib_data_mean, indent=4))
-#     await p.print("TempLoop data mean:\n", json.dumps(TempLoop_data_mean, indent=4)) # await p.print
