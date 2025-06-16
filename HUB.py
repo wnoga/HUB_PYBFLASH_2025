@@ -364,6 +364,14 @@ class HUBDevice:
             await afe.enqueue_gpio_set(afe.AFEGPIO_EN_HV0 if g == # Added await
                                  'M' else afe.AFEGPIO_EN_HV1, 1, **commandKwargs)
 
+    async def afe_set_sipm_voltage_si(self, afe_id, afe_subdevice: AFECommandSubdevice, voltage, **kwargs):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        commandKwargs = {"timeout_ms": 10220,
+                         "preserve": True, "timeout_start_on_send_ms": 2000}
+        await afe.enqueue_float_for_channel(AFECommand.setDACValueSi_bySubdeviceMask, afe_subdevice, voltage, **commandKwargs)
+
     async def default_start_temperature_loop(self, afe_id=35): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
@@ -381,6 +389,27 @@ class HUBDevice:
             await afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus, [ # Added await
                                 self._get_subdevice_ch_id(g), 1], **commandKwargs)
 
+    async def start_afe_temperature_loop(self, afe_id, afe_subdevice: AFECommandSubdevice, preserve=False, callback=None):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        commandKwargs = {"timeout_ms": 10220, preserve: preserve, "timeout_start_on_send_ms": 2000}
+        if callback:
+            commandKwargs.update("callback", callback)
+        await afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus,
+                                  [afe_subdevice, 1],
+                                  **commandKwargs)
+        
+    async def stop_afe_temperature_loop(self, afe_id, afe_subdevice: AFECommandSubdevice, preserve=False, callback=None):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        commandKwargs = {"timeout_ms": 10220, preserve: preserve, "timeout_start_on_send_ms": 2000}
+        if callback:
+            commandKwargs.update("callback", callback)
+        await afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus,
+                                  [afe_subdevice, 0],
+                                  **commandKwargs)
 
     async def default_periodic_measurement_download_all(self, afe_id=35, ms=10000): # Changed to async def
         afe = self.get_afe_by_id(afe_id)
@@ -492,7 +521,19 @@ class HUBDevice:
         await self.default_accept(afe_id) # Added await
         await self.defualt_getSyncTimestamp(afe_id) # Added await
 
-
+    async def default_configure_afe(self, afe_id=35):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return -1 # return Error
+        await self.default_setCanMsgBurstDelay_ms(afe_id, 0)
+        await afe.begin_configuration(timeout_ms=20000)
+        await self.default_get_UID(afe_id)
+        await self.default_procedure(afe_id)
+        await self.default_setCanMsgBurstDelay_ms(afe_id, 50)
+        await self.default_accept(afe_id)
+        await self.defualt_getSyncTimestamp(afe_id)
+        return None
+        
     async def reset(self, afe_id=35): # Changed to async def
         for afe in self.afe_devices:
             if afe.device_id == afe_id:
@@ -734,7 +775,7 @@ class HUBDevice:
         if self.afe_manage_active:
             for afe in self.afe_devices:
                 await afe.manage_state() # Added await
-                if self.use_automatic_restart:
+                if self.use_automatic_restart and afe.configuration.get("automatic_restart"):
                     if not afe.is_configuration_started:
                         await self.default_full(afe_id=afe.device_id)
                     if afe.is_configured and afe.periodic_measurement_download_is_enabled is False:

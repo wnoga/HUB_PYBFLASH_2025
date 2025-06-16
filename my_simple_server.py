@@ -13,6 +13,7 @@ from my_utilities import wdt
 from my_utilities import millis, is_timeout, is_delay
 from my_utilities import p, VerbosityLevel
 from my_utilities import rtc, rtc_synced, rtc_datetime_pretty, rtc_unix_timestamp
+from my_utilities import AFECommand, AFECommandSubdevice
 
 import uasyncio as asyncio
 
@@ -112,65 +113,137 @@ class AsyncWebServer:
         else:
             await p.print("hub_cb: No event found for AFE {}. Result stored but not awaited.".format(device_id)) # Added await
 
-    async def handle_procedure(self, request_line):
-        request = None
+    async def _execute_afe_procedure(self, request_json, hub_method_name, timeout_duration, required_params_map=None):
+        """
+        Helper to execute AFE-specific procedures that require an afe_id 
+        and wait for a callback via an event.
+        """
+        afe_id = request_json.get("afe_id", None)
+        if afe_id is None:
+            return ujson.dumps({"status": "ERROR", "info": "afe_id missing"}).encode()
+
+        hub_call_kwargs = {}  # For named arguments to the hub method, excluding afe_id and callback
+        
+        if required_params_map:
+            for param_name, converter_func in required_params_map.items():
+                param_value_str = request_json.get(param_name, None)
+                if param_value_str is None:
+                    return ujson.dumps({"status": "ERROR", "info": f"Parameter '{param_name}' missing"}).encode()
+                try:
+                    hub_call_kwargs[param_name] = converter_func(param_value_str)
+                except ValueError:
+                    return ujson.dumps({"status": "ERROR", "info": f"Invalid value for parameter '{param_name}'"}).encode()
+        
+        # Use afe_id as the key for managing events and results
+        if afe_id not in self.procedure_events and len(self.procedure_events) >= self.max_procedures_keep_len:
+            await p.print(f"AsyncWebServer: Max concurrent procedures reached. Rejecting new '{hub_method_name}' for AFE {afe_id}.")
+            return ujson.dumps({"status": "ERROR", "info": "Server busy, max concurrent procedures reached"}).encode()
+
+        event = uasyncio.Event()
+        self.procedure_events[afe_id] = event
+        self.procedure_results.pop(afe_id, None)  # Clear previous result
+
         try:
-            request = ujson.loads(request_line.decode())
-        except:
-            return None
-        procedure = request.get("procedure", None)
+            hub_method = getattr(self.hub, hub_method_name)
+            await hub_method(afe_id, **hub_call_kwargs, callback=self.hub_cb)
+        except AttributeError:
+            await p.print(f"Error: HUB method {hub_method_name} not found.")
+            self.procedure_events.pop(afe_id, None) 
+            return ujson.dumps({"status": "ERROR", "info": f"Internal server error: procedure {hub_method_name} not found"}).encode()
+        except Exception as e:
+            await p.print(f"Error calling HUB method {hub_method_name} for AFE {afe_id} with kwargs {hub_call_kwargs}: {e}")
+            self.procedure_events.pop(afe_id, None)
+            return ujson.dumps({"status": "ERROR", "info": "Internal server error during HUB call"}).encode()
+
+        try:
+            await uasyncio.wait_for(event.wait(), timeout=timeout_duration)
+            result_data = self.procedure_results.pop(afe_id, None)
+            if self.procedure_events.get(afe_id) == event:
+                self.procedure_events.pop(afe_id, None)
+            
+            if result_data is None:
+                return ujson.dumps({"status": "OK", "info": f"Procedure '{hub_method_name}' completed."}).encode()
+            return result_data # This is already encoded by hub_cb
+        except uasyncio.TimeoutError:
+            await p.print(f"Timeout waiting for '{hub_method_name}' result for AFE {afe_id}")
+            self.procedure_events.pop(afe_id, None)
+            self.procedure_results.pop(afe_id, None)
+            return ujson.dumps({"status": "ERROR", "info": f"Timeout waiting for AFE response for '{hub_method_name}'"}).encode()
+        except Exception as e:
+            await p.print(f"Error waiting for event for '{hub_method_name}' for AFE {afe_id}: {e}")
+            self.procedure_events.pop(afe_id, None)
+            self.procedure_results.pop(afe_id, None)
+            return ujson.dumps({"status": "ERROR", "info": f"Server error during '{hub_method_name}' procedure execution"}).encode()
+
+    async def handle_procedure(self, request_line):
+        request_json = None
+        try:
+            decoded_line = request_line.decode()
+            request_json = ujson.loads(decoded_line)
+        except (ValueError, UnicodeError) as e:
+            await p.print(f"Failed to decode or parse request line as JSON: {e} - Line: {request_line}")
+            return ujson.dumps({"status": "ERROR", "info": "Invalid request format"}).encode()
+        
+        if not request_json:
+             return ujson.dumps({"status": "ERROR", "info": "Empty request"}).encode()
+
+        procedure = request_json.get("procedure", None)
         if not procedure:
-            return None
-        elif procedure == "get_all_afe_configuration":
+            return ujson.dumps({"status": "ERROR", "info": "Procedure not specified"}).encode()
+
+        # Procedures not using the common helper
+        if procedure == "get_all_afe_configuration":
             my_dict = {}
             for afe_device in self.hub.afe_devices: # Renamed afe to afe_device to avoid conflict
                 my_dict[afe_device.device_id] = afe_device.configuration
             return ujson.dumps(my_dict).encode()
-        elif procedure == "default_get_measurement_last":
-            afe_id = request.get("afe_id",None)
-            if afe_id is None:
-                return ujson.dumps({"status": "ERROR", "info": "afe_id missing"}).encode()
-            
-            # Limit the number of concurrent procedures
-            if afe_id not in self.procedure_events and len(self.procedure_events) >= self.max_procedures_keep_len:
-                await p.print("AsyncWebServer: Max concurrent procedures reached for procedure_events. Rejecting new procedure for AFE {}.".format(afe_id)) # Added await
-                return ujson.dumps({"status": "ERROR", "info": "Server busy, max concurrent procedures reached"}).encode()
-
-            event = uasyncio.Event()
-            self.procedure_events[afe_id] = event
-            self.procedure_results.pop(afe_id, None) # Clear previous result
-
-            await self.hub.default_get_measurement_last(afe_id,callback=self.hub_cb) # Added await
-            
-            try:
-                await uasyncio.wait_for(event.wait(), timeout=20.0) # 20 second timeout
-                result_data = self.procedure_results.pop(afe_id, None)
-                # Event is removed from dict by hub_cb or here on timeout/error
-                if self.procedure_events.get(afe_id) == event: # Check if event is still ours
-                    self.procedure_events.pop(afe_id, None)
-                return result_data
-            except uasyncio.TimeoutError:
-                await p.print("Timeout waiting for procedure result for AFE {}".format(afe_id)) # Added await
-                self.procedure_events.pop(afe_id, None) 
-                self.procedure_results.pop(afe_id, None)
-                return ujson.dumps({"status": "ERROR", "info": "Timeout waiting for AFE response"}).encode()
-            except Exception as e:
-                await p.print("Error waiting for event for AFE {}: {}".format(afe_id, e)) # Added await
-                self.procedure_events.pop(afe_id, None)
-                self.procedure_results.pop(afe_id, None)
-                return ujson.dumps({"status": "ERROR", "info": "Server error during procedure"}).encode()
         elif procedure == "hub_close_all":
             await self.hub.close_all()
             return ujson.dumps({"status": "OK"}).encode()
         
         elif procedure == "default_procedure":
-            afe_id = request.get("afe_id",None)
+            afe_id = request_json.get("afe_id",None)
             if not afe_id:
-                return ujson.dumps({"status": "ERROR"}).encode()
+                return ujson.dumps({"status": "ERROR", "info": "afe_id missing for default_procedure"}).encode()
             await self.hub.default_procedure(afe_id)
-            return ujson.dumps({"status": "OK"}).encode()
+            return ujson.dumps({"status": "OK", "info": "default_procedure initiated"}).encode()
         
-        return None
+        elif procedure == "hub_powerOn":
+            await self.hub.powerOn()
+            return ujson.dumps({"status": "OK"}).encode()
+
+        elif procedure == "hub_powerOff":
+            await self.hub.powerOff()
+            return ujson.dumps({"status": "OK"}).encode()
+
+        # Procedures using the _execute_afe_procedure helper
+        elif procedure == "default_get_measurement_last":
+            return await self._execute_afe_procedure(request_json, "default_get_measurement_last", 20.0)
+
+        elif procedure == "afe_configure":
+            # Assumes HUB.py's default_configure_afe is adapted or a similar method 
+            # exists that uses the callback for completion signaling.
+            return await self._execute_afe_procedure(request_json, "default_configure_afe", 60.0)
+
+        elif procedure == "afe_reset":
+            # Assumes HUB.py's `reset` method is adapted to accept and use a callback.
+            return await self._execute_afe_procedure(request_json, "reset", 10.0)
+
+        elif procedure == "afe_temperature_loop_start":
+            return await self._execute_afe_procedure(request_json, "start_afe_temperature_loop", 10.0,
+                                                     required_params_map={"afe_subdevice": int})
+
+        elif procedure == "afe_temperature_loop_stop":
+            return await self._execute_afe_procedure(request_json, "stop_afe_temperature_loop", 10.0,
+                                                     required_params_map={"afe_subdevice": int})
+
+        elif procedure == "afe_set_dac":            
+            return await self._execute_afe_procedure(request_json, "default_set_dac", 10.0,
+                                                     required_params_map={"dac_master": int, "dac_slave": int})
+        
+        else:
+            await p.print(f"Unknown procedure: {procedure}")
+            return ujson.dumps({"status": "ERROR", "info": f"Unknown procedure: {procedure}"}).encode()
 
     async def send_control_web_page(self, writer):
         """
