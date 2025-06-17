@@ -104,7 +104,7 @@ class wdt_x:
 
 
 try:
-    if False:
+    if True:
         wdt = wdt_x()
     else:
         from machine import WDT
@@ -198,7 +198,6 @@ class PrintButLouder:
 
 p = PrintButLouder()
 # P = PrintButLouder()
-
 
 class AFECommand:
     getSerialNumber = 0x0

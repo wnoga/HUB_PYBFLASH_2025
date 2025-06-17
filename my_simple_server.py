@@ -128,33 +128,33 @@ class AsyncWebServer:
             for param_name, converter_func in required_params_map.items():
                 param_value_str = request_json.get(param_name, None)
                 if param_value_str is None:
-                    return ujson.dumps({"status": "ERROR", "info": f"Parameter '{param_name}' missing"}).encode()
+                    return ujson.dumps({"status": "ERROR", "info": "Parameter '{}' missing".format(param_name)}).encode()
                 try:
                     hub_call_kwargs[param_name] = converter_func(param_value_str)
                 except ValueError:
-                    return ujson.dumps({"status": "ERROR", "info": f"Invalid value for parameter '{param_name}'"}).encode()
-        
+                    return ujson.dumps({"status": "ERROR", "info": "Invalid value for parameter '{}'".format(param_name)}).encode()
+        if not "callback" in hub_call_kwargs:
+            hub_call_kwargs["callback"] = self.hub_cb
+
         # Use afe_id as the key for managing events and results
         if afe_id not in self.procedure_events and len(self.procedure_events) >= self.max_procedures_keep_len:
-            await p.print(f"AsyncWebServer: Max concurrent procedures reached. Rejecting new '{hub_method_name}' for AFE {afe_id}.")
+            await p.print("AsyncWebServer: Max concurrent procedures reached. Rejecting new '{}' for AFE {}.".format(hub_method_name, afe_id))
             return ujson.dumps({"status": "ERROR", "info": "Server busy, max concurrent procedures reached"}).encode()
 
         event = uasyncio.Event()
         self.procedure_events[afe_id] = event
         self.procedure_results.pop(afe_id, None)  # Clear previous result
-
         try:
             hub_method = getattr(self.hub, hub_method_name)
-            await hub_method(afe_id, **hub_call_kwargs, callback=self.hub_cb)
+            await hub_method(afe_id=afe_id, **hub_call_kwargs)
         except AttributeError:
-            await p.print(f"Error: HUB method {hub_method_name} not found.")
+            await p.print("Error: HUB method {} not found.".format(hub_method_name))
             self.procedure_events.pop(afe_id, None) 
-            return ujson.dumps({"status": "ERROR", "info": f"Internal server error: procedure {hub_method_name} not found"}).encode()
+            return ujson.dumps({"status": "ERROR", "info": "Internal server error: procedure {} not found".format(hub_method_name)}).encode()
         except Exception as e:
-            await p.print(f"Error calling HUB method {hub_method_name} for AFE {afe_id} with kwargs {hub_call_kwargs}: {e}")
+            await p.print("Error calling HUB method {} for AFE {} with kwargs {}: {}".format(hub_method_name, afe_id, hub_call_kwargs, e))
             self.procedure_events.pop(afe_id, None)
             return ujson.dumps({"status": "ERROR", "info": "Internal server error during HUB call"}).encode()
-
         try:
             await uasyncio.wait_for(event.wait(), timeout=timeout_duration)
             result_data = self.procedure_results.pop(afe_id, None)
@@ -162,26 +162,30 @@ class AsyncWebServer:
                 self.procedure_events.pop(afe_id, None)
             
             if result_data is None:
-                return ujson.dumps({"status": "OK", "info": f"Procedure '{hub_method_name}' completed."}).encode()
+                return ujson.dumps({"status": "OK", "info": "Procedure '{}' completed.".format(hub_method_name)}).encode()
             return result_data # This is already encoded by hub_cb
         except uasyncio.TimeoutError:
-            await p.print(f"Timeout waiting for '{hub_method_name}' result for AFE {afe_id}")
+            await p.print("Timeout waiting for '{}' result for AFE {}.".format(hub_method_name, afe_id))
             self.procedure_events.pop(afe_id, None)
             self.procedure_results.pop(afe_id, None)
-            return ujson.dumps({"status": "ERROR", "info": f"Timeout waiting for AFE response for '{hub_method_name}'"}).encode()
+            return ujson.dumps({"status": "ERROR", "info": "Timeout waiting for AFE response for '{}'".format(hub_method_name)}).encode()
         except Exception as e:
-            await p.print(f"Error waiting for event for '{hub_method_name}' for AFE {afe_id}: {e}")
+            await p.print("Error waiting for event for '{}' for AFE {}: {}".format(hub_method_name, afe_id, e))
             self.procedure_events.pop(afe_id, None)
             self.procedure_results.pop(afe_id, None)
-            return ujson.dumps({"status": "ERROR", "info": f"Server error during '{hub_method_name}' procedure execution"}).encode()
+            return ujson.dumps({"status": "ERROR", "info": "Server error during '{}' procedure execution".format(hub_method_name)}).encode()
 
     async def handle_procedure(self, request_line):
         request_json = None
+        if request_line[:3] == b'GET':
+            return None # It's HTTP GET
+        if request_line[:4] == b'POST':
+            return None # It's HTTP POST
         try:
             decoded_line = request_line.decode()
             request_json = ujson.loads(decoded_line)
         except (ValueError, UnicodeError) as e:
-            await p.print(f"Failed to decode or parse request line as JSON: {e} - Line: {request_line}")
+            await p.print("Failed to decode or parse request line as JSON: {} - Line: {}".format(e, request_line))
             return ujson.dumps({"status": "ERROR", "info": "Invalid request format"}).encode()
         
         if not request_json:
@@ -203,8 +207,7 @@ class AsyncWebServer:
         
         elif procedure == "default_procedure":
             afe_id = request_json.get("afe_id",None)
-            if not afe_id:
-                return ujson.dumps({"status": "ERROR", "info": "afe_id missing for default_procedure"}).encode()
+            if not afe_id: return ujson.dumps({"status": "ERROR", "info": "afe_id missing for default_procedure"}).encode()
             await self.hub.default_procedure(afe_id)
             return ujson.dumps({"status": "OK", "info": "default_procedure initiated"}).encode()
         
@@ -240,10 +243,31 @@ class AsyncWebServer:
         elif procedure == "afe_set_dac":            
             return await self._execute_afe_procedure(request_json, "default_set_dac", 10.0,
                                                      required_params_map={"dac_master": int, "dac_slave": int})
-        
+        elif procedure == "start_periodic_measurement_by_config":
+            return await self._execute_afe_procedure(request_json, "start_periodic_measurement_by_config", 10.0)
+            
+        elif procedure == "stop_periodic_measurement_download":
+            return await self._execute_afe_procedure(request_json, "stop_afe_periodic_measurement_download", 10.0)
+
+        elif procedure == "afe_set_offset":
+            return await self._execute_afe_procedure(request_json, "set_afe_offset", 10.0,
+                                                     required_params_map={"offset_master": int, "offset_slave": int})
+
+        elif procedure == "afe_set_averaging_mode":
+            return await self._execute_afe_procedure(request_json, "set_afe_averaging_mode", 10.0,
+                                                     required_params_map={"channel_mask": int, "mode": int})
+
+        elif procedure == "afe_set_averaging_alpha":
+            return await self._execute_afe_procedure(request_json, "set_afe_averaging_alpha", 10.0,
+                                                     required_params_map={"channel_mask": int, "alpha": float})
+
+        elif procedure == "afe_set_channel_dt_ms":
+            return await self._execute_afe_procedure(request_json, "set_afe_channel_dt_ms", 10.0,
+                                                     required_params_map={"channel_mask": int, "dt_ms": int})
+
         else:
-            await p.print(f"Unknown procedure: {procedure}")
-            return ujson.dumps({"status": "ERROR", "info": f"Unknown procedure: {procedure}"}).encode()
+            await p.print("Unknown procedure: {}".format(procedure))
+            return ujson.dumps({"status": "ERROR", "info": "Unknown procedure: {}".format(procedure)}).encode()
 
     async def send_control_web_page(self, writer):
         """
@@ -278,7 +302,7 @@ class AsyncWebServer:
                 <button onclick="updatePage()">Refresh Data</button>
             """.format(rtc_datetime_pretty()))
         
-        await writer.awrite(b"<div><h4>Log Files in /sd/logs/:</h4><ul>")
+        await writer.awrite(b"<div><h4>Log Files in /sd/logs/:</h4><ul style=\"column-width: 25ex;\">")
         try:
             log_files = uos.listdir("/sd/logs")
             for log_file in log_files:
@@ -342,7 +366,7 @@ class AsyncWebServer:
                 # writer.close() # Ensure writer is closed in finally block
                 # await writer.wait_closed()
                 return
-
+            
             response = await self.handle_procedure(request_line)
             if response:
                 await writer.awrite(response)
