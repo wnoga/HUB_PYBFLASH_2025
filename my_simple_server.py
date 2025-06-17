@@ -447,6 +447,7 @@ class AsyncWebServer:
     async def start(self):
         while True:
             try:
+                wdt.feed()
                 if not self.lan_connected:
                     await p.print("Attempting to reconnect Ethernet...") # Added await
                     try:
