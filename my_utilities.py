@@ -104,7 +104,7 @@ class wdt_x:
 
 
 try:
-    if True:
+    if False:
         wdt = wdt_x()
     else:
         from machine import WDT
@@ -866,9 +866,6 @@ class JSONLogger:
             except Exception as e:
                 await p.print("Error reopening renamed file {} (keep_open=True): {}".format(self.filename, e)) # await p.print
                 self.file = None
-        self.file_rows = 0
-        self.cursor_position = 0
-        self.cursor_position_last = 0
 
     def request_new_file(self):
         self._requestNewFile = True
