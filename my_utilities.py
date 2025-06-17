@@ -464,9 +464,8 @@ class JSONLogger:
         filename_datetime = self.filename_org
         if self.rtc_synced:
             year, month, day, hour, minute, second = time.gmtime()[0:6]
-            filename_datetime = "log_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}.json".format(
-                year, month, day, hour, minute, second
-            )
+            filename_datetime = "log_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}.json".format( # pragma: no cover
+                year, month, day, hour, minute, second)
         await uasyncio.sleep_ms(0) # Yield
         return self._get_unique_filename(
             "{}/{}".format(self.parent_dir, filename_datetime))
@@ -479,14 +478,14 @@ class JSONLogger:
                     self.file.close()
                     await uasyncio.sleep_ms(0)
             except Exception as e:
-                p.print("Error closing old file in new_file (keep_open=True): {}".format(e))
+                await p.print("Error closing old file in new_file (keep_open=True): {}".format(e))
             
             self.filename = await self.get_new_file_path() # Ensures directory exists before open
             try:
                 # Open in write mode, truncating for a new file
                 self.file = open(self.filename, "w") 
                 await uasyncio.sleep_ms(0)
-            except Exception as e:
+            except Exception as e: # pragma: no cover
                 p.print("ERROR new_file (keep_open=True): {}".format(e))
                 self.file = None # Ensure file is None on error
         else: # not keep_file_open
@@ -495,7 +494,7 @@ class JSONLogger:
                     self.file.close()
                     await uasyncio.sleep_ms(0)
                 except Exception as e:
-                    p.print("Error closing file in new_file (keep_open=False): {}".format(e))
+                    await p.print("Error closing file in new_file (keep_open=False): {}".format(e))
                 self.file = None
             # Sets the filename, ensures dir. File is not opened here for this mode.
             self.filename = await self.get_new_file_path() 
@@ -590,7 +589,6 @@ class JSONLogger:
                 current_file_handle.write(toLog)
             await uasyncio.sleep_ms(0) # Yield after write
             self.file_rows += 1
-            print("New file row",self.file_rows)
             self.cursor_position = self.file.tell()
 
             self.cursor_position = current_file_handle.tell()
@@ -649,7 +647,6 @@ class JSONLogger:
 
                     # Wait if the log queue is full.
                     while len(self.log_queue) >= self.log_queue_max_len:
-                        # p.print(f"Log queue full ({len(self.log_queue)}), waiting...") # Optional: for debugging
                         await uasyncio.sleep_ms(10)  # Yield to other tasks/threads
 
                     # Directly append to the queue
@@ -750,26 +747,31 @@ class JSONLogger:
             if not file_to_read:
                 await p.print("Error in _print_last_line: No file specified or set.") # await p.print
                 return
-
-            if path is None and self.keep_file_open:
-                await self.sync()
             
-            # For external files or when not using keep_file_open, rely on _print_last_lines
-            if path or not self.keep_file_open:
-                await self._print_last_lines(N=1, path=file_to_read)
-                return
+            # If the file to read is the logger's managed file (self.filename)
+            # AND the logger was keeping it open (self.keep_file_open is True)
+            # AND the file handle (self.file) actually exists,
+            # then we need to close it before _print_last_lines attempts to open it read-only.
+            if (file_to_read == self.filename) and self.keep_file_open and (self.file is not None):
+                await self.sync() # Sync any pending writes to self.file
+                try:
+                    self.file.close()
+                    await uasyncio.sleep_ms(0) # Yield
+                except Exception as e_close:
+                    await p.print("Error closing self.file in _print_last_line: {}".format(e_close))
+                # Mark self.file as None. The logger's main logic will reopen it
+                # in append mode if needed later (if keep_file_open is True).
+                self.file = None
 
-            # This part is for internal file with cursor position (keep_file_open=True)
-            with open(file_to_read, "r") as file:
-                await uasyncio.sleep_ms(0) # Yield after open
-                file.seek(self.cursor_position_last)
-                for line in file:
-                    await p.print(line.strip()) # await p.print
-                    await uasyncio.sleep_ms(0) # Yield after processing line
-        except OSError as e:
-            await p.print("Error reading log file in _print_last_line ({}): {}".format(file_to_read if 'file_to_read' in locals() else 'N/A', e)) # await p.print
+            # Delegate to _print_last_lines to handle opening and reading the last line.
+            # _print_last_lines will open file_to_read in 'r' mode.
+            await self._print_last_lines(N=1, path=file_to_read)
+
         except Exception as e_gen:
-            await p.print("Generic error in _print_last_line: {}".format(e_gen)) # await p.print
+            # This catches errors from the logic before calling _print_last_lines.
+            # Errors within _print_last_lines (like file not found if path is bad)
+            # are handled by its own try-except.
+            await p.print("Error in _print_last_line setup for '{}': {}".format(file_to_read if 'file_to_read' in locals() else 'N/A', e_gen))
 
     async def _print_last_lines(self, N=10, path=None):
         try:
@@ -778,20 +780,52 @@ class JSONLogger:
                 await p.print("Error in _print_last_lines: No file specified or set.") # await p.print
                 return
 
-            if path is None and self.keep_file_open: # sync only if we were keeping file open
-                await self.sync()
+            # Condition for using the optimized seek method for the last line
+            use_seek_for_last_line = (
+                (path is None or path == self.filename) and  # It's the logger's own file
+                N == 1 and                                   # Specifically for N=1
+                self.keep_file_open and                      # Logger was configured to keep file open
+                hasattr(self, 'cursor_position_last') and    # Ensure attribute exists
+                self.cursor_position_last is not None        # We have a valid last cursor position
+            )
 
-            with open(file_to_read, "r") as file: # BLOCKING
+            if use_seek_for_last_line:
+                # _print_last_line (if it was the caller) would have closed self.file if it was managed.
+                # This block opens a new read-only handle.
+                with open(file_to_read, "r") as f_read:
+                    await uasyncio.sleep_ms(0) # Yield after open
+                    try:
+                        f_read.seek(self.cursor_position_last)
+                        line = f_read.readline()
+                        if line:
+                            await p.print(line.strip())
+                        # else: # Optional: message if seek position yields no line
+                        #     await p.print(f"(No content at last cursor position {self.cursor_position_last} in {file_to_read})")
+                    except OSError as e_seek:
+                        await p.print("Error seeking to {} in {}: {}. Reading first line as fallback.".format(self.cursor_position_last, file_to_read, e_seek))
+                        f_read.seek(0) # Fallback to reading the first line
+                        line = f_read.readline()
+                        if line: await p.print(line.strip())
+                return # Handled special case
+
+            # --- General Case: Print N lines ---
+            lines_printed_count = 0
+            with open(file_to_read, "r") as f_read:
                 await uasyncio.sleep_ms(0) # Yield after open
-                lines_to_skip = max(0, self.file_rows - N)
-                for _ in range(lines_to_skip):
-                    if not file.readline(): break # EOF
-                    await uasyncio.sleep_ms(0) # Yield
-                while True:
-                    line = file.readline()
-                    if not line:
-                        break
-                    await p.print(line.strip()) # await p.print
+
+                if (path is None or path == self.filename) and hasattr(self, 'file_rows'):
+                    # Reading the internal log file, attempt to skip to the last N lines
+                    lines_to_skip = max(0, self.file_rows - N)
+                    for _ in range(lines_to_skip):
+                        if not f_read.readline(): break # EOF
+                        await uasyncio.sleep_ms(0) # Yield
+                # else: For external files, or if file_rows not available, read from the beginning.
+
+                while lines_printed_count < N:
+                    line = f_read.readline()
+                    if not line: break # EOF
+                    await p.print(line.strip())
+                    lines_printed_count += 1
                     await uasyncio.sleep_ms(0) # Yield
         except OSError as e:
             await p.print("Error reading log file in _print_last_lines ({}): {}".format(file_to_read if 'file_to_read' in locals() else 'N/A', e)) # await p.print
@@ -812,10 +846,10 @@ class JSONLogger:
                 self.file.close()
                 await uasyncio.sleep_ms(0)
             except Exception as e:
-                await p.print("Error closing file in rename_current_file (keep_open=True): {}".format(e)) # await p.print
+                await p.print("Error closing file in rename_current_file (keep_open=True): {}".format(e))
             self.file = None 
         
-        if self.filename and self._path_exists(self.filename):
+        if self.filename and self._path_exists(self.filename): # pragma: no cover
             try:
                 os.rename(self.filename, new_full_path)
                 await uasyncio.sleep_ms(0)
@@ -823,7 +857,7 @@ class JSONLogger:
             except Exception as e:
                 await p.print("Error renaming {} to {}: {}".format(self.filename, new_full_path, e)) # await p.print
         else:
-            await p.print("Old filename {} does not exist for renaming.".format(self.filename)) # await p.print
+            await p.print("Old filename {} does not exist for renaming.".format(self.filename))
 
         self.filename = new_full_path 
         
@@ -832,7 +866,7 @@ class JSONLogger:
                 self.file = open(self.filename, "a") # Reopen in append mode
                 await uasyncio.sleep_ms(0)
             except Exception as e:
-                await p.print("Error reopening renamed file {} (keep_open=True): {}".format(self.filename, e)) # await p.print
+                await p.print("Error reopening renamed file {} (keep_open=True): {}".format(self.filename, e))
                 self.file = None
 
     async def rename_current_filename(self, new_full_path):
@@ -842,7 +876,7 @@ class JSONLogger:
                 self.file.close()
                 await uasyncio.sleep_ms(0)
             except Exception as e:
-                await p.print("Error closing file in rename_current_filename (keep_open=True): {}".format(e)) # await p.print
+                await p.print("Error closing file in rename_current_filename (keep_open=True): {}".format(e))
             self.file = None
             
         if self.filename and self._path_exists(self.filename) and self.filename != new_full_path:
@@ -853,10 +887,10 @@ class JSONLogger:
             except Exception as e:
                 await p.print("Error renaming {} to {}: {}".format(self.filename, new_full_path, e)) # await p.print
         elif self.filename == new_full_path:
-            await p.print("Target filename {} is same as current; no rename needed.".format(new_full_path)) # await p.print
+            await p.print("Target filename {} is same as current; no rename needed.".format(new_full_path))
         else:
-             await p.print("Old filename {} does not exist for renaming or no rename needed.".format(self.filename)) # await p.print
-
+             await p.print("Old filename {} does not exist for renaming or no rename needed.".format(self.filename))
+ 
         self.filename = new_full_path
         
         if self.keep_file_open:
@@ -864,7 +898,7 @@ class JSONLogger:
                 self.file = open(self.filename, "a") # Reopen in append mode
                 await uasyncio.sleep_ms(0)
             except Exception as e:
-                await p.print("Error reopening renamed file {} (keep_open=True): {}".format(self.filename, e)) # await p.print
+                await p.print("Error reopening renamed file {} (keep_open=True): {}".format(self.filename, e))
                 self.file = None
 
     def request_new_file(self):

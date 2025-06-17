@@ -793,11 +793,11 @@ class HUBDevice:
 
         await p.print("Send back: {}".format(json.dumps(toSend)))
 
-    async def start_periodic_measurement_by_config(self, afe_id=35):
-        afe = self.get_afe_by_id(afe_id)
-        if afe is None:
-            return -1
-        await afe.start_periodic_measurement_by_config()
+    # async def start_periodic_measurement_by_config(self, afe_id=35):
+    #     afe = self.get_afe_by_id(afe_id)
+    #     if afe is None:
+    #         return -1
+    #     await afe.start_periodic_measurement_by_config()
 
 
     async def main_process(self, timer=None):
@@ -811,8 +811,8 @@ class HUBDevice:
                 if self.use_automatic_restart:
                     if not afe.is_configuration_started:
                         await self.default_full(afe_id=afe.device_id)
-                    if afe.is_configured and afe.periodic_measurement_download_is_enabled is False:
-                        if afe.configuration.get("automatic_restart"):
+                    if afe.configuration["M"].get("automatic_restart"):
+                        if afe.is_configured and afe.periodic_measurement_download_is_enabled is False:
                             afe.periodic_measurement_download_is_enabled = True
                             await afe.start_periodic_measurement_by_config()
 
