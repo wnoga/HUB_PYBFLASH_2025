@@ -62,9 +62,7 @@ server = None # Initialize to None
 # Initialize components
 from HUB import initialize_can_hub # HUBDevice and RxDeviceCAN are returned by this
 
-use_lan_server = False
 use_async_server = True
-
 use_rxcallback = True
 
 async def periodic_tasks_loop():
@@ -101,28 +99,15 @@ async def main():
     hub.afe_id_min = 35
     hub.afe_id_max = 37 # Ensure this is less than afe_devices_max for discovery to stop if all found
     await p.print("HUB configured.")
-
-    
-    if use_lan_server:
-        from my_simple_server import MySimpleServer
-        server = MySimpleServer(hub)
-        server.running = True
-        
     
     if use_async_server:
         from my_simple_server import AsyncWebServer
         server = AsyncWebServer(hub)
+        tasks.append(uasyncio.create_task(server.start()))
 
     tasks.append(uasyncio.create_task(hub.main_loop()))
     await p.print("hub.main_loop task created.") # Added await
 
-    if use_lan_server and server:
-        tasks.append(uasyncio.create_task(server.main_loop()))
-        await p.print("server.main_loop task created.") # Added await
-    
-    if use_async_server and server:
-        tasks.append(uasyncio.create_task(server.start()))
-        
     if server:
         tasks.append(uasyncio.create_task(server.sync_ntp_loop()))
         await p.print("server.sync_ntp_loop task created.") # Added await

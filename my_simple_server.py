@@ -140,39 +140,42 @@ class AsyncWebServer:
         if afe_id not in self.procedure_events and len(self.procedure_events) >= self.max_procedures_keep_len:
             await p.print("AsyncWebServer: Max concurrent procedures reached. Rejecting new '{}' for AFE {}.".format(hub_method_name, afe_id))
             return ujson.dumps({"status": "ERROR", "info": "Server busy, max concurrent procedures reached"}).encode()
-
+        
         event = uasyncio.Event()
         self.procedure_events[afe_id] = event
         self.procedure_results.pop(afe_id, None)  # Clear previous result
+
         try:
-            hub_method = getattr(self.hub, hub_method_name)
-            await hub_method(afe_id=afe_id, **hub_call_kwargs)
+            hub_method_ref = getattr(self.hub, hub_method_name)
         except AttributeError:
             await p.print("Error: HUB method {} not found.".format(hub_method_name))
-            self.procedure_events.pop(afe_id, None) 
+            self.procedure_events.pop(afe_id, None) # Clean up event
             return ujson.dumps({"status": "ERROR", "info": "Internal server error: procedure {} not found".format(hub_method_name)}).encode()
-        except Exception as e:
-            await p.print("Error calling HUB method {} for AFE {} with kwargs {}: {}".format(hub_method_name, afe_id, hub_call_kwargs, e))
-            self.procedure_events.pop(afe_id, None)
-            return ujson.dumps({"status": "ERROR", "info": "Internal server error during HUB call"}).encode()
+
+        async def _execute_and_wait_for_event():
+            # This coroutine will be managed by uasyncio.wait_for
+            await hub_method_ref(afe_id=afe_id, **hub_call_kwargs) # Call the hub method
+            await event.wait() # Wait for the event set by the callback
+
         try:
-            await uasyncio.wait_for(event.wait(), timeout=timeout_duration)
+            await uasyncio.wait_for(_execute_and_wait_for_event(), timeout=timeout_duration)
+            # If we reach here, the event was set within the timeout
             result_data = self.procedure_results.pop(afe_id, None)
-            if self.procedure_events.get(afe_id) == event:
+            if self.procedure_events.get(afe_id) == event: # Clean up event
                 self.procedure_events.pop(afe_id, None)
             
-            if result_data is None:
+            if result_data is None: # Event set, but no data (e.g., simple ack or error handled by callback setting no data)
                 return ujson.dumps({"status": "OK", "info": "Procedure '{}' completed.".format(hub_method_name)}).encode()
             return result_data # This is already encoded by hub_cb
         except uasyncio.TimeoutError:
-            await p.print("Timeout waiting for '{}' result for AFE {}.".format(hub_method_name, afe_id))
-            self.procedure_events.pop(afe_id, None)
-            self.procedure_results.pop(afe_id, None)
+            await p.print("Timeout during execution of or waiting for result from '{}' for AFE {}.".format(hub_method_name, afe_id))
+            self.procedure_events.pop(afe_id, None) # Clean up event
+            self.procedure_results.pop(afe_id, None) # Clean up any partial result
             return ujson.dumps({"status": "ERROR", "info": "Timeout waiting for AFE response for '{}'".format(hub_method_name)}).encode()
-        except Exception as e:
-            await p.print("Error waiting for event for '{}' for AFE {}: {}".format(hub_method_name, afe_id, e))
-            self.procedure_events.pop(afe_id, None)
-            self.procedure_results.pop(afe_id, None)
+        except Exception as e: # Catches errors from hub_method_ref or event.wait()
+            await p.print("Error during execution of '{}' or waiting for event for AFE {}: {}".format(hub_method_name, afe_id, e))
+            self.procedure_events.pop(afe_id, None) # Clean up event
+            self.procedure_results.pop(afe_id, None) # Clean up any partial result
             return ujson.dumps({"status": "ERROR", "info": "Server error during '{}' procedure execution".format(hub_method_name)}).encode()
 
     async def handle_procedure(self, request_line):

@@ -111,7 +111,6 @@ class HUBDevice:
             "device_id": 0,
             "info": "CLOSE ALL", "timestamp_ms": millis()})
         self.logger.request_new_file()
-        await self.logger.machine()
         self.use_automatic_restart = False
         for afe in self.afe_devices:
             await afe.restart_device()
