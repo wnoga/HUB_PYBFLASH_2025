@@ -409,7 +409,7 @@ class JSONLogger:
         self.buffer = []
         self.burst_delay_ms = 1
         self.burst_timestamp_ms = 0
-        self._requestNewFile = False
+        self._requestNewFile = True
         self.log_queue = []  # Introduce a log queue
         self._requestRenameFile = False
         self.file_rows = 0
@@ -428,11 +428,7 @@ class JSONLogger:
         
         self.divide_log_by_chunk_size = 0
         
-        if self.keep_file_open:
-            self.file = None # File will be opened by new_file or on first log
-        else:
-            self.file = None # File is never persistently kept open
-        self.request_new_file()
+        self.file = None # File will be opened by new_file or on first log
 
     def _ensure_directory(self):
         try:
@@ -517,6 +513,7 @@ class JSONLogger:
         self.burst_timestamp_ms = millis()
 
         if not self.filename: # If filename is not set (e.g. very first log)
+            return 0 # Zero item saved
             await self.new_file() # This will set self.filename
             if not self.filename: # Still no filename after new_file attempt
                 await p.print("ERROR in _log: Could not determine filename.")
@@ -543,6 +540,7 @@ class JSONLogger:
 
         if self.keep_file_open:
             if self.file is None: # Attempt to reopen if closed unexpectedly
+                return 0 # Zero item saved
                 if not self.filename: # Should have been set by new_file
                     await p.print("ERROR in _log (keep_open=True): Filename not set.")
                     await self.request_new_file() # Try to recover
@@ -557,11 +555,12 @@ class JSONLogger:
             current_file_handle = self.file
         else: # Not keep_file_open, open/close per write
             if not self.filename: # Ensure filename is valid
-                 await p.print("Error in _log (keep_file_open=False): Filename not set before open attempt.")
-                 await self.new_file() # Try to set it
-                 if not self.filename:
-                     await p.print("Critical Error in _log (keep_file_open=False): Could not establish a valid log file after new_file().")
-                     return -1
+                return 0 # Zero item saved
+                await p.print("Error in _log (keep_file_open=False): Filename not set before open attempt.")
+                await self.new_file() # Try to set it
+                if not self.filename:
+                    await p.print("Critical Error in _log (keep_file_open=False): Could not establish a valid log file after new_file().")
+                    return -1
             try:
                 current_file_handle = open(self.filename, "a")
                 opened_in_scope = True
@@ -591,6 +590,7 @@ class JSONLogger:
                 current_file_handle.write(toLog)
             await uasyncio.sleep_ms(0) # Yield after write
             self.file_rows += 1
+            print("New file row",self.file_rows)
             self.cursor_position = self.file.tell()
 
             self.cursor_position = current_file_handle.tell()
@@ -622,8 +622,9 @@ class JSONLogger:
     
     async def _process_log_queue(self):
         if self.log_queue:
-            level, message_chunk_data, chunk_id, chunk_id_max = self.log_queue.pop(0)
-            await self._log(level, message_chunk_data, chunk_id, chunk_id_max)
+            level, message_chunk_data, chunk_id, chunk_id_max = self.log_queue[0]
+            if await self._log(level, message_chunk_data, chunk_id, chunk_id_max):
+                self.log_queue.pop(0)
         await uasyncio.sleep_ms(0) # Yield
         return len(self.log_queue)
 
@@ -833,9 +834,6 @@ class JSONLogger:
             except Exception as e:
                 await p.print("Error reopening renamed file {} (keep_open=True): {}".format(self.filename, e)) # await p.print
                 self.file = None
-        self.file_rows = 0 
-        self.cursor_position = 0
-        self.cursor_position_last = 0
 
     async def rename_current_filename(self, new_full_path):
         if self.keep_file_open and self.file is not None:
@@ -890,17 +888,17 @@ class JSONLogger:
 
 
     async def machine(self):
-        if self._requestNewFile or (not self.filename):
-            self._requestNewFile = False
-            await self.wait_for_end_process_log_queue()
-            await self.sync()
-            await self.new_file()
         if self._requestRenameFile:
             self._requestRenameFile = False
             await self.wait_for_end_process_log_queue()
             await self.sync()
             new_path = await self.get_new_file_path()
             await self.rename_current_filename(new_path)
+        if self._requestNewFile:
+            self._requestNewFile = False
+            await self.wait_for_end_process_log_queue()
+            await self.sync()
+            await self.new_file()
         if not self.keep_file_open:
             # Ensure filename is valid before attempting to open
             if not self.filename or not self._path_exists(self.parent_dir): # Check parent dir too
