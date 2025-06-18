@@ -429,7 +429,11 @@ class AsyncWebServer:
                 tm = time.gmtime(secs_since_2000)
                 rtc.datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
                 self.ntp_synced = True
-                await p.print("NTP sync successful. Time set to: {}".format(time.gmtime())) # Added await
+                await self.hub.logger.log(VerbosityLevel["INFO"], {
+                    "info":"NTP sync successful. Time set to: {}".format(rtc_datetime_pretty()),
+                    "retval": {"HUB_timestamp_ms": millis(), "rtc_timestamp": rtc_unix_timestamp()}
+                    })
+                await p.print("NTP sync successful. Time set to: {}".format(time.gmtime()))
                 rtc_synced = True # Update global flag
                 if not self.hub.logger.rtc_synced:
                     self.hub.logger.rtc_synced = True
