@@ -144,7 +144,7 @@ class HUBDevice:
         """
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
-            await p.print(f"AFE {afe_id} not found for get_subdevice_status.")
+            await p.print("AFE {} not found for get_subdevice_status.".format(afe_id))
             return -1
 
         commandKwargs = {"timeout_ms": 10220, "preserve": True, "timeout_start_on_send_ms": 2000, "callback_error": self.callback_afe_error}
