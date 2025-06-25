@@ -131,6 +131,27 @@ class HUBDevice:
             # Using standard print for non-async context
             print("Error clearing logs: {}".format(e))
 
+    async def get_subdevice_status(self, afe_id, subdevice_mask, callback=None):
+        """
+        Requests the status of a specific subdevice (master/slave) on an AFE.
+
+        Args:
+            afe_id (int): The ID of the AFE device.
+            subdevice_mask (int): The mask for the subdevice (e.g., AFECommandSubdevice.AFECommandSubdevice_master).
+            callback (callable, optional): A callback function to be executed when the response is received.
+        Returns:
+            int: 0 on success, -1 if AFE not found.
+        """
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            await p.print(f"AFE {afe_id} not found for get_subdevice_status.")
+            return -1
+
+        commandKwargs = {"timeout_ms": 10220, "preserve": True, "timeout_start_on_send_ms": 2000, "callback_error": self.callback_afe_error}
+        if callback: commandKwargs["callback"] = callback
+        await afe.enqueue_command(AFECommand.getSubdeviceStatus, [subdevice_mask], **commandKwargs)
+        return 0
+
     async def clear_old_logs(self):
         """
         Triggers the logger to delete all log files except the current one.

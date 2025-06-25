@@ -268,6 +268,10 @@ class AsyncWebServer:
             return await self._execute_afe_procedure(request_json, "set_afe_averaging_alpha", 10.0,
                                                      required_params_map={"channel_mask": int, "alpha": float})
 
+        elif procedure == "afe_get_subdevice_status":
+            return await self._execute_afe_procedure(request_json, "get_subdevice_status", 15.0,
+                                                     required_params_map={"subdevice_mask": int})
+
         elif procedure == "afe_set_channel_dt_ms":
             return await self._execute_afe_procedure(request_json, "set_afe_channel_dt_ms", 10.0,
                                                      required_params_map={"channel_mask": int, "dt_ms": int})

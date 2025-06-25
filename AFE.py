@@ -469,6 +469,22 @@ class AFEDevice:
                                           "error": "AFE {} CAN bus reset".format(device_id),
                                           "retval": self.trim_dict_for_logger(retval)
                                       }))
+            elif command == AFECommand.getSubdeviceStatus:
+                uch = chunk_payload[0]
+                if chunk_id == 1:
+                    self.debug_machine_control_msg_last[uch] = {}  # Clear msg
+                    self.debug_machine_control_msg_last[uch]["channel"] = "master" if uch == 0 else "slave"
+                    value = self.bytes_to_float(chunk_payload[1:])
+                    self.debug_machine_control_msg_last[uch]["voltage"] = value
+                elif chunk_id == 2:
+                    value = self.bytes_to_float(chunk_payload[1:])
+                    self.debug_machine_control_msg_last[uch]["temperature_avg"] = value
+                elif chunk_id == 3:
+                    value = self.bytes_to_float(chunk_payload[1:])
+                    self.debug_machine_control_msg_last[uch]["temperature_old"] = value
+                elif chunk_id == 4:
+                    value = self.bytes_to_u32(chunk_payload[1:])
+                    self.debug_machine_control_msg_last[uch]["timestamp_ms"] = value
 
             elif command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
                 pass
@@ -660,15 +676,12 @@ class AFEDevice:
                 elif chunk_id == 4:
                     value = self.bytes_to_u32(chunk_payload[1:])
                     self.debug_machine_control_msg[uch]["timestamp_ms"] = value
-                    self.debug_machine_control_msg_last[uch] = self.debug_machine_control_msg_last[uch].copy(
-                    )
-                    # print(uch, self.debug_machine_control_msg[uch])
-                    self.logger.log(VerbosityLevel["CRITICAL"], self.default_log_dict(
-                        {
-                            "command": AFECommand.debug_machine_control, 
-                            "retval": self.trim_dict_for_logger(
-                                self.debug_machine_control_msg[uch])
-                        }))
+                    # self.logger.log(VerbosityLevel["CRITICAL"], self.default_log_dict(
+                    #     {
+                    #         "command": AFECommand.debug_machine_control, 
+                    #         "retval": self.trim_dict_for_logger(
+                    #             self.debug_machine_control_msg[uch])
+                    #     }))
             else:
                 await p.print("Unknow command: 0x{:02X}: {}".format(
                     command, data_bytes))
@@ -749,11 +762,12 @@ class AFEDevice:
                     for subdev in [0, 1]:
                         if self.debug_machine_control_msg[subdev].get("timestamp_ms"):
                             try:
+                                self.debug_machine_control_msg_last[uch] = self.debug_machine_control_msg_last[subdev].copy()
                                 toLog = self.default_log_dict({
                                     "command": AFECommand.debug_machine_control,
                                     "retval": self.trim_dict_for_logger(self.debug_machine_control_msg[subdev]),
                                 })
-                                await self.logger.log(VerbosityLevel["INFO"], toLog)
+                                await self.logger.log(VerbosityLevel["CRITICAL"], toLog)
                             except Exception as e:
                                 await p.print(
                                     "ERROR during debug_machine_control_msg:", e, toLog)

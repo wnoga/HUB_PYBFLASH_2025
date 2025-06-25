@@ -221,6 +221,7 @@ class AFECommand:
     getTimestamp = 0x5
     getSyncTimestamp = 0x6
     resetCAN = 0x7
+    getSubdeviceStatus = 0x08
     getSensorDataSi_last_byMask = 0x30
     getSensorDataSi_average_byMask = 0x31
     getSensorDataSiAndTimestamp_average_byMask = 0x3b
