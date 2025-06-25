@@ -246,7 +246,7 @@ class HUBDevice:
 
     # Changed to async def
     async def get_configuration_from_files(self, afe_id, callibration_data_file_csv="dane_kalibracyjne.csv", TempLoop_file_csv="TempLoop.csv", UID=None):
-        return get_configuration_from_files(afe_id, callibration_data_file_csv, TempLoop_file_csv, UID)
+        return await get_configuration_from_files(afe_id, callibration_data_file_csv, TempLoop_file_csv, UID)
 
     def _get_subdevice_ch_id(self, g):
         return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
@@ -523,7 +523,7 @@ class HUBDevice:
         if afe.configuration["S"].get("fixed_V"):
             temp_loop_enabled_slave = None # disable
         temp_loop_subdev = 0x00
-        if temp_loop_enabled_master != None & temp_loop_enabled_master != None:
+        if temp_loop_enabled_master and temp_loop_enabled_master:
             # Enable both
             temp_loop_subdev = AFECommandSubdevice.AFECommandSubdevice_both
             await self.default_start_temperature_loop(afe_id, 1, temp_loop_subdev)
