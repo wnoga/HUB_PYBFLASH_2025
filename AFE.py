@@ -2,10 +2,14 @@ import json
 import time
 import struct
 import random
-import pyb
-# import machine # machine is not directly used here, pyb.millis is
-import micropython
-import uasyncio
+
+try:
+    import pyb
+    # import machine # machine is not directly used here, pyb.millis is
+    import micropython
+    import uasyncio
+except:
+    import asyncio as uasyncio
 
 from my_utilities import AFECommand, AFECommandGPIO, AFECommandChannel, AFECommandSubdevice, JSONLogger
 from my_utilities import millis, is_timeout, is_delay
@@ -197,10 +201,10 @@ class AFEDevice:
                     else:
                         unit = None
                 time_sample_ms = v
-                if v is '':
-                    time_sample_ms = 1000
-                else:
+                if v:
                     time_sample_ms = convert_to_si(v, unit)*1000 # to ms
+                else:
+                    time_sample_ms = 1000
                 time_sample_ms = int(round(time_sample_ms))
                 report_every_ms[g] = time_sample_ms
         commandKwargs = {"timeout_ms": 10220,

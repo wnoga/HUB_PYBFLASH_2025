@@ -114,7 +114,7 @@ class wdt_x:
 
 
 try:
-    if False:
+    if True:
         wdt = wdt_x()
     else:
         from machine import WDT
@@ -411,6 +411,8 @@ def convert_to_si(value, unit):
         v = float(value) if value != '' else 1.0
     except (ValueError, TypeError):
         return 1.0  # fallback if value is invalid
+    if unit is None:
+        return v
 
     unit = unit.strip().lower()
 
@@ -1150,7 +1152,7 @@ def read_callibration_csv(file, toSi=True):
                             unit = unit[0]
                         else:
                             unit = None
-                    v_si = convert_to_si(v, unit,)
+                    v_si = convert_to_si(v, unit)
                 else:
                     v_si = v
                 if k not in callib_data_mean[g]:
@@ -1168,3 +1170,54 @@ def read_callibration_csv(file, toSi=True):
             callib_data_mean[g]['M/S'] = g
 
     return callib_data, callib_data_mean
+
+async def get_configuration_from_files(afe_id, callibration_data_file_csv="dane_kalibracyjne.csv", TempLoop_file_csv="TempLoop.csv", UID=None):
+    """
+    Retrieves calibration data for a specific AFE from CSV files.
+
+    This function reads calibration data from two CSV files: one for general
+    calibration data and another for temperature loop data. It then filters
+    this data to find entries that match the specified AFE ID and optional UID.
+    The function also checks for missing or empty calibration values and
+    provides warnings if such issues are found.
+
+    Args:
+        afe_id (int): The ID of the AFE for which to retrieve calibration data.
+        callibration_data_file_csv (str, optional): The path to the CSV file
+            containing general calibration data. Defaults to "dane_kalibracyjne.csv".
+        TempLoop_file_csv (str, optional): The path to the CSV file containing
+            temperature loop data. Defaults to "TempLoop.csv".
+        UID (str, optional): The unique identifier of the AFE. If provided,
+            only data matching this UID will be considered. Defaults to None.
+    Returns:
+        dict: A dictionary containing the calibration data for the specified AFE.
+    """
+    TempLoop_data, TempLoop_data_mean = read_callibration_csv(
+        TempLoop_file_csv)
+    callib_data, callib_data_mean = read_callibration_csv(
+        callibration_data_file_csv)
+
+    callibration = {'ID': afe_id}
+    for c0 in [callib_data, TempLoop_data]:
+        for c in c0:
+            if c['ID'] != afe_id:
+                continue
+            if UID is not None:
+                if c['SN_AFE'] != UID:
+                    continue
+            g = c['M/S']
+            if g not in callibration:
+                callibration[g] = {}
+            callibration[g].update(c)
+    for c0 in [callib_data_mean, TempLoop_data_mean]:
+        for g in ['M', 'S']:
+            for k, v in c0[g].items():
+                if k not in callibration[g]:  # no key
+                    # await self.logger.log(
+                    #     VerbosityLevel["WARNING"], "Calibration data: AFE {}: No key: {}".format(afe_id, k))
+                    callibration[g][k] = ''
+                elif len(str(callibration[g][k])) == 0:  # empty string:
+                    # await self.logger.log(
+                    #     VerbosityLevel["WARNING"], "Calibration data: AFE {}: No value {}, set to {}".format(afe_id, k, v))
+                    callibration[g][k] = v  # set default value
+    return callibration

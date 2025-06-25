@@ -1,6 +1,7 @@
 import serial
 import json
 import time
+import asyncio as uasyncio
 
 def get_json_from_serial(port, baudrate, timeout=1):
     """
@@ -34,11 +35,24 @@ def get_json_from_serial(port, baudrate, timeout=1):
 
 # Example usage:
 if __name__ == "__main__":
-    port = '/dev/ttyACM0'  # Replace with your serial port
-    baudrate = 115200
-    json_data = get_json_from_serial(port, baudrate)
-    ser = serial.Serial(port, baudrate, timeout=1)
-    while True:
-        time.sleep(1.0)
-        ser.write(b'hub.powerOn()')
-        tmp = ser.read_all()
+    if False:
+        port = '/dev/ttyACM0'  # Replace with your serial port
+        baudrate = 115200
+        json_data = get_json_from_serial(port, baudrate)
+        ser = serial.Serial(port, baudrate, timeout=1)
+        while True:
+            time.sleep(1.0)
+            ser.write(b'hub.powerOn()')
+            tmp = ser.read_all()
+            
+    if True:
+        from my_utilities import get_configuration_from_files
+
+        async def run_async_config_test():
+            """
+            Asynchronous wrapper to call get_configuration_from_files.
+            """
+            callibration = await get_configuration_from_files(36)
+            print(callibration)
+
+        uasyncio.run(run_async_config_test())

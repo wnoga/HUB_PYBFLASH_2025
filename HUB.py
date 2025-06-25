@@ -1,11 +1,14 @@
 import json
 import time
-import pyb
 import struct
 import random
-import _thread
-import micropython
-import uasyncio
+try:
+    import _thread
+    import pyb
+    import micropython
+    import uasyncio
+except:
+    import asyncio as uasyncio
 
 from AFE import AFEDevice, AFECommand
 from my_utilities import JSONLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, read_callibration_csv
@@ -18,6 +21,7 @@ from my_utilities import extract_bracketed
 from my_utilities import millis, is_timeout, is_delay
 from my_utilities import convert_to_si
 from my_RxDeviceCAN import RxDeviceCAN
+from my_utilities import get_configuration_from_files
 
 
 class HUBDevice:
@@ -242,55 +246,7 @@ class HUBDevice:
 
     # Changed to async def
     async def get_configuration_from_files(self, afe_id, callibration_data_file_csv="dane_kalibracyjne.csv", TempLoop_file_csv="TempLoop.csv", UID=None):
-        """
-        Retrieves calibration data for a specific AFE from CSV files.
-
-        This function reads calibration data from two CSV files: one for general
-        calibration data and another for temperature loop data. It then filters
-        this data to find entries that match the specified AFE ID and optional UID.
-        The function also checks for missing or empty calibration values and
-        provides warnings if such issues are found.
-
-        Args:
-            afe_id (int): The ID of the AFE for which to retrieve calibration data.
-            callibration_data_file_csv (str, optional): The path to the CSV file
-                containing general calibration data. Defaults to "dane_kalibracyjne.csv".
-            TempLoop_file_csv (str, optional): The path to the CSV file containing
-                temperature loop data. Defaults to "TempLoop.csv".
-            UID (str, optional): The unique identifier of the AFE. If provided,
-                only data matching this UID will be considered. Defaults to None.
-        Returns:
-            dict: A dictionary containing the calibration data for the specified AFE.
-        """
-        TempLoop_data, TempLoop_data_mean = read_callibration_csv(
-            TempLoop_file_csv)
-        callib_data, callib_data_mean = read_callibration_csv(
-            callibration_data_file_csv)
-
-        callibration = {'ID': afe_id}
-        for c0 in [callib_data, TempLoop_data]:
-            for c in c0:
-                if c['ID'] != afe_id:
-                    continue
-                if UID is not None:
-                    if c['SN_AFE'] != UID:
-                        continue
-                g = c['M/S']
-                if g not in callibration:
-                    callibration[g] = {}
-                callibration[g].update(c)
-        for c0 in [callib_data_mean, TempLoop_data_mean]:
-            for g in ['M', 'S']:
-                for k, v in c0[g].items():
-                    if k not in callibration[g]:  # no key
-                        await self.logger.log(
-                            VerbosityLevel["WARNING"], "Calibration data: AFE {}: No key: {}".format(afe_id, k))
-                        callibration[g][k] = ''
-                    elif len(str(callibration[g][k])) == 0:  # empty string:
-                        await self.logger.log(
-                            VerbosityLevel["WARNING"], "Calibration data: AFE {}: No value {}, set to {}".format(afe_id, k, v))
-                        callibration[g][k] = v  # set default value
-        return callibration
+        return get_configuration_from_files(afe_id, callibration_data_file_csv, TempLoop_file_csv, UID)
 
     def _get_subdevice_ch_id(self, g):
         return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
@@ -677,69 +633,103 @@ class HUBDevice:
         if kwargs:
             commandKwargs.update(kwargs)
 
-        # This map defines how to process different configuration keys.
-        # It maps a key to a tuple of:
-        # (enqueue_function, AFE_command, channel_getter_function, value_converter)
-        config_map = {
-            "T_measured_a": (afe.enqueue_float_for_channel, AFECommand.setChannel_a_byMask, self._get_T_measured_ch_id, float),
-            "T_measured_b": (afe.enqueue_float_for_channel, AFECommand.setChannel_b_byMask, self._get_T_measured_ch_id, float),
-            "offset":       (afe.enqueue_u16_for_channel, AFECommand.setAD8402Value_byte_byMask, self._get_subdevice_ch_id, int),
-            "U_measured_a": (afe.enqueue_float_for_channel, AFECommand.setChannel_a_byMask, self._get_U_measured_ch_id, float),
-            "U_measured_b": (afe.enqueue_float_for_channel, AFECommand.setChannel_b_byMask, self._get_U_measured_ch_id, float),
-            "I_measured_a": (afe.enqueue_float_for_channel, AFECommand.setChannel_a_byMask, self._get_I_measured_ch_id, float),
-            "I_measured_b": (afe.enqueue_float_for_channel, AFECommand.setChannel_b_byMask, self._get_I_measured_ch_id, float),
-            "U_set_a":      (afe.enqueue_float_for_channel, AFECommand.setRegulator_a_dac_byMask, self._get_subdevice_ch_id, float),
-            "U_set_b":      (afe.enqueue_float_for_channel, AFECommand.setRegulator_b_dac_byMask, self._get_subdevice_ch_id, float),
-            "V_opt":        (afe.enqueue_float_for_channel, AFECommand.setRegulator_V_opt_byMask, self._get_subdevice_ch_id, float),
-            "dV/dT":        (afe.enqueue_float_for_channel, AFECommand.setRegulator_dV_dT_byMask, self._get_subdevice_ch_id, float),
-        }
-
         for g in ["M", "S"]:
+            ch_id = None
             avg_number = 256
             time_sample_ms = 1000
             for k, v in afe.configuration[g].items():
+                ch_id = 0x00
                 ks = k.split(" ")[0]
-
-                if ks in config_map:
-                    if v == '':
-                        continue
-                    enqueue_func, command, channel_getter, val_converter = config_map[ks]
-                    await enqueue_func(command, channel_getter(g), val_converter(v), **commandKwargs)
-                elif ks == "avg_number":
-                    if v != '':
-                        avg_number = int(round(float(v)))
+                unit = None
+                if len(k.split(" ")) > 1:
+                    unit = k.split(" ")[1]
+                    unit = extract_bracketed(unit)
+                    if len(unit):
+                        unit = unit[0]
+                    else:
+                        unit = None
+                # print(g, k, v, ks, unit)
+                if ks == "T_measured_a":
+                    await afe.enqueue_float_for_channel(AFECommand.setChannel_a_byMask, self._get_T_measured_ch_id(g), v, **commandKwargs)
+                elif ks == "T_measured_b":
+                    await afe.enqueue_float_for_channel(
+                        AFECommand.setChannel_b_byMask, self._get_T_measured_ch_id(g), v, **commandKwargs)
+                elif ks == "offset":
+                    await afe.enqueue_u16_for_channel(
+                        AFECommand.setAD8402Value_byte_byMask, self._get_subdevice_ch_id(g), int(v), **commandKwargs)
+                elif ks == "U_measured_a":
+                    await afe.enqueue_float_for_channel(
+                        AFECommand.setChannel_a_byMask, self._get_U_measured_ch_id(g), v, **commandKwargs)
+                elif ks == "U_measured_b":
+                    await afe.enqueue_float_for_channel(
+                        AFECommand.setChannel_b_byMask, self._get_U_measured_ch_id(g), v, **commandKwargs)
+                elif ks == "I_measured_a":
+                    await afe.enqueue_float_for_channel(
+                        AFECommand.setChannel_a_byMask, self._get_I_measured_ch_id(g), v, **commandKwargs)
+                elif ks == "I_measured_b":
+                    await afe.enqueue_float_for_channel(
+                        AFECommand.setChannel_b_byMask, self._get_I_measured_ch_id(g), v, **commandKwargs)
+                elif ks == "U_set_a":
+                    await afe.enqueue_float_for_channel(
+                        AFECommand.setRegulator_a_dac_byMask, self._get_subdevice_ch_id(g), v, **commandKwargs)
+                elif ks == "U_set_b":
+                    await afe.enqueue_float_for_channel(
+                        AFECommand.setRegulator_b_dac_byMask, self._get_subdevice_ch_id(g), v, **commandKwargs)
+                elif ks == "V_opt":
+                    afe.enqueue_float_for_channel(
+                        AFECommand.setRegulator_V_opt_byMask, self._get_subdevice_ch_id(g), v, **commandKwargs)
+                elif ks == "dV/dT":
+                    await afe.enqueue_float_for_channel(
+                        AFECommand.setRegulator_dV_dT_byMask, self._get_subdevice_ch_id(g), v, **commandKwargs)
+                elif ks == "avg_number":  # Maximum nuber of samples used in averaging
+                    avg_number = v
+                    if v:
+                        avg_number = v
+                    else:
+                        avg_number = 256
+                    avg_number = int(round(avg_number))
+                    continue
                 elif ks == "avg_mode":
-                    avg_mode_str = v if v else "NONE"
-                    avg_mode = AFECommandAverage[avg_mode_str]
+                    if not v:
+                        v = "NONE"
+                    avg_mode = AFECommandAverage[v]
                     await afe.enqueue_command(AFECommand.setAveragingMode_byMask, [self._get_subdevice_ch_id(g),
                                                                                    avg_mode
                                                                                    ], **commandKwargs)
-                elif ks == "avg_alpha":
+                elif ks == "avg_alpha":  # Average parameter, usually weight
                     ch_id = self._get_general_ch_id_mask(g)
-                    alpha = float(v) if v else (1.0 / (10000 * 100.0))
-                    await afe.enqueue_float_for_channel(
-                        AFECommand.setAveragingAlpha_byMask, ch_id, alpha, **commandKwargs)
-                elif ks == "time_sample":
                     if v:
-                        unit = None
-                        parts = k.split(" ")
-                        if len(parts) > 1:
-                            extracted_units = extract_bracketed(parts[1])
-                            if extracted_units:
-                                unit = extracted_units[0]
-                        time_sample_ms = int(round(convert_to_si(v, unit) * 1000))
+                        await afe.enqueue_float_for_channel(
+                            AFECommand.setAveragingAlpha_byMask, ch_id, v, **commandKwargs)
+                    else:
+                        await afe.enqueue_float_for_channel(
+                            AFECommand.setAveragingAlpha_byMask, ch_id, 1.0/(10000*100.0), **commandKwargs)
+                elif ks == "time_sample":  # time sample
+                    time_sample_ms = v
+                    if v:
+                        time_sample_ms = convert_to_si(v,unit)*1000
                     else:
                         time_sample_ms = 1000
-
+                    time_sample_ms = int(round(time_sample_ms))
                     await afe.enqueue_u32_for_channel(
                         AFECommand.setChannel_dt_ms_byMask, self._get_general_ch_id_mask(g), time_sample_ms, **commandKwargs)
+                else:
+                    continue
+                # for uch in afe.unmask_channel(ch_id):
+                #     await self.logger.log(VerbosityLevel["DEBUG"], {
+                #         "device_id": afe.device_id,
+                #         "timestamp_ms": millis(),
+                #         "debug": "AFE {} {} Loading {} (CH{} ? {}) value {}".format(
+                #             afe_id, g, k, uch, e_ADC_CHANNEL[uch], v)
+                #     })
 
             await afe.enqueue_u32_for_channel(
                 AFECommand.setAveraging_max_dt_ms_byMask, self._get_general_ch_id_mask(g), int(round(time_sample_ms * avg_number)), **commandKwargs)
             await afe.enqueue_float_for_channel(
                 AFECommand.setChannel_multiplicator_byMask, self._get_general_ch_id_mask(g), 1.0, **commandKwargs)
 
-        await afe.enqueue_command(AFECommand.startADC, [0xFF, 0xFF], **commandKwargs)
+        await afe.enqueue_command(AFECommand.startADC, [
+            0xFF, 0xFF], **commandKwargs)
 
     async def parse(self, msg):  # Changed to async def
         await p.print("Parsed: {}".format(msg))

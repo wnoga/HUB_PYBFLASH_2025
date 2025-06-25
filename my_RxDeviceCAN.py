@@ -1,6 +1,9 @@
-import pyb
-import micropython
-import uasyncio
+try:
+    import pyb
+    import micropython
+    import uasyncio
+except:
+    import asyncio as uasyncio
 
 from my_utilities import p
 from my_utilities import millis
@@ -8,7 +11,7 @@ from my_utilities import is_timeout
 from my_utilities import is_delay
 
 class RxDeviceCAN:
-    def __init__(self, can_bus: pyb.CAN, use_rxcallback=True):
+    def __init__(self, can_bus, use_rxcallback=True):
         self._send_ref = self._send
         self.handle_can_rx_ref = self.handle_can_rx
         self.can_bus: pyb.CAN = can_bus
@@ -93,7 +96,7 @@ class RxDeviceCAN:
             pass
 
     # ISR → only schedules processing
-    def handle_can_rx_irq(self, bus: pyb.CAN, reason=None):
+    def handle_can_rx_irq(self, bus, reason=None):
         try:
             micropython.schedule(self.handle_can_rx_ref, 0)
         except RuntimeError:
