@@ -148,6 +148,7 @@ class AFEDevice:
         self.temperatureLoop_slave_is_enabled = False
         self.periodic_data = {}
         self.debug_machine_control_msg = [{}, {}]
+        self.debug_machine_control_msg_last = [{}, {}]
         self.afe_first_configured = None
 
     def update_output(self, output, value_name, value, channel=None):
@@ -202,7 +203,7 @@ class AFEDevice:
                         unit = None
                 time_sample_ms = v
                 if v:
-                    time_sample_ms = convert_to_si(v, unit)*1000 # to ms
+                    time_sample_ms = convert_to_si(v, unit)*1000  # to ms
                 else:
                     time_sample_ms = 1000
                 time_sample_ms = int(round(time_sample_ms))
@@ -392,7 +393,7 @@ class AFEDevice:
             if len(data_bytes) < 2:
                 await self.logger.log(VerbosityLevel["ERROR"],
                                       self.default_log_dict({"error": "Received CAN message with payload less than 2 bytes", "payload": data_bytes}))
-                return # Skip processing this invalid message
+                return  # Skip processing this invalid message
 
             command = data_bytes[0]
             chunk_id = data_bytes[1] & 0x0F
@@ -644,23 +645,30 @@ class AFEDevice:
                         pass
 
             elif command == AFECommand.debug_machine_control:
-                channel = chunk_payload[0]
-                value = None
+                uch = chunk_payload[0]
                 if chunk_id == 1:
-                    self.debug_machine_control_msg[channel] = {}  # Clear msg
-                    self.debug_machine_control_msg[channel]["channel"] = "master" if channel == 0 else "slave"
+                    self.debug_machine_control_msg[uch] = {}  # Clear msg
+                    self.debug_machine_control_msg[uch]["channel"] = "master" if uch == 0 else "slave"
                     value = self.bytes_to_float(chunk_payload[1:])
-                    self.debug_machine_control_msg[channel]["voltage"] = value
+                    self.debug_machine_control_msg[uch]["voltage"] = value
                 elif chunk_id == 2:
                     value = self.bytes_to_float(chunk_payload[1:])
-                    self.debug_machine_control_msg[channel]["temperature_avg"] = value
+                    self.debug_machine_control_msg[uch]["temperature_avg"] = value
                 elif chunk_id == 3:
                     value = self.bytes_to_float(chunk_payload[1:])
-                    self.debug_machine_control_msg[channel]["temperature_old"] = value
+                    self.debug_machine_control_msg[uch]["temperature_old"] = value
                 elif chunk_id == 4:
                     value = self.bytes_to_u32(chunk_payload[1:])
-                    self.debug_machine_control_msg[channel]["timestamp_ms"] = value
-
+                    self.debug_machine_control_msg[uch]["timestamp_ms"] = value
+                    self.debug_machine_control_msg_last[uch] = self.debug_machine_control_msg_last[uch].copy(
+                    )
+                    # print(uch, self.debug_machine_control_msg[uch])
+                    self.logger.log(VerbosityLevel["CRITICAL"], self.default_log_dict(
+                        {
+                            "command": AFECommand.debug_machine_control, 
+                            "retval": self.trim_dict_for_logger(
+                                self.debug_machine_control_msg[uch])
+                        }))
             else:
                 await p.print("Unknow command: 0x{:02X}: {}".format(
                     command, data_bytes))
@@ -770,9 +778,7 @@ class AFEDevice:
 
     async def start_periodic_measurement_download_from_config(self, interval_ms=None):
         for subdev in ["M", "S"]:
-            await self.start_periodic_measurement_download(interval_ms or self.configuration[subdev].get("report_every_ms",0))
-        
-
+            await self.start_periodic_measurement_download(interval_ms or self.configuration[subdev].get("report_every_ms", 0))
 
     async def set_offset(self, offset_master=200, offset_slave=200):  # Changed to async def
         r = await self.enqueue_command(AFECommand.setOffset, [1, offset_master])

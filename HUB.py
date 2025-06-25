@@ -131,6 +131,16 @@ class HUBDevice:
             # Using standard print for non-async context
             print("Error clearing logs: {}".format(e))
 
+    async def clear_old_logs(self):
+        """
+        Triggers the logger to delete all log files except the current one.
+        """
+        if self.logger and hasattr(self.logger, 'clear_old_logs'):
+            await self.logger.clear_old_logs()
+        else:
+            # Fallback or error logging if logger doesn't have the method
+            await p.print("Logger not available or does not support clearing old logs.")
+
     async def _dequeue_message_copy(self, _):
         self.msg_to_process = await self.can_interface.get()
         return self.msg_to_process
@@ -244,9 +254,9 @@ class HUBDevice:
                 return afe
         return None
 
-    # Changed to async def
-    async def get_configuration_from_files(self, afe_id, callibration_data_file_csv="dane_kalibracyjne.csv", TempLoop_file_csv="TempLoop.csv", UID=None):
-        return await get_configuration_from_files(afe_id, callibration_data_file_csv, TempLoop_file_csv, UID)
+    # # Changed to async def
+    # async def get_configuration_from_files(self, afe_id, callibration_data_file_csv="dane_kalibracyjne.csv", TempLoop_file_csv="TempLoop.csv", UID=None):
+    #     return await get_configuration_from_files(afe_id, callibration_data_file_csv, TempLoop_file_csv, UID)
 
     def _get_subdevice_ch_id(self, g):
         return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
@@ -616,7 +626,7 @@ class HUBDevice:
         if afe is None:
             return
 
-        configuration = await self.get_configuration_from_files(afe_id)
+        configuration = await get_configuration_from_files(afe_id)
         afe.configuration = configuration.copy()
         await afe.logger.log(VerbosityLevel["INFO"],
                              {

@@ -207,6 +207,10 @@ class AsyncWebServer:
         elif procedure == "hub_close_all":
             await self.hub.close_all()
             return ujson.dumps({"status": "OK"}).encode()
+
+        elif procedure == "hub_clear_old_logs":
+            await self.hub.clear_old_logs()
+            return ujson.dumps({"status": "OK", "info": "Request to clear old logs has been processed."}).encode()
         
         elif procedure == "default_procedure":
             afe_id = request_json.get("afe_id",None)
@@ -331,6 +335,14 @@ class AsyncWebServer:
                         afe.unique_id_str or 'N/A',
                         ujson.dumps(afe.configuration))) # Consider if afe.configuration can be very large
 
+                await writer.awrite("""
+                <h4>Status:</h4>
+                <pre>Master: {}</pre>
+                <pre>Slave: {}</pre>
+                """.format(
+                    ujson.dumps(afe.debug_machine_control_msg_last[0]),
+                    ujson.dumps(afe.debug_machine_control_msg_last[1]))
+                )
                 for ch in afe.channels:
                     # Formatting complex objects like ch.last_recieved_data directly
                     # might still be an issue if they are very large.

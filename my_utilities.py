@@ -167,11 +167,11 @@ class PrintButLouder:
         """Acquires the global print_lock."""
         global print_lock
         if blocking:
-            while not print_lock.acquire(True, -1):  # blocking acquire
-                try:
-                    time.sleep_ms(sleep_ms)
-                except AttributeError:  # pragma: no cover
-                    time.sleep(sleep_ms / 1000.0)  # Fallback for PC
+            # Attempt to acquire the lock with a 10-second timeout.
+            # The acquire method returns True on success, False on timeout.
+            if not print_lock.acquire(True, 10):
+                print("FATAL: PrintButLouder._lock timed out after 10 seconds.")
+                return False
         else:
             return print_lock.acquire(False)  # non-blocking acquire
         return True
@@ -194,17 +194,17 @@ class PrintButLouder:
     async def machine(self):
         if not self.queue:
             return
+        else:
+            item = None
+            if self._lock():  # Acquire lock
+                try:
+                    if self.queue:  # Re-check queue is not empty after acquiring lock
+                        item = self.queue.pop(0)
+                finally:
+                    self._unlock()  # Ensure lock is released
 
-        item = None
-        if self._lock():  # Acquire lock
-            try:
-                if self.queue:  # Re-check queue is not empty after acquiring lock
-                    item = self.queue.pop(0)
-            finally:
-                self._unlock()  # Ensure lock is released
-
-        if item:
-            print(*(item[0]), **item[1])
+            if item:
+                print(*(item[0]), **item[1])
         # Yield to the event loop after printing one item
         await uasyncio.sleep_ms(0)
 
@@ -644,7 +644,7 @@ class JSONLogger:
             await p.print("ERROR in _log: File handle is None for {} before write attempt.".format(self.filename))
             return -1
         try:
-            self.cursor_position_last = self.file.tell()
+            self.cursor_position_last = current_file_handle.tell()
             toLog = ""
             # Ensure message is a string before concatenation
             if isinstance(message_chunk, dict):
@@ -689,7 +689,7 @@ class JSONLogger:
                 except:
                     pass
                 self.file = None
-                await self.request_new_file()  # Request new file on write error
+                self.request_new_file()  # Request new file on write error
             return -1  # skip this row
 
         if level >= self.print_verbosity_level:
@@ -829,6 +829,36 @@ class JSONLogger:
         self.file_rows = 0
         self.cursor_position = 0
         self.cursor_position_last = 0
+
+    async def clear_old_logs(self):
+        """
+        Deletes all log files in the log directory except for the current one.
+        This is an async function that performs file I/O.
+        """
+        await p.print("Request to clear old log files received.")
+        if not self.parent_dir or not self.filename:
+            await p.print("Cannot clear old logs: parent directory or current filename is not set.")
+            return
+
+        try:
+            # self.filename is a full path like '/sd/logs/log_...json'
+            current_log_basename = self.filename.rsplit('/', 1)[-1]
+
+            log_files = os.listdir(self.parent_dir)
+            deleted_count = 0
+            for log_file in log_files:
+                if log_file != current_log_basename:
+                    file_path_to_delete = "{}/{}".format(self.parent_dir, log_file)
+                    try:
+                        os.remove(file_path_to_delete)
+                        deleted_count += 1
+                        await p.print("Deleted old log file: {}".format(file_path_to_delete))
+                        await uasyncio.sleep_ms(10)  # Yield to not block for too long
+                    except OSError as e:
+                        await p.print("Error deleting log file {}: {}".format(file_path_to_delete, e))
+            await p.print("Finished clearing old logs. Deleted {} files.".format(deleted_count))
+        except Exception as e:
+            await p.print("An unexpected error occurred during clear_old_logs: {}".format(e))
 
     async def _print_last_line(self, path=None):
         try:
@@ -1011,9 +1041,9 @@ class JSONLogger:
     def request_rename_file(self):
         self._requestRenameFile = True
 
-    async def wait_for_end_process_log_queue(self):
-        while self.log_queue:
-            await uasyncio.sleep_ms(10)
+    # async def wait_for_end_process_log_queue(self):
+    #     while self.log_queue:
+    #         await uasyncio.sleep_ms(10)
 
     async def writer_main_loop(self):
         while self.run:
@@ -1024,13 +1054,13 @@ class JSONLogger:
     async def machine(self):
         if self._requestRenameFile:
             self._requestRenameFile = False
-            await self.wait_for_end_process_log_queue()
+            # await self.wait_for_end_process_log_queue()
             await self.sync()
             new_path = await self.get_new_file_path()
             await self.rename_current_filename(new_path)
         if self._requestNewFile:
             self._requestNewFile = False
-            await self.wait_for_end_process_log_queue()
+            # await self.wait_for_end_process_log_queue()
             await self.sync()
             await self.new_file()
         if not self.keep_file_open:
@@ -1096,7 +1126,7 @@ AFE_Config = [
 ]
 
 
-def callibration_reader_csv(csv_file):
+async def callibration_reader_csv(csv_file):
     def convert_value(key, value):
         try:
             if key == 'ID':
@@ -1113,22 +1143,31 @@ def callibration_reader_csv(csv_file):
             except:
                 return value
 
-    with open(csv_file, mode='r', encoding='utf-8') as file:
-        lines = file.readlines()
+    await uasyncio.sleep_ms(0)
+    try:
+        with open(csv_file, mode='r', encoding='utf-8') as file:
+            lines = file.readlines()
+    except Exception as e:
+        await p.print("Error reading CSV file {}: {}".format(csv_file, e))
+        return []
+    await uasyncio.sleep_ms(0)
+
+    if not lines:
+        return []
 
     headers = lines[0].strip().split(',')
 
-    rows = [
-        {key: convert_value(key, value)
-         for key, value in zip(headers, line.strip().split(','))}
-        for line in lines[1:]
-    ]
+    rows = []
+    for line in lines[1:]:
+        rows.append({key: convert_value(key, value)
+                     for key, value in zip(headers, line.strip().split(','))})
+        await uasyncio.sleep_ms(0)
 
     return rows
 
 
-def read_callibration_csv(file, toSi=True):
-    callib_data = callibration_reader_csv(file)
+async def read_callibration_csv(file, toSi=True):
+    callib_data = await callibration_reader_csv(file)
     callib_data_mean = {}
     uniq_id = []
     groups = ['M', 'S']
@@ -1158,6 +1197,7 @@ def read_callibration_csv(file, toSi=True):
                 if k not in callib_data_mean[g]:
                     callib_data_mean[g][k] = []
                 callib_data_mean[g][k].append(v_si)
+        await uasyncio.sleep_ms(0)
 
     # Compute the mean for each key
     for g in groups:
@@ -1168,6 +1208,7 @@ def read_callibration_csv(file, toSi=True):
                     values) / len(values) if values else None
             callib_data_mean[g]['ID'] = 0  # append ID as default
             callib_data_mean[g]['M/S'] = g
+        await uasyncio.sleep_ms(0)
 
     return callib_data, callib_data_mean
 
@@ -1192,11 +1233,12 @@ async def get_configuration_from_files(afe_id, callibration_data_file_csv="dane_
     Returns:
         dict: A dictionary containing the calibration data for the specified AFE.
     """
-    TempLoop_data, TempLoop_data_mean = read_callibration_csv(
+    TempLoop_data, TempLoop_data_mean = await read_callibration_csv(
         TempLoop_file_csv)
-    callib_data, callib_data_mean = read_callibration_csv(
+    await uasyncio.sleep_ms(0)
+    callib_data, callib_data_mean = await read_callibration_csv(
         callibration_data_file_csv)
-
+    await uasyncio.sleep_ms(0)
     callibration = {'ID': afe_id}
     for c0 in [callib_data, TempLoop_data]:
         for c in c0:
@@ -1209,6 +1251,7 @@ async def get_configuration_from_files(afe_id, callibration_data_file_csv="dane_
             if g not in callibration:
                 callibration[g] = {}
             callibration[g].update(c)
+            await uasyncio.sleep_ms(0)
     for c0 in [callib_data_mean, TempLoop_data_mean]:
         for g in ['M', 'S']:
             for k, v in c0[g].items():
@@ -1220,4 +1263,5 @@ async def get_configuration_from_files(afe_id, callibration_data_file_csv="dane_
                     # await self.logger.log(
                     #     VerbosityLevel["WARNING"], "Calibration data: AFE {}: No value {}, set to {}".format(afe_id, k, v))
                     callibration[g][k] = v  # set default value
+            await uasyncio.sleep_ms(0)
     return callibration
