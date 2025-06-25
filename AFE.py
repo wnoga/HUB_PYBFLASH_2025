@@ -16,6 +16,7 @@ from my_utilities import SensorChannel, AFECommandChannelMask, AFECommandAverage
 from my_utilities import extract_bracketed
 from my_utilities import rtc, rtc_synced, rtc_unix_timestamp
 from my_utilities import get_e_ADC_CHANNEL
+from my_utilities import convert_to_si
 from my_RxDeviceCAN import RxDeviceCAN
 
 
@@ -199,22 +200,7 @@ class AFEDevice:
                 if v is '':
                     time_sample_ms = 1000
                 else:
-                    if unit == "s":
-                        time_sample_ms = v*1000
-                    elif unit == "ms":
-                        time_sample_ms = v
-                    elif unit == "us":
-                        time_sample_ms = v/1000
-                    elif unit == "ns":
-                        time_sample_ms = v/1000000
-                    elif unit == "h":
-                        time_sample_ms = v*1000*3600
-                    elif unit == "min":
-                        time_sample_ms = v*1000*60
-                    elif unit == "d":
-                        time_sample_ms = v*1000*3600*24
-                    else:  # assume value is in SI [s]
-                        time_sample_ms = v*1000
+                    time_sample_ms = convert_to_si(v, unit)*1000 # to ms
                 time_sample_ms = int(round(time_sample_ms))
                 report_every_ms[g] = time_sample_ms
         commandKwargs = {"timeout_ms": 10220,

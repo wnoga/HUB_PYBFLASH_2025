@@ -7,11 +7,15 @@ import os
 
 try:
     class DummyLock:
-        def acquire(self, blocking=True, timeout=-1): return True # pragma: no cover
-        def release(self): pass # pragma: no cover
-        def locked(self): return False # pragma: no cover
-    class DummyRTC: # pragma: no cover
-        def datetime(self): return (2000,1,1,1,0,0,0,0) # year, month, day, weekday, hour, minute, second, subsecond
+        def acquire(self, blocking=True, timeout=-
+                    1): return True  # pragma: no cover
+
+        def release(self): pass  # pragma: no cover
+        def locked(self): return False  # pragma: no cover
+
+    class DummyRTC:  # pragma: no cover
+        # year, month, day, weekday, hour, minute, second, subsecond
+        def datetime(self): return (2000, 1, 1, 1, 0, 0, 0, 0)
     import _thread
     import micropython
     import machine
@@ -30,6 +34,7 @@ try:
 except ImportError:
     import asyncio
     # --- Mock uasyncio module (using Python's asyncio) ---
+
     class UasyncioShim:
         def __init__(self):
             self._loop = None
@@ -41,10 +46,11 @@ except ImportError:
                 except RuntimeError:
                     self._loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(self._loop)
-            return self # In MicroPython, get_event_loop() often returns the loop itself which has create_task etc.
+            # In MicroPython, get_event_loop() often returns the loop itself which has create_task etc.
+            return self
 
         def create_task(self, coro):
-            if self._loop is None: # Ensure loop exists if get_event_loop wasn't called explicitly before create_task
+            if self._loop is None:  # Ensure loop exists if get_event_loop wasn't called explicitly before create_task
                 self.get_event_loop()
             return self._loop.create_task(coro)
 
@@ -54,7 +60,7 @@ except ImportError:
         async def sleep_ms(self, t_ms):
             await asyncio.sleep(t_ms / 1000.0)
 
-        def run_forever(self): # This method is on the loop object
+        def run_forever(self):  # This method is on the loop object
             if self._loop:
                 try:
                     print("SIM: Starting asyncio event loop run_forever().")
@@ -67,9 +73,10 @@ except ImportError:
                     # self._loop.close() # Closing should be handled carefully, esp. if run in a thread
                     print("SIM: asyncio loop finished run_forever().")
             else:
-                print("SIM: uasyncio.run_forever() called but no loop was properly retrieved/set.")
+                print(
+                    "SIM: uasyncio.run_forever() called but no loop was properly retrieved/set.")
 
-        def run(self, coro): # For uasyncio.run(main())
+        def run(self, coro):  # For uasyncio.run(main())
             return asyncio.run(coro)
         # import asyncio as uasyncio
     uasyncio = UasyncioShim()
@@ -79,15 +86,18 @@ import time
 
 print_lock = DummyLock()
 
+
 def is_timeout(timestamp_ms, timeout_ms):
     if timeout_ms == 0:
         return False
     return time.ticks_diff(time.ticks_ms(), timestamp_ms) > timeout_ms
 
+
 def is_delay(timestamp_ms, delay_ms):
     if delay_ms == 0:
         return False
     return time.ticks_diff(time.ticks_ms(), timestamp_ms) < delay_ms
+
 
 class wdt_x:
     def __init__(self, timeout=2000):
@@ -116,12 +126,14 @@ except:
 
 rtc_synced = False
 
+
 def rtc_unix_timestamp():
     dt = rtc.datetime()  # (year, month, day, weekday, hours, minutes, seconds, subseconds)
     # Rearrange to (year, month, day, hour, minute, second, weekday, yearday)
     tm = (dt[0], dt[1], dt[2], dt[4], dt[5], dt[6], dt[3], 0)
     # Add seconds from 1970-01-01 to 2000-01-01
     return time.mktime(tm) + 946684800
+
 
 def rtc_datetime_pretty():
     dt = rtc.datetime()
@@ -155,13 +167,13 @@ class PrintButLouder:
         """Acquires the global print_lock."""
         global print_lock
         if blocking:
-            while not print_lock.acquire(True, -1): # blocking acquire
+            while not print_lock.acquire(True, -1):  # blocking acquire
                 try:
                     time.sleep_ms(sleep_ms)
                 except AttributeError:  # pragma: no cover
-                    time.sleep(sleep_ms / 1000.0) # Fallback for PC
+                    time.sleep(sleep_ms / 1000.0)  # Fallback for PC
         else:
-            return print_lock.acquire(False) # non-blocking acquire
+            return print_lock.acquire(False)  # non-blocking acquire
         return True
 
     def _unlock(self):
@@ -171,33 +183,35 @@ class PrintButLouder:
             print_lock.release()
 
     async def print(self, *args, **kwargs):
-        if self._lock(): # Acquire lock
+        if self._lock():  # Acquire lock
             try:
                 self.queue.append((args, kwargs))
-                if len(self.queue) > 50: # TODO: Make this configurable
+                if len(self.queue) > 50:  # TODO: Make this configurable
                     self.queue.pop(0)
             finally:
-                self._unlock() # Ensure lock is released
+                self._unlock()  # Ensure lock is released
 
     async def machine(self):
         if not self.queue:
             return
-        
+
         item = None
-        if self._lock(): # Acquire lock
+        if self._lock():  # Acquire lock
             try:
-                if self.queue: # Re-check queue is not empty after acquiring lock
+                if self.queue:  # Re-check queue is not empty after acquiring lock
                     item = self.queue.pop(0)
             finally:
-                self._unlock() # Ensure lock is released
-        
+                self._unlock()  # Ensure lock is released
+
         if item:
             print(*(item[0]), **item[1])
-        await uasyncio.sleep_ms(0) # Yield to the event loop after printing one item
- 
+        # Yield to the event loop after printing one item
+        await uasyncio.sleep_ms(0)
+
 
 p = PrintButLouder()
 # P = PrintButLouder()
+
 
 class AFECommand:
     getSerialNumber = 0x0
@@ -293,11 +307,13 @@ e_ADC_CHANNEL: dict[int, str] = {
     7: "TEMP_LOCAL"
 }
 
+
 def get_e_ADC_CHANNEL(channel_name):
     for k, v in e_ADC_CHANNEL:
         if v == channel_name:
             return k
     return None
+
 
 channel_name_xxx: dict[str, int] = {
     "MASTER_VOLTAGE": AFECommandChannel.AFECommandChannel_2,
@@ -378,6 +394,56 @@ def extract_bracketed(text):
 
     return results
 
+
+def convert_to_si(value, unit):
+    """
+    Converts a value to its SI-equivalent based on unit.
+    Automatically detects quantity type: time (s), temperature (°C), voltage (V)
+
+    Parameters:
+        value: int, float, or str — the value to convert
+        unit: str — the unit of the value (e.g., 'ms', 'F', 'mV')
+
+    Returns:
+        float — value converted to SI-equivalent
+    """
+    try:
+        v = float(value) if value != '' else 1.0
+    except (ValueError, TypeError):
+        return 1.0  # fallback if value is invalid
+
+    unit = unit.strip().lower()
+
+    # Mapping of unit to (quantity_type, conversion)
+    unit_map = {
+        # Time units (→ seconds)
+        "ns": ("time", 1e-9),
+        "us": ("time", 1e-6),
+        "ms": ("time", 1e-3),
+        "s": ("time", 1.0),
+        "min": ("time", 60.0),
+        "h": ("time", 3600.0),
+        "d": ("time", 86400.0),
+
+        # Temperature units (→ Celsius)
+        "c": ("temperature", lambda x: x),
+        "k": ("temperature", lambda x: x - 273.15),
+        "f": ("temperature", lambda x: (x - 32) * 5 / 9),
+
+        # Voltage units (→ Volts)
+        "mv": ("voltage", 1e-3),
+        "v": ("voltage", 1.0),
+        "kv": ("voltage", 1e3),
+    }
+
+    if unit in unit_map:
+        qtype, conversion = unit_map[unit]
+        return conversion(v) if callable(conversion) else v * conversion
+
+    # Unknown unit: assume it's already in SI-equivalent
+    return v
+
+
 # # Measurement structure
 # class SensorReading:
 #     def __init__(self, timestamp_ms=0, value=0.0):
@@ -394,7 +460,8 @@ class SensorChannel:
         self.channel_id = channel_id
         self.config = {}
         self.name = e_ADC_CHANNEL[channel_id]
-        self.last_recieved_data = {"last":{},"average":{}}
+        self.last_recieved_data = {"last": {}, "average": {}}
+
 
 class JSONLogger:
     def __init__(self, filename="log.json", parent_dir="/sd/logs", verbosity_level=VerbosityLevel["INFO"], keep_file_open=True):
@@ -417,27 +484,28 @@ class JSONLogger:
         self.cursor_position_last = 0
         self.rtc_synced = False
         self.keep_file_open = keep_file_open
-        
+
         self.log_queue_max_len = 128
         # self.lock_process_log_queue = False
         self.writer_main_loop_yield_ms = 50
-        
+
         self.request_print_last_lines = 0
-        
+
         self.run = True
-        
+
         self.divide_log_by_chunk_size = 0
-        
-        self.file = None # File will be opened by new_file or on first log
+
+        self.file = None  # File will be opened by new_file or on first log
 
     def _ensure_directory(self):
         try:
             if not self._path_exists(self.parent_dir):
-                os.makedirs(self.parent_dir) # Use makedirs for parent_dir
+                os.makedirs(self.parent_dir)  # Use makedirs for parent_dir
         except OSError as e:
             # This might be an issue if p.print itself is not fully initialized or causes recursion
             # Consider a simpler print for critical bootstrap errors.
-            print("CRITICAL: Failed to create log directory {}: {}".format(self.parent_dir,e))
+            print("CRITICAL: Failed to create log directory {}: {}".format(
+                self.parent_dir, e))
 
     def _get_unique_filename(self, filename):
         base, ext = filename.rsplit(
@@ -464,9 +532,9 @@ class JSONLogger:
         filename_datetime = self.filename_org
         if self.rtc_synced:
             year, month, day, hour, minute, second = time.gmtime()[0:6]
-            filename_datetime = "log_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}.json".format( # pragma: no cover
+            filename_datetime = "log_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}.json".format(  # pragma: no cover
                 year, month, day, hour, minute, second)
-        await uasyncio.sleep_ms(0) # Yield
+        await uasyncio.sleep_ms(0)  # Yield
         return self._get_unique_filename(
             "{}/{}".format(self.parent_dir, filename_datetime))
 
@@ -474,22 +542,23 @@ class JSONLogger:
         if self.keep_file_open:
             try:
                 if self.file is not None:
-                    await self.sync() # Sync before closing
+                    await self.sync()  # Sync before closing
                     self.file.close()
                     await uasyncio.sleep_ms(0)
             except Exception as e:
                 await p.print("Error closing old file in new_file (keep_open=True): {}".format(e))
-            
-            self.filename = await self.get_new_file_path() # Ensures directory exists before open
+
+            # Ensures directory exists before open
+            self.filename = await self.get_new_file_path()
             try:
                 # Open in write mode, truncating for a new file
-                self.file = open(self.filename, "w") 
+                self.file = open(self.filename, "w")
                 await uasyncio.sleep_ms(0)
-            except Exception as e: # pragma: no cover
+            except Exception as e:  # pragma: no cover
                 p.print("ERROR new_file (keep_open=True): {}".format(e))
-                self.file = None # Ensure file is None on error
-        else: # not keep_file_open
-            if self.file is not None: # Should be None, but as a safeguard
+                self.file = None  # Ensure file is None on error
+        else:  # not keep_file_open
+            if self.file is not None:  # Should be None, but as a safeguard
                 try:
                     self.file.close()
                     await uasyncio.sleep_ms(0)
@@ -497,24 +566,25 @@ class JSONLogger:
                     await p.print("Error closing file in new_file (keep_open=False): {}".format(e))
                 self.file = None
             # Sets the filename, ensures dir. File is not opened here for this mode.
-            self.filename = await self.get_new_file_path() 
+            self.filename = await self.get_new_file_path()
         # self.filename was already set by the if/else block above
         self.cursor_position = 0
         self.cursor_position_last = 0
         self.file_rows = 0
-        await p.print("New logger file target set to:", self.filename) # await p.print
-        await uasyncio.sleep_ms(0) # Yield
+        # await p.print
+        await p.print("New logger file target set to:", self.filename)
+        await uasyncio.sleep_ms(0)  # Yield
 
     async def _log(self, level: int, message_chunk: str, chunk_id: int, chunk_id_max: int):
-        if self.burst_delay_ms: # Rate limiting
+        if self.burst_delay_ms:  # Rate limiting
             if is_delay(self.burst_timestamp_ms, self.burst_delay_ms):
                 return 0  # Zero item saved
         self.burst_timestamp_ms = millis()
 
-        if not self.filename: # If filename is not set (e.g. very first log)
-            return 0 # Zero item saved
-            await self.new_file() # This will set self.filename
-            if not self.filename: # Still no filename after new_file attempt
+        if not self.filename:  # If filename is not set (e.g. very first log)
+            return 0  # Zero item saved
+            await self.new_file()  # This will set self.filename
+            if not self.filename:  # Still no filename after new_file attempt
                 await p.print("ERROR in _log: Could not determine filename.")
                 return -1
 
@@ -538,25 +608,25 @@ class JSONLogger:
         opened_in_scope = False
 
         if self.keep_file_open:
-            if self.file is None: # Attempt to reopen if closed unexpectedly
-                return 0 # Zero item saved
-                if not self.filename: # Should have been set by new_file
+            if self.file is None:  # Attempt to reopen if closed unexpectedly
+                return 0  # Zero item saved
+                if not self.filename:  # Should have been set by new_file
                     await p.print("ERROR in _log (keep_open=True): Filename not set.")
-                    await self.request_new_file() # Try to recover
+                    await self.request_new_file()  # Try to recover
                     return -1
                 try:
                     self.file = open(self.filename, "a")
                     await uasyncio.sleep_ms(0)
                 except Exception as e_open:
-                    await p.print("ERROR in _log: Failed to reopen file {} (keep_open=True): {}".format(self.filename,e_open))
+                    await p.print("ERROR in _log: Failed to reopen file {} (keep_open=True): {}".format(self.filename, e_open))
                     await self.request_new_file()
                     return -1
             current_file_handle = self.file
-        else: # Not keep_file_open, open/close per write
-            if not self.filename: # Ensure filename is valid
-                return 0 # Zero item saved
+        else:  # Not keep_file_open, open/close per write
+            if not self.filename:  # Ensure filename is valid
+                return 0  # Zero item saved
                 await p.print("Error in _log (keep_file_open=False): Filename not set before open attempt.")
-                await self.new_file() # Try to set it
+                await self.new_file()  # Try to set it
                 if not self.filename:
                     await p.print("Critical Error in _log (keep_file_open=False): Could not establish a valid log file after new_file().")
                     return -1
@@ -567,7 +637,7 @@ class JSONLogger:
             except Exception as e_open:
                 await p.print("ERROR in _log: Failed to open file {} (keep_file_open=False): {}".format(self.filename, e_open))
                 return -1
-            
+
         if current_file_handle is None:
             await p.print("ERROR in _log: File handle is None for {} before write attempt.".format(self.filename))
             return -1
@@ -579,7 +649,8 @@ class JSONLogger:
                 log_entry_dict["message"] = message_chunk
                 current_file_handle.write(json.dumps(log_entry_dict) + "\n")
             else:
-                message_str = str(message_chunk) # if not isinstance(message_chunk, str) else message_chunk
+                # if not isinstance(message_chunk, str) else message_chunk
+                message_str = str(message_chunk)
                 if chunk_id == 0:
                     toLog = "{" + json.dumps(log_entry_dict)
                 toLog += message_str
@@ -587,13 +658,13 @@ class JSONLogger:
                     toLog += "}\n"
                 self.file.write(toLog)
                 current_file_handle.write(toLog)
-            await uasyncio.sleep_ms(0) # Yield after write
+            await uasyncio.sleep_ms(0)  # Yield after write
             self.file_rows += 1
             self.cursor_position = self.file.tell()
 
             self.cursor_position = current_file_handle.tell()
 
-            if opened_in_scope: # if not keep_file_open, flush and close
+            if opened_in_scope:  # if not keep_file_open, flush and close
                 current_file_handle.flush()
                 await uasyncio.sleep_ms(0)
                 current_file_handle.close()
@@ -601,97 +672,108 @@ class JSONLogger:
                 # Do not set self.file to None here if it wasn't self.file
 
         except Exception as e:
-            p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename, e, toLog[:512])) # Todo check toLog
-            await p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename,e,toLog[:200]))
+            # Todo check toLog
+            p.print(
+                "ERROR in _log writing to {}: {} -> {}".format(self.filename, e, toLog[:512]))
+            await p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename, e, toLog[:200]))
             if opened_in_scope and current_file_handle:
-                try: current_file_handle.close()
-                except: pass
-            if self.keep_file_open and self.file: # If it was self.file and it errored
-                try: self.file.close()
-                except: pass
+                try:
+                    current_file_handle.close()
+                except:
+                    pass
+            if self.keep_file_open and self.file:  # If it was self.file and it errored
+                try:
+                    self.file.close()
+                except:
+                    pass
                 self.file = None
-                await self.request_new_file() # Request new file on write error
-            return -1 # skip this row
-        
+                await self.request_new_file()  # Request new file on write error
+            return -1  # skip this row
+
         if level >= self.print_verbosity_level:
             p.print("LOG:", str(message_chunk)[:60], "...")
             pass
         return 1  # One item saved
-    
+
     async def _process_log_queue(self):
         if self.log_queue:
             level, message_chunk_data, chunk_id, chunk_id_max = self.log_queue[0]
             if await self._log(level, message_chunk_data, chunk_id, chunk_id_max):
                 self.log_queue.pop(0)
-        await uasyncio.sleep_ms(0) # Yield
+        await uasyncio.sleep_ms(0)  # Yield
         return len(self.log_queue)
 
-    async def log(self, level: int, message): # Changed to async def
+    async def log(self, level: int, message):  # Changed to async def
         if self._should_log(level):
             if self.divide_log_by_chunk_size:
-                if not isinstance(message, str): # Ensure message is a string
+                if not isinstance(message, str):  # Ensure message is a string
                     if isinstance(message, dict):
                         message = json.dumps(message)
-                    else: # Convert other types to string
+                    else:  # Convert other types to string
                         message = str(message)
                 message_length = len(message)
-                chunk_id_max = int(message_length // self.divide_log_by_chunk_size)
+                chunk_id_max = int(
+                    message_length // self.divide_log_by_chunk_size)
 
                 for i in range(0, message_length, self.divide_log_by_chunk_size):
                     chunk_id = int(i // self.divide_log_by_chunk_size)
                     i_plus = i + self.divide_log_by_chunk_size
                     if i_plus > message_length:
                         i_plus = message_length
-                    
+
                     current_chunk_data = message[i:i_plus]
 
                     # Wait if the log queue is full.
                     while len(self.log_queue) >= self.log_queue_max_len:
-                        await uasyncio.sleep_ms(10)  # Yield to other tasks/threads
+                        # Yield to other tasks/threads
+                        await uasyncio.sleep_ms(10)
 
                     # Directly append to the queue
-                    self.log_queue.append((level, current_chunk_data, chunk_id, chunk_id_max))
+                    self.log_queue.append(
+                        (level, current_chunk_data, chunk_id, chunk_id_max))
             else:
                 while len(self.log_queue) >= self.log_queue_max_len:
                     await uasyncio.sleep_ms(10)  # Yield to other tasks/threads
                 # await self._log(level, message, 0, 0)
                 self.log_queue.append((level, message, 0, 0))
-                
+
     async def sync(self):
         if self.file is not None:
-            if self.keep_file_open: # Only flush if we are keeping it open
+            if self.keep_file_open:  # Only flush if we are keeping it open
                 try:
                     self.file.flush()
-                    await uasyncio.sleep_ms(0) # Yield after flush
+                    await uasyncio.sleep_ms(0)  # Yield after flush
                     self.last_sync = millis()
                 except Exception as e:
-                    await p.print("Error in sync (keep_open=True): {}".format(e)) # await p.print
+                    # await p.print
+                    await p.print("Error in sync (keep_open=True): {}".format(e))
         # If not keep_file_open, _log handles flush and close, so sync is a no-op.
 
     async def sync_process(self):
         if is_timeout(self.last_sync, self.sync_every_ms):
             await self.sync()
-            await uasyncio.sleep_ms(0) # Yield
+            await uasyncio.sleep_ms(0)  # Yield
 
     async def close(self):
         if self.keep_file_open:
-            await self.sync() # Ensure buffer is flushed if file was open
+            await self.sync()  # Ensure buffer is flushed if file was open
             if self.file is not None:
                 try:
                     self.file.close()
-                    await uasyncio.sleep_ms(0) # Yield after close
+                    await uasyncio.sleep_ms(0)  # Yield after close
                 except Exception as e:
-                    await p.print("Error in close (keep_open=True): {}".format(e)) # await p.print
+                    # await p.print
+                    await p.print("Error in close (keep_open=True): {}".format(e))
                 self.file = None
-        else: # not keep_file_open
-            self.file = None # Should already be None
-        
+        else:  # not keep_file_open
+            self.file = None  # Should already be None
+
     async def sync(self):
         if self.file is not None:
-            if self.keep_file_open: # Only flush if we are keeping it open
+            if self.keep_file_open:  # Only flush if we are keeping it open
                 try:
-                    self.file.flush() # Blocking
-                    await uasyncio.sleep_ms(0) # Yield after flush
+                    self.file.flush()  # Blocking
+                    await uasyncio.sleep_ms(0)  # Yield after flush
                     self.last_sync = millis()
                 except Exception as e:
                     await p.print("Error in sync (keep_open=True): {}".format(e))
@@ -700,43 +782,48 @@ class JSONLogger:
     async def sync_process(self):
         if is_timeout(self.last_sync, self.sync_every_ms):
             await self.sync()
-            await uasyncio.sleep_ms(0) # Yield
+            await uasyncio.sleep_ms(0)  # Yield
 
     async def close(self):
         if self.keep_file_open:
-            await self.sync() # Ensure buffer is flushed if file was open
+            await self.sync()  # Ensure buffer is flushed if file was open
             if self.file is not None:
                 try:
                     self.file.close()
-                    await uasyncio.sleep_ms(0) # Yield after close
+                    await uasyncio.sleep_ms(0)  # Yield after close
                 except Exception as e:
-                    await p.print("Error in close (keep_open=True): {}".format(e)) # await p.print
+                    # await p.print
+                    await p.print("Error in close (keep_open=True): {}".format(e))
                 self.file = None
-        else: # not keep_file_open
-            self.file = None # Should already be None
+        else:  # not keep_file_open
+            self.file = None  # Should already be None
 
     async def clear_logs(self):
         # This method is highly blocking and not easily made async without async os calls.
         # For now, it remains largely synchronous. Consider if it's called from async context.
-        await p.print("clear_logs is a blocking operation and not fully async.") # await p.print
+        # await p.print
+        await p.print("clear_logs is a blocking operation and not fully async.")
         file_was_managed_open = self.file is not None and self.keep_file_open
-        
+
         if file_was_managed_open:
             try:
                 self.file.close()
                 await uasyncio.sleep_ms(0)
             except Exception as e:
-                await p.print("Error closing file in clear_logs: {}".format(e)) # await p.print
+                # await p.print
+                await p.print("Error closing file in clear_logs: {}".format(e))
             self.file = None
 
         if self.filename and self._path_exists(self.filename):
             try:
                 os.unlink(self.filename)
-                await uasyncio.sleep_ms(0) 
-                await p.print("Log file {} unlinked.".format(self.filename)) # await p.print
+                await uasyncio.sleep_ms(0)
+                # await p.print
+                await p.print("Log file {} unlinked.".format(self.filename))
             except Exception as e:
-                await p.print("Error unlinking file {} in clear_logs: {}".format(self.filename, e)) # await p.print
-        
+                # await p.print
+                await p.print("Error unlinking file {} in clear_logs: {}".format(self.filename, e))
+
         self.file_rows = 0
         self.cursor_position = 0
         self.cursor_position_last = 0
@@ -745,18 +832,19 @@ class JSONLogger:
         try:
             file_to_read = path or self.filename
             if not file_to_read:
-                await p.print("Error in _print_last_line: No file specified or set.") # await p.print
+                # await p.print
+                await p.print("Error in _print_last_line: No file specified or set.")
                 return
-            
+
             # If the file to read is the logger's managed file (self.filename)
             # AND the logger was keeping it open (self.keep_file_open is True)
             # AND the file handle (self.file) actually exists,
             # then we need to close it before _print_last_lines attempts to open it read-only.
             if (file_to_read == self.filename) and self.keep_file_open and (self.file is not None):
-                await self.sync() # Sync any pending writes to self.file
+                await self.sync()  # Sync any pending writes to self.file
                 try:
                     self.file.close()
-                    await uasyncio.sleep_ms(0) # Yield
+                    await uasyncio.sleep_ms(0)  # Yield
                 except Exception as e_close:
                     await p.print("Error closing self.file in _print_last_line: {}".format(e_close))
                 # Mark self.file as None. The logger's main logic will reopen it
@@ -777,23 +865,28 @@ class JSONLogger:
         try:
             file_to_read = path or self.filename
             if not file_to_read:
-                await p.print("Error in _print_last_lines: No file specified or set.") # await p.print
+                # await p.print
+                await p.print("Error in _print_last_lines: No file specified or set.")
                 return
 
             # Condition for using the optimized seek method for the last line
             use_seek_for_last_line = (
-                (path is None or path == self.filename) and  # It's the logger's own file
+                # It's the logger's own file
+                (path is None or path == self.filename) and
                 N == 1 and                                   # Specifically for N=1
-                self.keep_file_open and                      # Logger was configured to keep file open
-                hasattr(self, 'cursor_position_last') and    # Ensure attribute exists
-                self.cursor_position_last is not None        # We have a valid last cursor position
+                # Logger was configured to keep file open
+                self.keep_file_open and
+                # Ensure attribute exists
+                hasattr(self, 'cursor_position_last') and
+                # We have a valid last cursor position
+                self.cursor_position_last is not None
             )
 
             if use_seek_for_last_line:
                 # _print_last_line (if it was the caller) would have closed self.file if it was managed.
                 # This block opens a new read-only handle.
                 with open(file_to_read, "r") as f_read:
-                    await uasyncio.sleep_ms(0) # Yield after open
+                    await uasyncio.sleep_ms(0)  # Yield after open
                     try:
                         f_read.seek(self.cursor_position_last)
                         line = f_read.readline()
@@ -803,35 +896,40 @@ class JSONLogger:
                         #     await p.print(f"(No content at last cursor position {self.cursor_position_last} in {file_to_read})")
                     except OSError as e_seek:
                         await p.print("Error seeking to {} in {}: {}. Reading first line as fallback.".format(self.cursor_position_last, file_to_read, e_seek))
-                        f_read.seek(0) # Fallback to reading the first line
+                        f_read.seek(0)  # Fallback to reading the first line
                         line = f_read.readline()
-                        if line: await p.print(line.strip())
-                return # Handled special case
+                        if line:
+                            await p.print(line.strip())
+                return  # Handled special case
 
             # --- General Case: Print N lines ---
             lines_printed_count = 0
             with open(file_to_read, "r") as f_read:
-                await uasyncio.sleep_ms(0) # Yield after open
+                await uasyncio.sleep_ms(0)  # Yield after open
 
                 if (path is None or path == self.filename) and hasattr(self, 'file_rows'):
                     # Reading the internal log file, attempt to skip to the last N lines
                     lines_to_skip = max(0, self.file_rows - N)
                     for _ in range(lines_to_skip):
-                        if not f_read.readline(): break # EOF
-                        await uasyncio.sleep_ms(0) # Yield
+                        if not f_read.readline():
+                            break  # EOF
+                        await uasyncio.sleep_ms(0)  # Yield
                 # else: For external files, or if file_rows not available, read from the beginning.
 
                 while lines_printed_count < N:
                     line = f_read.readline()
-                    if not line: break # EOF
+                    if not line:
+                        break  # EOF
                     await p.print(line.strip())
                     lines_printed_count += 1
-                    await uasyncio.sleep_ms(0) # Yield
+                    await uasyncio.sleep_ms(0)  # Yield
         except OSError as e:
-            await p.print("Error reading log file in _print_last_lines ({}): {}".format(file_to_read if 'file_to_read' in locals() else 'N/A', e)) # await p.print
+            # await p.print
+            await p.print("Error reading log file in _print_last_lines ({}): {}".format(file_to_read if 'file_to_read' in locals() else 'N/A', e))
         except Exception as e_gen:
-            await p.print("Generic error in _print_last_lines: {}".format(e_gen)) # await p.print
-            
+            # await p.print
+            await p.print("Generic error in _print_last_lines: {}".format(e_gen))
+
     def print_last_lines(self, N=1):
         # while self.request_print_last_lines:
         #     pass
@@ -839,7 +937,7 @@ class JSONLogger:
 
     async def rename_current_file(self, new_name_suffix):
         new_full_path = "{}/{}".format(self.parent_dir, new_name_suffix)
-        
+
         if self.keep_file_open and self.file is not None:
             await self.sync()
             try:
@@ -847,23 +945,25 @@ class JSONLogger:
                 await uasyncio.sleep_ms(0)
             except Exception as e:
                 await p.print("Error closing file in rename_current_file (keep_open=True): {}".format(e))
-            self.file = None 
-        
-        if self.filename and self._path_exists(self.filename): # pragma: no cover
+            self.file = None
+
+        if self.filename and self._path_exists(self.filename):  # pragma: no cover
             try:
                 os.rename(self.filename, new_full_path)
                 await uasyncio.sleep_ms(0)
-                await p.print("Renamed {} to {}".format(self.filename, new_full_path)) # await p.print
+                # await p.print
+                await p.print("Renamed {} to {}".format(self.filename, new_full_path))
             except Exception as e:
-                await p.print("Error renaming {} to {}: {}".format(self.filename, new_full_path, e)) # await p.print
+                # await p.print
+                await p.print("Error renaming {} to {}: {}".format(self.filename, new_full_path, e))
         else:
             await p.print("Old filename {} does not exist for renaming.".format(self.filename))
 
-        self.filename = new_full_path 
-        
+        self.filename = new_full_path
+
         if self.keep_file_open:
             try:
-                self.file = open(self.filename, "a") # Reopen in append mode
+                self.file = open(self.filename, "a")  # Reopen in append mode
                 await uasyncio.sleep_ms(0)
             except Exception as e:
                 await p.print("Error reopening renamed file {} (keep_open=True): {}".format(self.filename, e))
@@ -878,24 +978,26 @@ class JSONLogger:
             except Exception as e:
                 await p.print("Error closing file in rename_current_filename (keep_open=True): {}".format(e))
             self.file = None
-            
+
         if self.filename and self._path_exists(self.filename) and self.filename != new_full_path:
             try:
                 os.rename(self.filename, new_full_path)
                 await uasyncio.sleep_ms(0)
-                await p.print("Renamed {} to {}".format(self.filename, new_full_path)) # await p.print
+                # await p.print
+                await p.print("Renamed {} to {}".format(self.filename, new_full_path))
             except Exception as e:
-                await p.print("Error renaming {} to {}: {}".format(self.filename, new_full_path, e)) # await p.print
+                # await p.print
+                await p.print("Error renaming {} to {}: {}".format(self.filename, new_full_path, e))
         elif self.filename == new_full_path:
             await p.print("Target filename {} is same as current; no rename needed.".format(new_full_path))
         else:
-             await p.print("Old filename {} does not exist for renaming or no rename needed.".format(self.filename))
- 
+            await p.print("Old filename {} does not exist for renaming or no rename needed.".format(self.filename))
+
         self.filename = new_full_path
-        
+
         if self.keep_file_open:
             try:
-                self.file = open(self.filename, "a") # Reopen in append mode
+                self.file = open(self.filename, "a")  # Reopen in append mode
                 await uasyncio.sleep_ms(0)
             except Exception as e:
                 await p.print("Error reopening renamed file {} (keep_open=True): {}".format(self.filename, e))
@@ -906,7 +1008,7 @@ class JSONLogger:
 
     def request_rename_file(self):
         self._requestRenameFile = True
-    
+
     async def wait_for_end_process_log_queue(self):
         while self.log_queue:
             await uasyncio.sleep_ms(10)
@@ -916,7 +1018,6 @@ class JSONLogger:
             while await self._process_log_queue():
                 await uasyncio.sleep_ms(0)
             await uasyncio.sleep_ms(self.writer_main_loop_yield_ms)
-
 
     async def machine(self):
         if self._requestRenameFile:
@@ -932,42 +1033,46 @@ class JSONLogger:
             await self.new_file()
         if not self.keep_file_open:
             # Ensure filename is valid before attempting to open
-            if not self.filename or not self._path_exists(self.parent_dir): # Check parent dir too
-                await p.print("Error in machine (keep_file_open=False): Invalid filename or directory. Attempting to create new file.") # await p.print
-                await self.new_file() # This sets self.filename and ensures dir
+            # Check parent dir too
+            if not self.filename or not self._path_exists(self.parent_dir):
+                # await p.print
+                await p.print("Error in machine (keep_file_open=False): Invalid filename or directory. Attempting to create new file.")
+                await self.new_file()  # This sets self.filename and ensures dir
                 if not self.filename:
-                    await p.print("Critical Error in machine (keep_file_open=False): Could not establish a valid log file. Skipping log cycle.") # await p.print
+                    # await p.print
+                    await p.print("Critical Error in machine (keep_file_open=False): Could not establish a valid log file. Skipping log cycle.")
                     return
             try:
-                self.file = open(self.filename, "a") # BLOCKING
-                await uasyncio.sleep_ms(0) # YIELD after open
+                self.file = open(self.filename, "a")  # BLOCKING
+                await uasyncio.sleep_ms(0)  # YIELD after open
             except Exception as e:
-                await p.print("Error opening log file {} in machine (keep_file_open=False): {}".format(self.filename, e)) # await p.print
-                self.file = None # Ensure file is None so subsequent operations don't fail badly
+                # await p.print
+                await p.print("Error opening log file {} in machine (keep_file_open=False): {}".format(self.filename, e))
+                self.file = None  # Ensure file is None so subsequent operations don't fail badly
                 # Consider requesting a new file or logging an error and returning
                 # await self.request_new_file() # This might be too aggressive, could loop if disk is full
 
         if self.keep_file_open:
-            await self.sync_process() # Sync file to card periodically
+            await self.sync_process()  # Sync file to card periodically
         else:
-            if self.file: # Only flush/close if file was successfully opened
+            if self.file:  # Only flush/close if file was successfully opened
                 try:
-                    self.file.flush() # BLOCKING
-                    await uasyncio.sleep_ms(0) # YIELD after flush
-                    self.file.close() # BLOCKING
-                    await uasyncio.sleep_ms(0) # YIELD after close
+                    self.file.flush()  # BLOCKING
+                    await uasyncio.sleep_ms(0)  # YIELD after flush
+                    self.file.close()  # BLOCKING
+                    await uasyncio.sleep_ms(0)  # YIELD after close
                 except Exception as e:
-                    await p.print("Error flushing/closing log file {} (keep_file_open=False): {}".format(self.filename, e)) # await p.print
+                    # await p.print
+                    await p.print("Error flushing/closing log file {} (keep_file_open=False): {}".format(self.filename, e))
                 finally:
-                    self.file = None # Ensure self.file is None even if close fails
-            
+                    self.file = None  # Ensure self.file is None even if close fails
+
         if self.request_print_last_lines:
             await self._print_last_lines(self.request_print_last_lines)
             self.request_print_last_lines = 0
-            
 
-
-        await uasyncio.sleep_ms(0) # Yield is already in sync_process if sync happens
+        # Yield is already in sync_process if sync happens
+        await uasyncio.sleep_ms(0)
 
 
 # cmndavrg = AFECommandAverage()
@@ -1020,7 +1125,7 @@ def callibration_reader_csv(csv_file):
     return rows
 
 
-def read_callibration_csv(file):
+def read_callibration_csv(file, toSi=True):
     callib_data = callibration_reader_csv(file)
     callib_data_mean = {}
     uniq_id = []
@@ -1036,9 +1141,21 @@ def read_callibration_csv(file):
                     uniq_id.append(v)
                 continue
             if isinstance(v, (float, int)):
+                if toSi:
+                    unit = None
+                    if len(k.split(" ")) > 1:
+                        unit = k.split(" ")[1]
+                        unit = extract_bracketed(unit)
+                        if len(unit):
+                            unit = unit[0]
+                        else:
+                            unit = None
+                    v_si = convert_to_si(v, unit,)
+                else:
+                    v_si = v
                 if k not in callib_data_mean[g]:
                     callib_data_mean[g][k] = []
-                callib_data_mean[g][k].append(v)
+                callib_data_mean[g][k].append(v_si)
 
     # Compute the mean for each key
     for g in groups:

@@ -40,7 +40,7 @@ class AsyncWebServer:
         
         self.main_loop_yield_wait_ms = 10
         self.sync_ntp_loop_yield_wait_s = 10
-        self.sync_ntp_every_s = 10*60
+        self.sync_ntp_every_s = 60
         
         self.procedure_results = {} # Stores results from hub callbacks
         self.procedure_events = {}  # Stores uasyncio.Event for synchronization
@@ -429,11 +429,7 @@ class AsyncWebServer:
                 tm = time.gmtime(secs_since_2000)
                 rtc.datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
                 self.ntp_synced = True
-                await self.hub.logger.log(VerbosityLevel["INFO"], {
-                    "info":"NTP sync successful. Time set to: {}".format(rtc_datetime_pretty()),
-                    "retval": {"HUB_timestamp_ms": millis(), "rtc_timestamp": rtc_unix_timestamp()}
-                    })
-                await p.print("NTP sync successful. Time set to: {}".format(time.gmtime()))
+                await p.print("NTP sync successful. Time set to: {}".format(time.gmtime())) # Added await
                 rtc_synced = True # Update global flag
                 if not self.hub.logger.rtc_synced:
                     self.hub.logger.rtc_synced = True
