@@ -114,7 +114,7 @@ class wdt_x:
 
 
 try:
-    if True:
+    if False:
         wdt = wdt_x()
     else:
         from machine import WDT
