@@ -309,9 +309,9 @@ class AsyncWebServer:
         await writer.awrite("""
             <body>
                 <h1>AFE HUB Control</h1>
-                <p>Current Time: <span id="current-time">{}</span></p>
+                <p>Current Time: <span id="current-time">{}</span> @ {}</p>
                 <button onclick="updatePage()">Refresh Data</button>
-            """.format(rtc_datetime_pretty()))
+            """.format(rtc_datetime_pretty(),millis()))
         
         await writer.awrite(b"<div><h4>Log Files in /sd/logs/:</h4><ul style=\"column-width: 25ex;\">")
         try:

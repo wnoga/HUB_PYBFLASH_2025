@@ -357,7 +357,7 @@ class HUBDevice:
                                        'M' else afe.AFEGPIO_EN_CAL_IN1, 1 if enable else 0)
 
     # Changed to async def
-    async def default_set_dac(self, afe_id=35, dac_master=2481, dac_slave=2481):
+    async def default_set_dac(self, afe_id=35, dac_master=3000, dac_slave=3000):
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
             return
@@ -386,6 +386,14 @@ class HUBDevice:
                          "preserve": True, "timeout_start_on_send_ms": 2000}
         await afe.enqueue_float_for_channel(AFECommand.setDACValueSi_bySubdeviceMask, afe_subdevice, voltage, **commandKwargs)
     
+    async def afe_set_sipm_target_voltage_si(self, afe_id, afe_subdevice: AFECommandSubdevice, voltage, **kwargs):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        commandKwargs = {"timeout_ms": 10220,
+                         "preserve": True, "timeout_start_on_send_ms": 2000}
+        await afe.enqueue_float_for_channel(AFECommand.setDACTargetSi_bySubdeviceMask, afe_subdevice, voltage, **commandKwargs)
+        
     async def default_start_temperature_loop(self, afe_id=35, status=1, subdevice=AFECommandSubdevice.AFECommandSubdevice_both, **commandKwargs):
         if not subdevice:
             return
@@ -679,14 +687,16 @@ class HUBDevice:
                         unit = unit[0]
                     else:
                         unit = None
-                # print(g, k, v, ks, unit)
+                if unit:
+                    v = convert_to_si(v, unit)
+                # print("Loading for AFE{}:{} => {} {} [{}]".format(afe_id,g,k,v,unit))
                 if ks == "T_measured_a":
                     await afe.enqueue_float_for_channel(AFECommand.setChannel_a_byMask, self._get_T_measured_ch_id(g), v, **commandKwargs)
                 elif ks == "T_measured_b":
                     await afe.enqueue_float_for_channel(
                         AFECommand.setChannel_b_byMask, self._get_T_measured_ch_id(g), v, **commandKwargs)
                 elif ks == "offset":
-                    await afe.enqueue_u16_for_channel(
+                    await afe.enqueue_u8_for_channel(
                         AFECommand.setAD8402Value_byte_byMask, self._get_subdevice_ch_id(g), int(v), **commandKwargs)
                 elif ks == "U_measured_a":
                     await afe.enqueue_float_for_channel(
@@ -736,18 +746,21 @@ class HUBDevice:
                         await afe.enqueue_float_for_channel(
                             AFECommand.setAveragingAlpha_byMask, ch_id, 1.0/(10000*100.0), **commandKwargs)
                 elif ks == "time_sample":  # time sample
-                    time_sample_ms = v
                     if v:
-                        time_sample_ms = convert_to_si(v,unit)*1000
+                        time_sample_ms = v*1000 # to ms
                     else:
                         time_sample_ms = 1000
                     time_sample_ms = int(round(time_sample_ms))
                     await afe.enqueue_u32_for_channel(
                         AFECommand.setChannel_dt_ms_byMask, self._get_general_ch_id_mask(g), time_sample_ms, **commandKwargs)
+                elif ks == "dT":
+                    await afe.enqueue_float_for_channel(
+                        AFECommand.setRegulator_dT_byMask, self._get_subdevice_ch_id(g), v, **commandKwargs)
                 else:
                     continue
                 # for uch in afe.unmask_channel(ch_id):
-                #     await self.logger.log(VerbosityLevel["DEBUG"], {
+                #     # await self.logger.log(VerbosityLevel["DEBUG"], {
+                #     await p.print({
                 #         "device_id": afe.device_id,
                 #         "timestamp_ms": millis(),
                 #         "debug": "AFE {} {} Loading {} (CH{} ? {}) value {}".format(

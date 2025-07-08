@@ -241,6 +241,8 @@ class AFECommand:
     stopTemperatureLoopForAllChannels = 0xc4
     setDAC_bySubdeviceMask = 0xc5
     setDACRampOneBytePerMillisecond_ms = 0xc6
+    setDACTargetSi_bySubdeviceMask = 0xc7
+    
     setAveragingMode_byMask = 0xd0
     setAveragingAlpha_byMask = 0xd1
     setAveragingBufferSize_byMask = 0xd2
@@ -252,6 +254,7 @@ class AFECommand:
     setChannel_b_byMask = 0xd8
     setChannel_period_ms_byMask = 0xD9
 
+    setRegulator_dT_byMask = 0xE4
     setRegulator_a_dac_byMask = 0xE5
     setRegulator_b_dac_byMask = 0xE6
     setRegulator_dV_dT_byMask = 0xE7

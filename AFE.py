@@ -320,6 +320,10 @@ class AFEDevice:
         return await self.enqueue_command(
             command, [channel] + list(struct.pack('<f', value)), **kwargs)
 
+    async def enqueue_u8_for_channel(self, command, channel, value, **kwargs):
+        return await self.enqueue_command(
+            command, [channel] + list(struct.pack('<B', value)), **kwargs)
+
     async def enqueue_u16_for_channel(self, command, channel, value, **kwargs):
         return await self.enqueue_command(
             command, [channel] + list(struct.pack('<H', value)), **kwargs)
@@ -395,9 +399,9 @@ class AFEDevice:
                                       self.default_log_dict({"error": "Received CAN message with payload less than 2 bytes", "payload": data_bytes}))
                 return  # Skip processing this invalid message
 
-            command = data_bytes[0]
-            chunk_id = data_bytes[1] & 0x0F
-            max_chunks = (data_bytes[1] >> 4) & 0x0F
+            command = int(data_bytes[0])
+            chunk_id = int(data_bytes[1] & 0x0F)
+            max_chunks = int((data_bytes[1] >> 4) & 0x0F)
             chunk_payload = data_bytes[2:]
             await self.logger.log(VerbosityLevel["DEBUG"],
                                   self.default_log_dict({"debug": "R: ID:{}; Command: 0x{:02X}: {}".format(
@@ -410,9 +414,9 @@ class AFEDevice:
                 chunk_data = self.bytes_to_u32(chunk_payload)
                 if chunk_id == 0:
                     self.unique_id_str = None
-                    self.unique_id = []
+                    self.unique_id = [0,0,0]
                     self.output = {}
-                self.unique_id[chunk_id-1] = chunk_data
+                self.unique_id[chunk_id] = chunk_data
                 if chunk_id == max_chunks:
                     self.is_online = True
                     self.current_command = None
@@ -451,14 +455,14 @@ class AFEDevice:
                 parsed_data["HUB_timestamp_ms"] = HUB_timestamp_ms
 
             elif command == AFECommand.getSyncTimestamp:
-                if chunk_id == 1:
+                if chunk_id == 0:
                     HUB_timestamp_ms = millis()
                     AFE_timestamp_ms = self.bytes_to_u32(
                         chunk_payload[1:])
                     self.last_sync_afe_timestamp_ms = AFE_timestamp_ms
                     parsed_data["AFE_timestamp_ms"] = AFE_timestamp_ms
                     parsed_data["HUB_timestamp_ms"] = HUB_timestamp_ms
-                elif chunk_id == 2:
+                elif chunk_id == 1:
                     parsed_data["msg_recieved_by_AFE_timestamp_ms"] = self.bytes_to_u32(
                         chunk_payload[1:])
 
@@ -470,21 +474,35 @@ class AFEDevice:
                                           "retval": self.trim_dict_for_logger(retval)
                                       }))
             elif command == AFECommand.getSubdeviceStatus:
-                uch = chunk_payload[0]
-                if chunk_id == 1:
-                    self.debug_machine_control_msg_last[uch] = {}  # Clear msg
-                    self.debug_machine_control_msg_last[uch]["channel"] = "master" if uch == 0 else "slave"
-                    value = self.bytes_to_float(chunk_payload[1:])
-                    self.debug_machine_control_msg_last[uch]["voltage"] = value
-                elif chunk_id == 2:
-                    value = self.bytes_to_float(chunk_payload[1:])
-                    self.debug_machine_control_msg_last[uch]["temperature_avg"] = value
-                elif chunk_id == 3:
-                    value = self.bytes_to_float(chunk_payload[1:])
-                    self.debug_machine_control_msg_last[uch]["temperature_old"] = value
-                elif chunk_id == 4:
-                    value = self.bytes_to_u32(chunk_payload[1:])
-                    self.debug_machine_control_msg_last[uch]["timestamp_ms"] = value
+                chunk_id_mod = chunk_id % 8
+                for uch in self.unmask_channel(chunk_payload[0]):
+                    if chunk_id_mod == 0: # Voltage
+                        self.debug_machine_control_msg_last[uch] = {}  # Clear msg
+                        self.debug_machine_control_msg_last[uch]["channel"] = "master" if uch == 0 else "slave"
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg_last[uch]["voltage"] = value
+                    elif chunk_id_mod == 1: # Target voltage
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg_last[uch]["voltage_target"] = value
+                    elif chunk_id_mod == 2: # Average temperature
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg_last[uch]["temperature_avg"] = value
+                    elif chunk_id_mod == 3: # Old temperature
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg_last[uch]["temperature_old"] = value
+                    elif chunk_id_mod == 4: # V offset
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg_last[uch]["V_offset"] = value
+                    elif chunk_id_mod == 5: # Enabled?
+                        self.debug_machine_control_msg_last[uch]["temp_loop"] = "enabled" if chunk_payload[1] else "disabled"
+                        pass
+                    elif chunk_id_mod == 6: # Ramp target reached
+                        self.debug_machine_control_msg_last[uch]["ramp_target_reached"] = "true" if chunk_payload[1] else "false"
+                        pass
+                    elif chunk_id_mod == 7: # Timestamp
+                        value = self.bytes_to_u32(chunk_payload[1:])
+                        self.debug_machine_control_msg_last[uch]["timestamp_ms"] = value
+                        print("yyy",self.debug_machine_control_msg_last[uch])
 
             elif command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
                 pass
@@ -561,6 +579,11 @@ class AFEDevice:
                     self.channels[uch].config["multiplicator"] = self.bytes_to_float(
                         chunk_payload[1:])
 
+            elif command == AFECommand.setRegulator_dT_byMask:
+                for uch in self.unmask_channel(chunk_payload[0]):
+                    self.channels[uch].config["dT"] = self.bytes_to_float(
+                        chunk_payload[1:])
+
             elif command == AFECommand.setRegulator_a_dac_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].config["a"] = self.bytes_to_float(
@@ -605,7 +628,7 @@ class AFEDevice:
                     if not "average_data" in self.periodic_data:
                         self.periodic_data["average_data"] = {}
 
-                    if chunk_id == 1:  # Last data: data
+                    if chunk_id == 0:  # Last data: data
                         self.periodic_data = {}  # Clear periodic data if new chunk set arrived
                         self.periodic_data["last_data"] = {}
                         self.periodic_data["average_data"] = {}
@@ -613,14 +636,14 @@ class AFEDevice:
                         for uch in unmasked_channels:
                             self.periodic_data["last_data"].update(
                                 {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
-                    elif chunk_id == 2:  # Last data: data timestamp
+                    elif chunk_id == 1:  # Last data: data timestamp
                         self.periodic_data["last_data"].update(
                             {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
-                    elif chunk_id == 3:  # Average data: data
+                    elif chunk_id == 2:  # Average data: data
                         for uch in unmasked_channels:
                             self.periodic_data["average_data"].update(
                                 {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
-                    elif chunk_id == 4:  # Average data: calculation timestamp
+                    elif chunk_id == 3:  # Average data: calculation timestamp
                         self.periodic_data["average_data"].update(
                             {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
 
@@ -629,9 +652,9 @@ class AFEDevice:
 
             elif command == AFECommand.getSensorDataSiAndTimestamp_average_byMask:
                 channel = chunk_payload[0]
-                if chunk_id == 1:
+                if chunk_id == 0:
                     value = self.bytes_to_float(chunk_payload[1:])  # value
-                elif chunk_id == 2:
+                elif chunk_id == 1:
                     value = self.bytes_to_u32(chunk_payload[1:])  # timestamp
 
             elif command == AFECommand.writeGPIO:
@@ -652,6 +675,8 @@ class AFEDevice:
 
             elif command == AFECommand.setDACValueRaw_bySubdeviceMask:
                 pass
+            elif command == AFECommand.setDACValueSi_bySubdeviceMask:
+                pass
 
             elif command == AFECommand.setDAC_bySubdeviceMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
@@ -659,29 +684,41 @@ class AFEDevice:
                         pass
                     else:
                         pass
-
+                    
+            elif command == AFECommand.setDAC_bySubdeviceMask:
+                pass
+                for uch in self.unmask_channel(chunk_payload[0]):
+                    pass
+                    
             elif command == AFECommand.debug_machine_control:
-                uch = chunk_payload[0]
-                if chunk_id == 1:
-                    self.debug_machine_control_msg[uch] = {}  # Clear msg
-                    self.debug_machine_control_msg[uch]["channel"] = "master" if uch == 0 else "slave"
-                    value = self.bytes_to_float(chunk_payload[1:])
-                    self.debug_machine_control_msg[uch]["voltage"] = value
-                elif chunk_id == 2:
-                    value = self.bytes_to_float(chunk_payload[1:])
-                    self.debug_machine_control_msg[uch]["temperature_avg"] = value
-                elif chunk_id == 3:
-                    value = self.bytes_to_float(chunk_payload[1:])
-                    self.debug_machine_control_msg[uch]["temperature_old"] = value
-                elif chunk_id == 4:
-                    value = self.bytes_to_u32(chunk_payload[1:])
-                    self.debug_machine_control_msg[uch]["timestamp_ms"] = value
-                    # self.logger.log(VerbosityLevel["CRITICAL"], self.default_log_dict(
-                    #     {
-                    #         "command": AFECommand.debug_machine_control, 
-                    #         "retval": self.trim_dict_for_logger(
-                    #             self.debug_machine_control_msg[uch])
-                    #     }))
+                chunk_id_mod = chunk_id % 8
+                for uch in self.unmask_channel(chunk_payload[0]):
+                    if chunk_id_mod == 0: # Voltage
+                        self.debug_machine_control_msg[uch] = {}  # Clear msg
+                        self.debug_machine_control_msg[uch]["channel"] = "master" if uch == 0 else "slave"
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg[uch]["voltage"] = value
+                    elif chunk_id_mod == 1: # Target voltage
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg[uch]["voltage_target"] = value
+                    elif chunk_id_mod == 2: # Average temperature
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg[uch]["temperature_avg"] = value
+                    elif chunk_id_mod == 3: # Old temperature
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg[uch]["temperature_old"] = value
+                    elif chunk_id_mod == 4: # V offset
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg[uch]["V_offset"] = value
+                    elif chunk_id_mod == 5: # Enabled?
+                        self.debug_machine_control_msg[uch]["temp_loop"] = "enabled" if chunk_payload[1] else "disabled"
+                        pass
+                    elif chunk_id_mod == 6: # Ramp target reached
+                        self.debug_machine_control_msg[uch]["ramp_target_reached"] = "true" if chunk_payload[1] else "false"
+                        pass
+                    elif chunk_id_mod == 7: # Timestamp
+                        value = self.bytes_to_u32(chunk_payload[1:])
+                        self.debug_machine_control_msg[uch]["timestamp_ms"] = value
             else:
                 await p.print("Unknow command: 0x{:02X}: {}".format(
                     command, data_bytes))
@@ -760,19 +797,20 @@ class AFEDevice:
                         self.periodic_data = {}
                 if command == AFECommand.debug_machine_control:
                     for subdev in [0, 1]:
-                        if self.debug_machine_control_msg[subdev].get("timestamp_ms"):
-                            try:
-                                self.debug_machine_control_msg_last[uch] = self.debug_machine_control_msg_last[subdev].copy()
+                        try:
+                            if self.debug_machine_control_msg[subdev].get("timestamp_ms"):
+                                self.debug_machine_control_msg_last[subdev] = self.debug_machine_control_msg[subdev].copy()
                                 toLog = self.default_log_dict({
                                     "command": AFECommand.debug_machine_control,
-                                    "retval": self.trim_dict_for_logger(self.debug_machine_control_msg[subdev]),
+                                    "retval": self.trim_dict_for_logger(self.debug_machine_control_msg_last[subdev]),
                                 })
+                                print("xxx", toLog)
                                 await self.logger.log(VerbosityLevel["CRITICAL"], toLog)
-                            except Exception as e:
-                                await p.print(
-                                    "ERROR during debug_machine_control_msg:", e, toLog)
-                            finally:
-                                self.debug_machine_control_msg[subdev] = {}
+                        except Exception as e:
+                            await p.print(
+                                "ERROR during debug_machine_control_msg:", e, toLog)
+                        finally:
+                            self.debug_machine_control_msg[subdev] = {}
 
             received_data = None
 
