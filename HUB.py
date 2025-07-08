@@ -756,6 +756,9 @@ class HUBDevice:
                 elif ks == "dT":
                     await afe.enqueue_float_for_channel(
                         AFECommand.setRegulator_dT_byMask, self._get_subdevice_ch_id(g), v, **commandKwargs)
+                elif ks == "V_offset":
+                    await afe.enqueue_float_for_channel(
+                        AFECommand.setRegulator_V_offset_byMask, self._get_subdevice_ch_id(g), v, **commandKwargs)
                 else:
                     continue
                 # for uch in afe.unmask_channel(ch_id):

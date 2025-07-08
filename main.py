@@ -96,8 +96,8 @@ async def main():
     hub.use_tx_delay = True
     hub.afe_manage_active = True
     hub.tx_delay_ms = 1
-    hub.afe_id_min = 35
-    hub.afe_id_max = 37 # Ensure this is less than afe_devices_max for discovery to stop if all found
+    hub.afe_id_min = 1
+    hub.afe_id_max = 99 # Ensure this is less than afe_devices_max for discovery to stop if all found
     await p.print("HUB configured.")
     
     if use_async_server:
