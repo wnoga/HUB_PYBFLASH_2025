@@ -528,6 +528,16 @@ class HUBDevice:
 
         await afe.enqueue_command(AFECommand.getSyncTimestamp, None, **commandKwargs)
 
+    async def afe_clearRegulator_T_old(self, afe_id=41, afe_subdevice: AFECommandSubdevice = AFECommandSubdevice.AFECommandSubdevice_both):
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        commandKwargs = {"timeout_ms": 10220,
+                         "preserve": True,
+        }
+        afe.enqueue_float_for_channel(
+                        AFECommand.setRegulator_T_old, afe_subdevice, 0.0, **commandKwargs)
+
     async def default_afe_pause(self, afe_id=35):  # Changed to async def
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
@@ -722,6 +732,9 @@ class HUBDevice:
                 elif ks == "dV/dT":
                     await afe.enqueue_float_for_channel(
                         AFECommand.setRegulator_dV_dT_byMask, self._get_subdevice_ch_id(g), v, **commandKwargs)
+                elif ks == "T_opt":
+                    await afe.enqueue_float_for_channel(
+                        AFECommand.setRegulator_T_opt_byMask, self._get_subdevice_ch_id(g), v, **commandKwargs)
                 elif ks == "avg_number":  # Maximum nuber of samples used in averaging
                     avg_number = v
                     if v:

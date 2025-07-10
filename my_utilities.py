@@ -254,6 +254,7 @@ class AFECommand:
     setChannel_b_byMask = 0xd8
     setChannel_period_ms_byMask = 0xD9
 
+    setRegulator_T_opt_byMask = 0xE3
     setRegulator_dT_byMask = 0xE4
     setRegulator_a_dac_byMask = 0xE5
     setRegulator_b_dac_byMask = 0xE6
@@ -262,7 +263,7 @@ class AFECommand:
     setRegulator_V_offset_byMask = 0xE9
 
     debug_machine_control = 0xf1
-
+    setRegulator_T_old = 0xF2
 
 class AFECommandChannel:
     AFECommandChannel_0 = 0x1

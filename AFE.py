@@ -578,7 +578,12 @@ class AFEDevice:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].config["multiplicator"] = self.bytes_to_float(
                         chunk_payload[1:])
-
+                    
+            elif command == AFECommand.setRegulator_T_opt_byMask:
+                for uch in self.unmask_channel(chunk_payload[0]):
+                    self.channels[uch].config["T_opt"] = self.bytes_to_float(
+                        chunk_payload[1:])
+                    
             elif command == AFECommand.setRegulator_dT_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].config["dT"] = self.bytes_to_float(
