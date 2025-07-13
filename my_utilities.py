@@ -221,20 +221,23 @@ class AFECommand:
     getTimestamp = 0x5
     getSyncTimestamp = 0x6
     resetCAN = 0x7
-    getSubdeviceStatus = 0x08
+    getSubdeviceStatus = 0x8
+    
     getSensorDataSi_last_byMask = 0x30
     getSensorDataSi_average_byMask = 0x31
-    getSensorDataSiAndTimestamp_average_byMask = 0x3b
     getSensorDataSi_periodic = 0x3f
+    
     setSensorDataSi_periodic_last = 0x40
     setSensorDataSiAndTimestamp_periodic_last = 0x41
     setSensorDataSi_periodic_average = 0x42
     setSensorDataSiAndTimestamp_periodic_average = 0x43
+    
     transmitSPIData = 0xa0
     setAD8402Value_byte_byMask = 0xa1
     writeGPIO = 0xa2
     setCanMsgBurstDelay_ms = 0xa3
     setAfe_can_watchdog_timeout_ms = 0xa4
+    
     setTemperatureLoopForChannelState_byMask_asStatus = 0xc1
     setDACValueRaw_bySubdeviceMask = 0xc2
     setDACValueSi_bySubdeviceMask = 0xc3
@@ -252,18 +255,21 @@ class AFECommand:
     setAveragingSubdevice = 0xd6
     setChannel_a_byMask = 0xd7
     setChannel_b_byMask = 0xd8
-    setChannel_period_ms_byMask = 0xD9
-
-    setRegulator_T_opt_byMask = 0xE3
-    setRegulator_dT_byMask = 0xE4
-    setRegulator_a_dac_byMask = 0xE5
-    setRegulator_b_dac_byMask = 0xE6
-    setRegulator_dV_dT_byMask = 0xE7
-    setRegulator_V_opt_byMask = 0xE8
-    setRegulator_V_offset_byMask = 0xE9
-
+    setChannel_period_ms_byMask = 0xd9
+    
+    setChannelBufferSize = 0xe0
+    setRegulator_ramp_enabled_byMask = 0xe1
+    setRegulator_T_opt_byMask = 0xe3
+    setRegulator_dT_byMask = 0xe4
+    setRegulator_a_dac_byMask = 0xe5
+    setRegulator_b_dac_byMask = 0xe6
+    setRegulator_dV_dT_byMask = 0xe7
+    setRegulator_V_opt_byMask = 0xe8
+    setRegulator_V_offset_byMask = 0xe9
+    
     debug_machine_control = 0xf1
-    setRegulator_T_old = 0xF2
+    clearRegulator_T_old = 0xf2
+
 
 class AFECommandChannel:
     AFECommandChannel_0 = 0x1
@@ -1171,7 +1177,7 @@ async def callibration_reader_csv(csv_file):
     return rows
 
 
-async def read_callibration_csv(file, toSi=True):
+async def read_callibration_csv(file, toSi=False):
     callib_data = await callibration_reader_csv(file)
     callib_data_mean = {}
     uniq_id = []

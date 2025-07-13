@@ -727,7 +727,7 @@ class HUBDevice:
                     await afe.enqueue_float_for_channel(
                         AFECommand.setRegulator_b_dac_byMask, self._get_subdevice_ch_id(g), v, **commandKwargs)
                 elif ks == "V_opt":
-                    afe.enqueue_float_for_channel(
+                    await afe.enqueue_float_for_channel(
                         AFECommand.setRegulator_V_opt_byMask, self._get_subdevice_ch_id(g), v, **commandKwargs)
                 elif ks == "dV/dT":
                     await afe.enqueue_float_for_channel(
