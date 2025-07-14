@@ -474,32 +474,41 @@ class AFEDevice:
                                           "retval": self.trim_dict_for_logger(retval)
                                       }))
             elif command == AFECommand.getSubdeviceStatus:
-                chunk_id_mod = chunk_id % 8
+                chunk_id_mod = chunk_id % 11
                 for uch in self.unmask_channel(chunk_payload[0]):
                     if chunk_id_mod == 0: # Voltage
                         self.debug_machine_control_msg_last[uch] = {}  # Clear msg
                         self.debug_machine_control_msg_last[uch]["channel"] = "master" if uch == 0 else "slave"
                         value = self.bytes_to_float(chunk_payload[1:])
                         self.debug_machine_control_msg_last[uch]["voltage"] = value
-                    elif chunk_id_mod == 1: # Target voltage
+                    elif chunk_id_mod == 1: # Voltage in bytes
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg_last[uch]["voltage_bytes"] = value
+                    elif chunk_id_mod == 2: # Target voltage
                         value = self.bytes_to_float(chunk_payload[1:])
                         self.debug_machine_control_msg_last[uch]["voltage_target"] = value
-                    elif chunk_id_mod == 2: # Average temperature
+                    elif chunk_id_mod == 3: # Target voltage in bytes
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg_last[uch]["voltage_target_bytes"] = value
+                    elif chunk_id_mod == 4: # Average temperature
                         value = self.bytes_to_float(chunk_payload[1:])
                         self.debug_machine_control_msg_last[uch]["temperature_avg"] = value
-                    elif chunk_id_mod == 3: # Old temperature
+                    elif chunk_id_mod == 5: # Last temperature in bytes
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg_last[uch]["temperature_last_bytes"] = value
+                    elif chunk_id_mod == 6: # Old temperature
                         value = self.bytes_to_float(chunk_payload[1:])
                         self.debug_machine_control_msg_last[uch]["temperature_old"] = value
-                    elif chunk_id_mod == 4: # V offset
+                    elif chunk_id_mod == 7: # V offset
                         value = self.bytes_to_float(chunk_payload[1:])
                         self.debug_machine_control_msg_last[uch]["V_offset"] = value
-                    elif chunk_id_mod == 5: # Enabled?
+                    elif chunk_id_mod == 8: # Enabled?
                         self.debug_machine_control_msg_last[uch]["temp_loop"] = "enabled" if chunk_payload[1] else "disabled"
                         pass
-                    elif chunk_id_mod == 6: # Ramp target reached
+                    elif chunk_id_mod == 9: # Ramp target reached
                         self.debug_machine_control_msg_last[uch]["ramp_target_reached"] = "true" if chunk_payload[1] else "false"
                         pass
-                    elif chunk_id_mod == 7: # Timestamp
+                    elif chunk_id_mod == 10: # Timestamp
                         value = self.bytes_to_u32(chunk_payload[1:])
                         self.debug_machine_control_msg_last[uch]["timestamp_ms"] = value
                         print("yyy",self.debug_machine_control_msg_last[uch])
@@ -640,11 +649,11 @@ class AFEDevice:
                         self.periodic_data["timestamp_ms"] = millis()
                         for uch in unmasked_channels:
                             self.periodic_data["last_data"].update(
-                                {"{}_bytes".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
-                    elif chunk_id == 1: # Last data as SI
+                                {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
+                    elif chunk_id == 1: # Last data as bytes
                         for uch in unmasked_channels:
                             self.periodic_data["last_data"].update(
-                                {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
+                                {"{}_bytes".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
                     elif chunk_id == 2:  # Last data: data timestamp
                         self.periodic_data["last_data"].update(
                             {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
@@ -700,34 +709,44 @@ class AFEDevice:
                     pass
                     
             elif command == AFECommand.debug_machine_control:
-                chunk_id_mod = chunk_id % 8
+                chunk_id_mod = chunk_id % 11
                 for uch in self.unmask_channel(chunk_payload[0]):
                     if chunk_id_mod == 0: # Voltage
                         self.debug_machine_control_msg[uch] = {}  # Clear msg
                         self.debug_machine_control_msg[uch]["channel"] = "master" if uch == 0 else "slave"
                         value = self.bytes_to_float(chunk_payload[1:])
                         self.debug_machine_control_msg[uch]["voltage"] = value
-                    elif chunk_id_mod == 1: # Target voltage
+                    elif chunk_id_mod == 1: # Voltage in bytes
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg[uch]["voltage_bytes"] = value
+                    elif chunk_id_mod == 2: # Target voltage
                         value = self.bytes_to_float(chunk_payload[1:])
                         self.debug_machine_control_msg[uch]["voltage_target"] = value
-                    elif chunk_id_mod == 2: # Average temperature
+                    elif chunk_id_mod == 3: # Target voltage in bytes
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg[uch]["voltage_target_bytes"] = value
+                    elif chunk_id_mod == 4: # Average temperature
                         value = self.bytes_to_float(chunk_payload[1:])
                         self.debug_machine_control_msg[uch]["temperature_avg"] = value
-                    elif chunk_id_mod == 3: # Old temperature
+                    elif chunk_id_mod == 5: # Last temperature in bytes
+                        value = self.bytes_to_float(chunk_payload[1:])
+                        self.debug_machine_control_msg[uch]["temperature_last_bytes"] = value
+                    elif chunk_id_mod == 6: # Old temperature
                         value = self.bytes_to_float(chunk_payload[1:])
                         self.debug_machine_control_msg[uch]["temperature_old"] = value
-                    elif chunk_id_mod == 4: # V offset
+                    elif chunk_id_mod == 7: # V offset
                         value = self.bytes_to_float(chunk_payload[1:])
                         self.debug_machine_control_msg[uch]["V_offset"] = value
-                    elif chunk_id_mod == 5: # Enabled?
+                    elif chunk_id_mod == 8: # Enabled?
                         self.debug_machine_control_msg[uch]["temp_loop"] = "enabled" if chunk_payload[1] else "disabled"
                         pass
-                    elif chunk_id_mod == 6: # Ramp target reached
+                    elif chunk_id_mod == 9: # Ramp target reached
                         self.debug_machine_control_msg[uch]["ramp_target_reached"] = "true" if chunk_payload[1] else "false"
                         pass
-                    elif chunk_id_mod == 7: # Timestamp
+                    elif chunk_id_mod == 10: # Timestamp
                         value = self.bytes_to_u32(chunk_payload[1:])
                         self.debug_machine_control_msg[uch]["timestamp_ms"] = value
+                        print("yyy",self.debug_machine_control_msg[uch])
             else:
                 await p.print("Unknow command: 0x{:02X}: {}".format(
                     command, data_bytes))
