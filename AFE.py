@@ -655,12 +655,12 @@ class AFEDevice:
                 except Exception as e:
                     await p.print("Error getSensorDataSi_periodic: {}: ".format(e))
 
-            elif command == AFECommand.getSensorDataSiAndTimestamp_average_byMask:
-                channel = chunk_payload[0]
-                if chunk_id == 0:
-                    value = self.bytes_to_float(chunk_payload[1:])  # value
-                elif chunk_id == 1:
-                    value = self.bytes_to_u32(chunk_payload[1:])  # timestamp
+            # elif command == AFECommand.getSensorDataSiAndTimestamp_average_byMask:
+            #     channel = chunk_payload[0]
+            #     if chunk_id == 0:
+            #         value = self.bytes_to_float(chunk_payload[1:])  # value
+            #     elif chunk_id == 1:
+            #         value = self.bytes_to_u32(chunk_payload[1:])  # timestamp
 
             elif command == AFECommand.writeGPIO:
                 pass

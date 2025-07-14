@@ -292,7 +292,7 @@ class AsyncWebServer:
         Returns:
             str: The complete HTML content of the control page.
         """
-        await self.handle_procedure("afe_get_subdevice_status") # Update status every page refresh
+        # await self.handle_procedure("afe_get_subdevice_status") # Update status every page refresh
         await writer.awrite("HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n")
         await writer.awrite("""
             <!DOCTYPE html>
