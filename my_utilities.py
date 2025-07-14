@@ -225,6 +225,8 @@ class AFECommand:
     
     getSensorDataSi_last_byMask = 0x30
     getSensorDataSi_average_byMask = 0x31
+    getSensorDataBytes_last_byMask = 0x32
+    getSensorDataBytes_average_byMask = 0x33
     getSensorDataSi_periodic = 0x3f
     
     setSensorDataSi_periodic_last = 0x40

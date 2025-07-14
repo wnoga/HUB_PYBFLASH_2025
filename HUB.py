@@ -536,7 +536,7 @@ class HUBDevice:
                          "preserve": True,
         }
         afe.enqueue_float_for_channel(
-                        AFECommand.setRegulator_T_old, afe_subdevice, 0.0, **commandKwargs)
+                        AFECommand.clearRegulator_T_old, afe_subdevice, 0.0, **commandKwargs)
 
     async def default_afe_pause(self, afe_id=35):  # Changed to async def
         afe = self.get_afe_by_id(afe_id)

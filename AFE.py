@@ -633,22 +633,26 @@ class AFEDevice:
                     if not "average_data" in self.periodic_data:
                         self.periodic_data["average_data"] = {}
 
-                    if chunk_id == 0:  # Last data: data
+                    if chunk_id == 0:  # Last data: data bytes
                         self.periodic_data = {}  # Clear periodic data if new chunk set arrived
                         self.periodic_data["last_data"] = {}
                         self.periodic_data["average_data"] = {}
                         self.periodic_data["timestamp_ms"] = millis()
                         for uch in unmasked_channels:
                             self.periodic_data["last_data"].update(
+                                {"{}_bytes".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
+                    elif chunk_id == 1: # Last data as SI
+                        for uch in unmasked_channels:
+                            self.periodic_data["last_data"].update(
                                 {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
-                    elif chunk_id == 1:  # Last data: data timestamp
+                    elif chunk_id == 2:  # Last data: data timestamp
                         self.periodic_data["last_data"].update(
                             {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
-                    elif chunk_id == 2:  # Average data: data
+                    elif chunk_id == 3:  # Average data: data
                         for uch in unmasked_channels:
                             self.periodic_data["average_data"].update(
                                 {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
-                    elif chunk_id == 3:  # Average data: calculation timestamp
+                    elif chunk_id == 4:  # Average data: calculation timestamp
                         self.periodic_data["average_data"].update(
                             {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
 
@@ -789,7 +793,9 @@ class AFEDevice:
                             if last_data:
                                 if ch.name in last_data:
                                     ch.last_recieved_data["last"] = {
-                                        "value": last_data[ch.name], "timestamp_ms": channel_timestamp}
+                                        "value": last_data[ch.name],
+                                        "bytes": last_data[ch.name+"_bytes"],
+                                        "timestamp_ms": channel_timestamp}
                             if average_data:
                                 if ch.name in average_data:
                                     ch.last_recieved_data["average"] = {
