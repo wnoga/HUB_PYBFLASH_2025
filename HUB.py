@@ -80,12 +80,28 @@ class HUBDevice:
         self.afecmd = AFECommand()
 
         self.afe0: AFEDevice = None
+        self.adc_U_SIPM_MEAS = pyb.ADC(pyb.Pin.cpu.A3)
+        self.adc_I_SIPM_MEAS = pyb.ADC(pyb.Pin.cpu.C2)
+        self.adc_VSUP_MEAS = pyb.ADC(pyb.Pin.cpu.C3)
 
         self.msg_to_process = None
 
         self.logger_sync_active = True
+    
+    def _adc_val_rr(self, adc, R1, R2):
+        return (3.3*adc/(4095))*((R1+R2)/R1)
+    
+    def hub_adc_read(self):     
+        # Read ADC value from PA3
+        # adc_value = self.adc_pa3.read()
+        # await self.logger.log(VerbosityLevel["INFO"], {"info": "ADC PA3 value: {}".format(adc_value)}) 
+        # print("ADC PA3 value: {}\nADC PA3 value: {}".format(adc_value))
+        retavls = {"I_SIPM_MEAS": self.adc_I_SIPM_MEAS.read(),
+                   "U_SIPM_MEAS": self._adc_val_rr(self.adc_U_SIPM_MEAS.read(), 1, 33),
+                   "VSUP_MEAS": self._adc_val_rr(self.adc_VSUP_MEAS.read(), 10, 43)}
+        print(retavls)
 
-    async def powerOn(self):  # Changed to async def
+    async def powerOn(self):
         await self.logger.log(VerbosityLevel["INFO"],
                               {
             "device_id": 0,
@@ -94,6 +110,9 @@ class HUBDevice:
         })
         pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
         pyb.Pin.cpu.E12.value(1)
+        pyb.Pin.cpu.E10.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
+        pyb.Pin.cpu.E10.value(0)
+        
 
     async def powerOff(self):  # Changed to async def
         await self.logger.log(VerbosityLevel["INFO"],
@@ -104,6 +123,8 @@ class HUBDevice:
         })
         pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
         pyb.Pin.cpu.E12.value(0)
+        pyb.Pin.cpu.E10.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
+        pyb.Pin.cpu.E10.value(1)
 
     async def reset_all(self):  # Changed to async def
         await self.stop_discovery()
@@ -787,9 +808,8 @@ class HUBDevice:
                 AFECommand.setAveraging_max_dt_ms_byMask, self._get_general_ch_id_mask(g), int(round(time_sample_ms * avg_number)), **commandKwargs)
             await afe.enqueue_float_for_channel(
                 AFECommand.setChannel_multiplicator_byMask, self._get_general_ch_id_mask(g), 1.0, **commandKwargs)
-
-        await afe.enqueue_command(AFECommand.startADC, [
-            0xFF, 0xFF], **commandKwargs)
+        await afe.enqueue_u32_for_channel(AFECommand.startADC,
+            0xFF, int(500), **commandKwargs) # for all channels (0xFF) (not implemented yet), every 500 ms
 
     async def parse(self, msg):  # Changed to async def
         await p.print("Parsed: {}".format(msg))

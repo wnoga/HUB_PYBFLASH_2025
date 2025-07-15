@@ -275,7 +275,9 @@ class AsyncWebServer:
         elif procedure == "afe_set_channel_dt_ms":
             return await self._execute_afe_procedure(request_json, "set_afe_channel_dt_ms", 10.0,
                                                      required_params_map={"channel_mask": int, "dt_ms": int})
-
+        elif procedure == "afe_set_sipm_voltage_si":
+            return await self._execute_afe_procedure(request_json, "afe_set_sipm_voltage_si", 10.0,
+                                                     required_params_map={"voltage": float, "afe_subdevice": int})
         else:
             await p.print("Unknown procedure: {}".format(procedure))
             return ujson.dumps({"status": "ERROR", "info": "Unknown procedure: {}".format(procedure)}).encode()
