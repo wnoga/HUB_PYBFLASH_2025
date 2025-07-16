@@ -307,13 +307,25 @@ class AsyncWebServer:
                     .afe-device h3 { margin-top: 0; }
                     button { margin: 5px; padding: 8px; cursor: pointer; }
                     pre { background-color: #eee; padding: 10px; overflow-x: auto; }
+                    .collapsible-content { display: none; }
                 </style>
+                <script>
+                    function toggleCollapse(elementId) {
+                        var content = document.getElementById(elementId);
+                        if (content.style.display === "block") {
+                            content.style.display = "none";
+                        } else {
+                            content.style.display = "block";
+                        }
+                    }
+                    function updatePage() { window.location.reload(); }
+                </script>
             </head>""")
         await writer.awrite("""
             <body>
                 <h1>AFE HUB Control</h1>
                 <p>Current Time: <span id="current-time">{}</span> @ {}</p>
-                <button onclick="updatePage()">Refresh Data</button>
+                <button onclick="updatePage()">Refresh</button>
             """.format(rtc_datetime_pretty(),millis()))
         
         await writer.awrite(b"<div><h4>Log Files in /sd/logs/:</h4><ul style=\"column-width: 25ex;\">")
@@ -350,6 +362,10 @@ class AsyncWebServer:
                     ujson.dumps(afe.debug_machine_control_msg_last[0]),
                     ujson.dumps(afe.debug_machine_control_msg_last[1]))
                 )
+                await writer.awrite("""
+                <button onclick="toggleCollapse('channels-afe-{}')">Toggle Channels</button>
+                <div id="channels-afe-{}" class="afe-channels collapsible-content">
+                """.format(afe.device_id, afe.device_id))
                 for ch in afe.channels:
                     # Formatting complex objects like ch.last_recieved_data directly
                     # might still be an issue if they are very large.
@@ -362,7 +378,7 @@ class AsyncWebServer:
                     </div>
                     """.format(ch.name,channel_data_str))
                 await writer.awrite("""
-                    </div>
+                    </div></div>
                 """)
                 # Example buttons (ensure functions are defined in your JS)
                 # await writer.awrite(f"""

@@ -812,7 +812,7 @@ class AFEDevice:
                                     "command": AFECommand.debug_machine_control,
                                     "retval": self.trim_dict_for_logger(self.debug_machine_control_msg_last[subdev]),
                                 })
-                                print("xxx", toLog)
+                                # print("xxx", toLog)
                                 await self.logger.log(VerbosityLevel["CRITICAL"], toLog)
                         except Exception as e:
                             await p.print(

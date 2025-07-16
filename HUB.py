@@ -100,6 +100,10 @@ class HUBDevice:
                    "U_SIPM_MEAS": self._adc_val_rr(self.adc_U_SIPM_MEAS.read(), 1, 33),
                    "VSUP_MEAS": self._adc_val_rr(self.adc_VSUP_MEAS.read(), 10, 43)}
         print(retavls)
+        
+    def hub_update_afe_status(self):
+        for afe in self.afe_devices:
+            self.get_subdevice_status(afe.device_id, AFECommandSubdevice.AFECommandSubdevice_both,callback=p.print)
 
     async def powerOn(self):
         await self.logger.log(VerbosityLevel["INFO"],
@@ -809,7 +813,7 @@ class HUBDevice:
             await afe.enqueue_float_for_channel(
                 AFECommand.setChannel_multiplicator_byMask, self._get_general_ch_id_mask(g), 1.0, **commandKwargs)
         await afe.enqueue_u32_for_channel(AFECommand.startADC,
-            0xFF, int(500), **commandKwargs) # for all channels (0xFF) (not implemented yet), every 500 ms
+            0xFF, int(1000), **commandKwargs) # for all channels (0xFF) (not implemented yet), every 500 ms
 
     async def parse(self, msg):  # Changed to async def
         await p.print("Parsed: {}".format(msg))
