@@ -458,6 +458,17 @@ def convert_to_si(value, unit):
     # Unknown unit: assume it's already in SI-equivalent
     return v
 
+def sort_dict_alphabetically(obj):
+    if isinstance(obj, dict):
+        return {k: sort_dict_alphabetically(obj[k]) for k in sorted(obj)}
+    elif isinstance(obj, list):
+        return [sort_dict_alphabetically(item) for item in obj]
+    else:
+        return obj
+
+def dump_json_sorted(data):
+    sorted_data = sort_dict_alphabetically(data)
+    return json.dumps(sorted_data)
 
 # # Measurement structure
 # class SensorReading:

@@ -14,6 +14,7 @@ from my_utilities import millis, is_timeout, is_delay
 from my_utilities import p, VerbosityLevel
 from my_utilities import rtc, rtc_synced, rtc_datetime_pretty, rtc_unix_timestamp
 from my_utilities import AFECommand, AFECommandSubdevice
+from my_utilities import dump_json_sorted
 
 import uasyncio as asyncio
 
@@ -359,9 +360,9 @@ class AsyncWebServer:
                 <pre>Master: {}</pre>
                 <pre>Slave: {}</pre>
                 """.format(
-                    ujson.dumps(afe.debug_machine_control_msg_last[0]),
-                    ujson.dumps(afe.debug_machine_control_msg_last[1]))
-                )
+                    dump_json_sorted(afe.debug_machine_control_msg_last[0]),
+                    dump_json_sorted(afe.debug_machine_control_msg_last[1])
+                ))
                 await writer.awrite("""
                 <button onclick="toggleCollapse('channels-afe-{}')">Toggle Channels</button>
                 <div id="channels-afe-{}" class="afe-channels collapsible-content">

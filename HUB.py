@@ -156,7 +156,7 @@ class HUBDevice:
             # Using standard print for non-async context
             print("Error clearing logs: {}".format(e))
 
-    async def get_subdevice_status(self, afe_id, subdevice_mask, callback=None):
+    async def get_subdevice_status(self, afe_id, subdevice_mask, addToCmd=None):
         """
         Requests the status of a specific subdevice (master/slave) on an AFE.
 
@@ -173,7 +173,9 @@ class HUBDevice:
             return -1
 
         commandKwargs = {"timeout_ms": 10220, "preserve": True, "timeout_start_on_send_ms": 2000, "callback_error": self.callback_afe_error}
-        if callback: commandKwargs["callback"] = callback
+        if addToCmd:
+            commandKwargs.update(addToCmd)
+        
         await afe.enqueue_command(AFECommand.getSubdeviceStatus, [subdevice_mask], **commandKwargs)
         return 0
 
@@ -813,7 +815,7 @@ class HUBDevice:
             await afe.enqueue_float_for_channel(
                 AFECommand.setChannel_multiplicator_byMask, self._get_general_ch_id_mask(g), 1.0, **commandKwargs)
         await afe.enqueue_u32_for_channel(AFECommand.startADC,
-            0xFF, int(1000), **commandKwargs) # for all channels (0xFF) (not implemented yet), every 500 ms
+            0xFF, int(250), **commandKwargs) # for all channels (0xFF) (not implemented yet), every 500 ms
 
     async def parse(self, msg):  # Changed to async def
         await p.print("Parsed: {}".format(msg))
