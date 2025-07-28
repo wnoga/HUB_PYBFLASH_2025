@@ -537,6 +537,8 @@ class AFEDevice:
                                       }))
             elif command == AFECommand.getSubdeviceStatus:
                 await self._handle_get_subdevice_status(self.debug_machine_control_msg_last, chunk_id, chunk_payload)
+                if chunk_id == max_chunks:
+                    await p.print(self.debug_machine_control_msg_last)
 
             elif command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
                 pass
@@ -725,6 +727,8 @@ class AFEDevice:
                         pass
                     else:
                         pass
+            elif command == AFECommand.setDACTargetSi_bySubdeviceMask:
+                pass
                     
             elif command == AFECommand.setDAC_bySubdeviceMask:
                 pass

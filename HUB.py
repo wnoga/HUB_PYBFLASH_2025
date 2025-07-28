@@ -103,7 +103,7 @@ class HUBDevice:
         
     def hub_update_afe_status(self):
         for afe in self.afe_devices:
-            self.get_subdevice_status(afe.device_id, AFECommandSubdevice.AFECommandSubdevice_both,callback=p.print)
+            self.get_subdevice_status(afe.device_id, AFECommandSubdevice.AFECommandSubdevice_both,addToCmd={"callback":p.print})
 
     async def powerOn(self):
         await self.logger.log(VerbosityLevel["INFO"],
@@ -156,7 +156,7 @@ class HUBDevice:
             # Using standard print for non-async context
             print("Error clearing logs: {}".format(e))
 
-    async def get_subdevice_status(self, afe_id, subdevice_mask, addToCmd=None):
+    async def get_subdevice_status(self, afe_id, subdevice_mask, addToCmd=None, callback=None):
         """
         Requests the status of a specific subdevice (master/slave) on an AFE.
 
@@ -175,6 +175,8 @@ class HUBDevice:
         commandKwargs = {"timeout_ms": 10220, "preserve": True, "timeout_start_on_send_ms": 2000, "callback_error": self.callback_afe_error}
         if addToCmd:
             commandKwargs.update(addToCmd)
+        if callback:
+            commandKwargs["callback"] = callback
         
         await afe.enqueue_command(AFECommand.getSubdeviceStatus, [subdevice_mask], **commandKwargs)
         return 0
@@ -600,19 +602,23 @@ class HUBDevice:
         
         temp_loop_enabled_master = afe.configuration["M"].get("temp_loop_enabled")
         temp_loop_enabled_slave = afe.configuration["S"].get("temp_loop_enabled")
-        if afe.configuration["M"].get("fixed_V"):
-            temp_loop_enabled_master = None # disable
-        if afe.configuration["S"].get("fixed_V"):
-            temp_loop_enabled_slave = None # disable
+        temp_loop_fixed_V_master = afe.configuration["M"].get("fixed_V")
+        temp_loop_fixed_V_slave = afe.configuration["S"].get("fixed_V")
         temp_loop_subdev = 0x00
         if temp_loop_enabled_master and temp_loop_enabled_master:
-            # Enable both
-            temp_loop_subdev = AFECommandSubdevice.AFECommandSubdevice_both
-            await self.default_start_temperature_loop(afe_id, 1, temp_loop_subdev)
+            await self.default_start_temperature_loop(afe_id, 1, AFECommandSubdevice.AFECommandSubdevice_both)
         else:
             # Enable and disable
             await self.default_start_temperature_loop(afe_id, status=temp_loop_enabled_master, subdevice=AFECommandSubdevice.AFECommandSubdevice_master)
             await self.default_start_temperature_loop(afe_id, status=temp_loop_enabled_slave, subdevice=AFECommandSubdevice.AFECommandSubdevice_slave)
+        
+        if temp_loop_fixed_V_master:
+            print("#### Try set fixed voltage {} to master".format(temp_loop_fixed_V_master))
+            await self.afe_set_sipm_target_voltage_si(afe_id, AFECommandSubdevice.AFECommandSubdevice_master, temp_loop_fixed_V_master)
+        if temp_loop_fixed_V_slave:
+            print("#### Try set fixed voltage {} to slave".format(temp_loop_fixed_V_slave))
+            await self.afe_set_sipm_target_voltage_si(afe_id, AFECommandSubdevice.AFECommandSubdevice_slave, temp_loop_fixed_V_slave)
+            
         await self.default_setCanMsgBurstDelay_ms(afe_id, 50)
         await self.default_accept(afe_id)
         await self.defualt_getSyncTimestamp(afe_id)

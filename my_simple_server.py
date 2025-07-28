@@ -117,6 +117,7 @@ class AsyncWebServer:
         Helper to execute AFE-specific procedures that require an afe_id 
         and wait for a callback via an event.
         """
+        await p.print("Server try execute {} -> {}".format(hub_method_name, request_json))
         afe_id = request_json.get("afe_id", None)
         if afe_id is None:
             return ujson.dumps({"status": "ERROR", "info": "afe_id missing"}).encode()
