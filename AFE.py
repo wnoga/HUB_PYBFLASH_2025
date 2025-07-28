@@ -519,7 +519,17 @@ class AFEDevice:
                         chunk_payload[1:])
 
             elif command == AFECommand.resetCAN:
-                retval = {"reason": "AFE CAN Error", "timestamp_ms": millis()}
+                reason = "unknown"
+                AFE_timestamp_ms = None
+                if len(data_bytes) == 3: # AFE was restarted probably by hardware
+                    reason = ResetReason[data_bytes[2]]
+                    AFE_timestamp_ms = None
+                elif len(data_bytes) == 7: # AFE was restarted during runtime
+                    AFE_timestamp_ms = self.bytes_to_u32(data_bytes[2:6])
+                    reason = "runtime"
+                retval = {"reason": "AFE CAN Error {}".format(reason), "timestamp_ms": millis()}
+                if AFE_timestamp_ms is not None:
+                    retval["timestamp_ms"] = AFE_timestamp_ms
                 await self.logger.log(VerbosityLevel["ERROR"],
                                       self.default_log_dict({
                                           "error": "AFE {} CAN bus reset".format(device_id),
@@ -596,11 +606,6 @@ class AFEDevice:
             elif command == AFECommand.setChannel_b_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].config["b"] = self.bytes_to_float(
-                        chunk_payload[1:])
-
-            elif command == AFECommand.setChannel_multiplicator_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.channels[uch].config["multiplicator"] = self.bytes_to_float(
                         chunk_payload[1:])
                     
             elif command == AFECommand.setRegulator_T_opt_byMask:
@@ -702,6 +707,9 @@ class AFEDevice:
             elif command == AFECommand.setAfe_can_watchdog_timeout_ms:
                 self.afe_can_watchdog_timeout_ms = self.bytes_to_u32(
                     chunk_payload[1:])
+                
+            elif command == AFECommand.setTemperatureLoop_loop_every_ms:
+                pass
 
             elif command == AFECommand.setAveraging_max_dt_ms_byMask:
                 pass

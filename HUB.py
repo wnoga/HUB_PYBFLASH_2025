@@ -263,11 +263,17 @@ class HUBDevice:
         if self.can_interface.state() > 1:
             if self.can_interface.state() > 2:  # Corresponds to pyb.CAN.BUS_OFF or more severe
 
-                await self.logger.log(VerbosityLevel["ERROR"], "CAN bus error state {}, attempting restart.".format(self.can_interface.state()))
+                await self.logger.log(VerbosityLevel["ERROR"], {
+                    "device_id": 0,
+                    "timestamp_ms": millis(),
+                    "error": "CAN bus error state {}, attempting restart.".format(self.can_interface.state())})
                 self.can_interface.restart()
             else:
 
-                await self.logger.log(VerbosityLevel["WARNING"], "CAN bus warning state {}.".format(self.can_interface.state()))
+                await self.logger.log(VerbosityLevel["WARNING"], {
+                    "device_id": 0,
+                    "timestamp_ms": millis(),
+                    "error": "CAN bus warning state {}.".format(self.can_interface.state())})
             return
 
         if self.current_discovery_id > self.afe_id_max:
@@ -812,8 +818,8 @@ class HUBDevice:
 
             await afe.enqueue_u32_for_channel(
                 AFECommand.setAveraging_max_dt_ms_byMask, self._get_general_ch_id_mask(g), int(round(time_sample_ms * avg_number)), **commandKwargs)
-            await afe.enqueue_float_for_channel(
-                AFECommand.setChannel_multiplicator_byMask, self._get_general_ch_id_mask(g), 1.0, **commandKwargs)
+            await afe.enqueue_u32_for_channel( # Limit temperature loop frequency
+                AFECommand.setTemperatureLoop_loop_every_ms, self._get_general_ch_id_mask(g), int(100), **commandKwargs)
         await afe.enqueue_u32_for_channel(AFECommand.startADC,
             0xFF, int(250), **commandKwargs) # for all channels (0xFF) (not implemented yet), every 500 ms
 

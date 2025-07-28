@@ -129,6 +129,7 @@ class RxDeviceCAN:
                 p.print("RxDeviceCAN.main_loop: CAN BUS ERROR state: {}".format(state))
                 # Loop continues to monitor and allow for potential auto-restart or external restart.
                 # Higher-level logic (e.g., in HUB.py) might attempt can_bus.restart().
+                await uasyncio.sleep_ms(100) # Wait 100 ms for recovery
 
             # Perform polling for CAN messages.
             # This acts as a primary mechanism if use_rxcallback is False,

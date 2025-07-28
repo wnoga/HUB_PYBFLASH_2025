@@ -240,6 +240,8 @@ class AFECommand:
     setCanMsgBurstDelay_ms = 0xa3
     setAfe_can_watchdog_timeout_ms = 0xa4
     
+    setTemperatureLoop_loop_every_ms = 0xB0
+    
     setTemperatureLoopForChannelState_byMask_asStatus = 0xc1
     setDACValueRaw_bySubdeviceMask = 0xc2
     setDACValueSi_bySubdeviceMask = 0xc3
@@ -253,7 +255,6 @@ class AFECommand:
     setAveragingBufferSize_byMask = 0xd2
     setChannel_dt_ms_byMask = 0xd3
     setAveraging_max_dt_ms_byMask = 0xd4
-    setChannel_multiplicator_byMask = 0xd5
     setAveragingSubdevice = 0xd6
     setChannel_a_byMask = 0xd7
     setChannel_b_byMask = 0xd8
