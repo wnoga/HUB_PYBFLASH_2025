@@ -66,13 +66,11 @@ class AsyncWebServer:
             ip, subnet, gateway, dns = self.static_ip_config
             self.lan.ifconfig((ip, subnet, gateway, dns))
 
-        await p.print("Waiting for Ethernet connection...", end="") # Added await
+        await p.print("Waiting for Ethernet connection...")
         timeout = 10
         while not self.lan.isconnected() and timeout > 0:
-            await p.print(".", end="") # Added await
             await uasyncio.sleep(1) # Use asynchronous sleep
             timeout -= 1
-        await p.print("") # Newline after dots, Added await
 
         if not self.lan.isconnected():
             raise RuntimeError("Ethernet connection failed")

@@ -582,7 +582,7 @@ class JSONLogger:
                 self.file = open(self.filename, "w")
                 await uasyncio.sleep_ms(0)
             except Exception as e:  # pragma: no cover
-                p.print("ERROR new_file (keep_open=True): {}".format(e))
+                await p.print("ERROR new_file (keep_open=True): {}".format(e))
                 self.file = None  # Ensure file is None on error
         else:  # not keep_file_open
             if self.file is not None:  # Should be None, but as a safeguard
@@ -700,7 +700,7 @@ class JSONLogger:
 
         except Exception as e:
             # Todo check toLog
-            p.print(
+            await p.print(
                 "ERROR in _log writing to {}: {} -> {}".format(self.filename, e, toLog[:512]))
             await p.print("ERROR in _log writing to {}: {} -> {}".format(self.filename, e, toLog[:200]))
             if opened_in_scope and current_file_handle:
@@ -1092,18 +1092,15 @@ class JSONLogger:
             # Ensure filename is valid before attempting to open
             # Check parent dir too
             if not self.filename or not self._path_exists(self.parent_dir):
-                # await p.print
                 await p.print("Error in machine (keep_file_open=False): Invalid filename or directory. Attempting to create new file.")
                 await self.new_file()  # This sets self.filename and ensures dir
                 if not self.filename:
-                    # await p.print
                     await p.print("Critical Error in machine (keep_file_open=False): Could not establish a valid log file. Skipping log cycle.")
                     return
             try:
                 self.file = open(self.filename, "a")  # BLOCKING
                 await uasyncio.sleep_ms(0)  # YIELD after open
             except Exception as e:
-                # await p.print
                 await p.print("Error opening log file {} in machine (keep_file_open=False): {}".format(self.filename, e))
                 self.file = None  # Ensure file is None so subsequent operations don't fail badly
                 # Consider requesting a new file or logging an error and returning
@@ -1119,7 +1116,6 @@ class JSONLogger:
                     self.file.close()  # BLOCKING
                     await uasyncio.sleep_ms(0)  # YIELD after close
                 except Exception as e:
-                    # await p.print
                     await p.print("Error flushing/closing log file {} (keep_file_open=False): {}".format(self.filename, e))
                 finally:
                     self.file = None  # Ensure self.file is None even if close fails

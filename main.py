@@ -121,12 +121,7 @@ async def main():
     tasks.append(uasyncio.create_task(periodic_tasks_loop()))
     await p.print("periodic_tasks_loop task created.")
 
-    
-    
 
 loop = uasyncio.get_event_loop()
 loop.create_task(main())
-# uasyncio.loop_forever()
-
-# loop.run_forever()
 _thread.start_new_thread(loop.run_forever, ()) # allow interactive mode (REPL)
