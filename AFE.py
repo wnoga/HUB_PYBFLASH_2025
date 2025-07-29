@@ -392,7 +392,7 @@ class AFEDevice:
                             which specific status field is being transmitted.
             chunk_payload (list): The payload bytes from the CAN message.
         """
-        chunk_id_mod = chunk_id % 11
+        chunk_id_mod = chunk_id % 12
         for uch in self.unmask_channel(chunk_payload[0]):
             if chunk_id_mod == 0: # Voltage
                 target_status_list[uch] = {}  # Clear msg for this subdevice
@@ -402,29 +402,32 @@ class AFEDevice:
             elif chunk_id_mod == 1: # Voltage in bytes
                 value = self.bytes_to_float(chunk_payload[1:])
                 target_status_list[uch]["voltage_bytes"] = value
-            elif chunk_id_mod == 2: # Target voltage
+            elif chunk_id_mod == 2: # Ramp Target voltage
                 value = self.bytes_to_float(chunk_payload[1:])
                 target_status_list[uch]["voltage_target"] = value
-            elif chunk_id_mod == 3: # Target voltage in bytes
+            elif chunk_id_mod == 3: # Ramp Target voltage in bytes
                 value = self.bytes_to_float(chunk_payload[1:])
                 target_status_list[uch]["voltage_target_bytes"] = value
-            elif chunk_id_mod == 4: # Average temperature
+            elif chunk_id_mod == 4: # Ramp current voltage in bytes
+                value = self.bytes_to_float(chunk_payload[1:])
+                target_status_list[uch]["voltage_current_bytes"] = value
+            elif chunk_id_mod == 5: # Average temperature
                 value = self.bytes_to_float(chunk_payload[1:])
                 target_status_list[uch]["temperature_avg"] = value
-            elif chunk_id_mod == 5: # Last temperature in bytes
+            elif chunk_id_mod == 6: # Last temperature in bytes
                 value = self.bytes_to_float(chunk_payload[1:])
                 target_status_list[uch]["temperature_last_bytes"] = value
-            elif chunk_id_mod == 6: # Old temperature
+            elif chunk_id_mod == 7: # Old temperature
                 value = self.bytes_to_float(chunk_payload[1:])
                 target_status_list[uch]["temperature_old"] = value
-            elif chunk_id_mod == 7: # V offset
+            elif chunk_id_mod == 8: # V offset
                 value = self.bytes_to_float(chunk_payload[1:])
                 target_status_list[uch]["V_offset"] = value
-            elif chunk_id_mod == 8: # Enabled?
+            elif chunk_id_mod == 9: # Enabled?
                 target_status_list[uch]["temp_loop"] = "enabled" if chunk_payload[1] else "disabled"
-            elif chunk_id_mod == 9: # Ramp target reached
+            elif chunk_id_mod == 10: # Ramp target reached
                 target_status_list[uch]["ramp_target_reached"] = "true" if chunk_payload[1] else "false"
-            elif chunk_id_mod == 10: # Timestamp
+            elif chunk_id_mod == 11: # Timestamp
                 value = self.bytes_to_u32(chunk_payload[1:])
                 target_status_list[uch]["timestamp_ms"] = value
 
@@ -524,6 +527,7 @@ class AFEDevice:
                 if len(data_bytes) == 3: # AFE was restarted probably by hardware
                     reason = ResetReason[data_bytes[2]]
                     AFE_timestamp_ms = None
+                    self.init_after_restart()
                 elif len(data_bytes) == 7: # AFE was restarted during runtime
                     AFE_timestamp_ms = self.bytes_to_u32(data_bytes[2:6])
                     reason = "runtime"
