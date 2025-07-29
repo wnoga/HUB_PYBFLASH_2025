@@ -624,37 +624,31 @@ class AFEDevice:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].config["a"] = self.bytes_to_float(
                         chunk_payload[1:])
-                pass
 
             elif command == AFECommand.setRegulator_b_dac_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].config["b"] = self.bytes_to_float(
                         chunk_payload[1:])
-                pass
 
             elif command == AFECommand.setRegulator_dV_dT_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].config["dV_dT"] = self.bytes_to_float(
                         chunk_payload[1:])
-                pass
 
             elif command == AFECommand.setRegulator_V_opt_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].config["V_opt"] = self.bytes_to_float(
                         chunk_payload[1:])
-                pass
 
             elif command == AFECommand.setRegulator_V_offset_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].config["V_offset"] = self.bytes_to_float(
                         chunk_payload[1:])
-                pass
 
             elif command == AFECommand.setChannel_period_ms_byMask:
                 for uch in self.unmask_channel(chunk_payload[0]):
                     self.channels[uch].config["period_ms"] = self.bytes_to_u32(
                         chunk_payload[1:])
-                pass
 
             elif command == AFECommand.getSensorDataSi_periodic:
                 try:
@@ -686,6 +680,8 @@ class AFEDevice:
                     elif chunk_id == 4:  # Average data: calculation timestamp
                         self.periodic_data["average_data"].update(
                             {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
+                    if chunk_id == max_chunks: # Data are parsed
+                        parsed_data = self.periodic_data
 
                 except Exception as e:
                     await p.print("Error getSensorDataSi_periodic: {}: ".format(e))
