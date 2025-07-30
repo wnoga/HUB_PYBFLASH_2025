@@ -63,7 +63,7 @@ server = None # Initialize to None
 from HUB import initialize_can_hub # HUBDevice and RxDeviceCAN are returned by this
 
 use_async_server = True
-use_rxcallback = True
+use_rxcallback = False
 
 async def periodic_tasks_loop():
     """Handles periodic background tasks like watchdog, logging, and printing."""
