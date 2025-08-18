@@ -63,7 +63,7 @@ server = None # Initialize to None
 from HUB import initialize_can_hub # HUBDevice and RxDeviceCAN are returned by this
 
 use_async_server = True
-use_rxcallback = False
+use_rxcallback = True
 
 async def periodic_tasks_loop():
     """Handles periodic background tasks like watchdog, logging, and printing."""
@@ -115,8 +115,8 @@ async def main():
     tasks.append(uasyncio.create_task(rxDeviceCAN.main_loop()))
     await p.print("rxDeviceCAN.main_loop task created.") # Added await
     
-    tasks.append(uasyncio.create_task(logger.writer_main_loop()))
-    await p.print("logger.writer_main_loop task created.") # Added await
+    # tasks.append(uasyncio.create_task(logger.writer_main_loop()))
+    # await p.print("logger.writer_main_loop task created.") # Added await
 
     tasks.append(uasyncio.create_task(periodic_tasks_loop()))
     await p.print("periodic_tasks_loop task created.")
@@ -124,4 +124,5 @@ async def main():
 
 loop = uasyncio.get_event_loop()
 loop.create_task(main())
-_thread.start_new_thread(loop.run_forever, ()) # allow interactive mode (REPL)
+# _thread.start_new_thread(loop.run_forever, ()) # allow interactive mode (REPL)
+loop.run_forever() # Run withouth REPL

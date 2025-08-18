@@ -1096,7 +1096,6 @@ class JSONLogger:
                 await self.new_file()  # This sets self.filename and ensures dir
                 if not self.filename:
                     await p.print("Critical Error in machine (keep_file_open=False): Could not establish a valid log file. Skipping log cycle.")
-                    return
             try:
                 self.file = open(self.filename, "a")  # BLOCKING
                 await uasyncio.sleep_ms(0)  # YIELD after open
@@ -1123,9 +1122,10 @@ class JSONLogger:
         if self.request_print_last_lines:
             await self._print_last_lines(self.request_print_last_lines)
             self.request_print_last_lines = 0
-
-        # Yield is already in sync_process if sync happens
-        await uasyncio.sleep_ms(0)
+            
+        while await self._process_log_queue():
+            await uasyncio.sleep_ms(0)
+        await uasyncio.sleep_ms(self.writer_main_loop_yield_ms)
 
 
 # cmndavrg = AFECommandAverage()

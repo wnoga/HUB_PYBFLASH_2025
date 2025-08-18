@@ -613,10 +613,10 @@ class HUBDevice:
             await self.default_start_temperature_loop(afe_id, status=temp_loop_enabled_slave, subdevice=AFECommandSubdevice.AFECommandSubdevice_slave)
         
         if temp_loop_fixed_V_master:
-            print("#### Try set fixed voltage {} to master".format(temp_loop_fixed_V_master))
+            await p.print("#### Try set fixed voltage {} to master".format(temp_loop_fixed_V_master))
             await self.afe_set_sipm_target_voltage_si(afe_id, AFECommandSubdevice.AFECommandSubdevice_master, temp_loop_fixed_V_master)
         if temp_loop_fixed_V_slave:
-            print("#### Try set fixed voltage {} to slave".format(temp_loop_fixed_V_slave))
+            await p.print("#### Try set fixed voltage {} to slave".format(temp_loop_fixed_V_slave))
             await self.afe_set_sipm_target_voltage_si(afe_id, AFECommandSubdevice.AFECommandSubdevice_slave, temp_loop_fixed_V_slave)
             
         await self.default_setCanMsgBurstDelay_ms(afe_id, 50)
@@ -672,7 +672,7 @@ class HUBDevice:
         self.default_procedure(afe_id)
         self.default_set_dac(afe_id)
         for i in range(10):
-            p.print("get measurement")
+            await p.print("get measurement")
             self.default_get_measurement(afe_id)
             pyb.delay(500)
 
