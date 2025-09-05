@@ -392,7 +392,7 @@ class AFEDevice:
                             which specific status field is being transmitted.
             chunk_payload (list): The payload bytes from the CAN message.
         """
-        chunk_id_mod = chunk_id % 12
+        chunk_id_mod = chunk_id % 13
         for uch in self.unmask_channel(chunk_payload[0]):
             if chunk_id_mod == 0: # Voltage
                 target_status_list[uch] = {}  # Clear msg for this subdevice
@@ -408,26 +408,29 @@ class AFEDevice:
             elif chunk_id_mod == 3: # Ramp Target voltage in bytes
                 value = self.bytes_to_float(chunk_payload[1:])
                 target_status_list[uch]["voltage_target_bytes"] = value
-            elif chunk_id_mod == 4: # Ramp current voltage in bytes
+            elif chunk_id_mod == 4: # Ramp current voltage
+                value = self.bytes_to_float(chunk_payload[1:])
+                target_status_list[uch]["voltage_current"] = value
+            elif chunk_id_mod == 5: # Ramp current voltage in bytes
                 value = self.bytes_to_float(chunk_payload[1:])
                 target_status_list[uch]["voltage_current_bytes"] = value
-            elif chunk_id_mod == 5: # Average temperature
+            elif chunk_id_mod == 6: # Average temperature
                 value = self.bytes_to_float(chunk_payload[1:])
                 target_status_list[uch]["temperature_avg"] = value
-            elif chunk_id_mod == 6: # Last temperature in bytes
+            elif chunk_id_mod == 7: # Last temperature in bytes
                 value = self.bytes_to_float(chunk_payload[1:])
                 target_status_list[uch]["temperature_last_bytes"] = value
-            elif chunk_id_mod == 7: # Old temperature
+            elif chunk_id_mod == 8: # Old temperature
                 value = self.bytes_to_float(chunk_payload[1:])
                 target_status_list[uch]["temperature_old"] = value
-            elif chunk_id_mod == 8: # V offset
+            elif chunk_id_mod == 9: # V offset
                 value = self.bytes_to_float(chunk_payload[1:])
                 target_status_list[uch]["V_offset"] = value
-            elif chunk_id_mod == 9: # Enabled?
+            elif chunk_id_mod == 10: # Enabled?
                 target_status_list[uch]["temp_loop"] = "enabled" if chunk_payload[1] else "disabled"
-            elif chunk_id_mod == 10: # Ramp target reached
+            elif chunk_id_mod == 11: # Ramp target reached
                 target_status_list[uch]["ramp_target_reached"] = "true" if chunk_payload[1] else "false"
-            elif chunk_id_mod == 11: # Timestamp
+            elif chunk_id_mod == 12: # Timestamp
                 value = self.bytes_to_u32(chunk_payload[1:])
                 target_status_list[uch]["timestamp_ms"] = value
 
@@ -542,7 +545,7 @@ class AFEDevice:
             elif command == AFECommand.getSubdeviceStatus:
                 await self._handle_get_subdevice_status(self.debug_machine_control_msg_last, chunk_id, chunk_payload)
                 if chunk_id == max_chunks:
-                    await p.print(self.debug_machine_control_msg_last)
+                    await p.print("XXXX", self.debug_machine_control_msg_last)
 
             elif command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
                 pass

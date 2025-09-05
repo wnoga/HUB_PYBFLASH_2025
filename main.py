@@ -17,6 +17,8 @@ from my_utilities import rtc_unix_timestamp, rtc, rtc_datetime_pretty
 from my_RxDeviceCAN import RxDeviceCAN
 # from my_utilities import lock
 import time
+import sys
+import select
 
 can_bus = pyb.CAN(1)
 logger = JSONLogger(keep_file_open=True
@@ -73,6 +75,62 @@ async def periodic_tasks_loop():
         await logger.machine()  # logger.machine() can have blocking I/O
         await p.machine()  # p.process_queue() can have blocking I/O
         await uasyncio.sleep_ms(50) # Overall frequency for this loop
+        
+
+# Optional: you can use a globals dictionary to persist variables
+user_globals = {}
+
+async def async_repl():
+    print("Async REPL (type 'exit()' to quit):")
+    line = ''
+    while True:
+        # Check if data is available on stdin (non-blocking)
+        if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
+            char = sys.stdin.read(1)
+            if char in ('\n', '\r'):
+                if line.strip() in ('exit()', 'quit()'):
+                    print("Exiting REPL.")
+                    return
+                try:
+                    # Try evaluating the line
+                    result = eval(line, user_globals)
+                    if result is not None:
+                        print(repr(result))
+                except SyntaxError:
+                    # If not an expression, treat as statement
+                    try:
+                        exec(line, user_globals)
+                    except Exception as e:
+                        print("Exec error:", e)
+                except Exception as e:
+                    print("Eval error:", e)
+                line = ''  # Clear line buffer
+                print('>>> ', end='')  # Prompt again
+            else:
+                if char == '\x7f':  # Backspace
+                    if line:
+                        line = line[:-1]
+                        print('\b \b', end='')  # Erase character from terminal
+                elif char == '\x04':  # Ctrl+D (EOF)
+                    pass # Not implemented
+                else:
+                    # Handle arrow keys (common ANSI escape codes)
+                    if char == '\x1b':  # Start of an escape sequence
+                        next_char = sys.stdin.read(1)
+                        if next_char == '[':
+                            final_char = sys.stdin.read(1)
+                            if final_char == 'A': # Up arrow
+                                print("\nUp arrow pressed (not implemented)")
+                            elif final_char == 'B': # Down arrow
+                                print("\nDown arrow pressed (not implemented)")
+                            elif final_char == 'C': # Right arrow
+                                print("\nRight arrow pressed (not implemented)")
+                            elif final_char == 'D': # Left arrow
+                                print("\nLeft arrow pressed (not implemented)")
+                            continue # Skip adding escape sequence to line
+                    line += char
+                    print(char, end='') # Echo the character back to the user
+        await uasyncio.sleep(0.05)  # Yield to other tasks
 
 
 async def main():
@@ -120,6 +178,9 @@ async def main():
 
     tasks.append(uasyncio.create_task(periodic_tasks_loop()))
     await p.print("periodic_tasks_loop task created.")
+    
+    # user_globals.update({'hub': hub, 'p': p, 'server': server})
+    # tasks.append(uasyncio.create_task(async_repl()))
 
 
 loop = uasyncio.get_event_loop()

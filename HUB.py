@@ -447,6 +447,24 @@ class HUBDevice:
         await afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus, [
             subdevice, 1 if status else 0], **commandKwargs)
 
+    async def default_start_temperature_ramp(self, afe_id=35, status=1, subdevice=AFECommandSubdevice.AFECommandSubdevice_both, **commandKwargs):
+        if not subdevice:
+            return
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            return
+        await afe.logger.log(VerbosityLevel["INFO"],
+                             {
+            "device_id": afe.device_id,
+            "timestamp_ms": millis(),
+            "info": "default_start_temperature_loop"
+        })
+        commandKwargs = {"timeout_ms": 10220,
+                         "preserve": True, "timeout_start_on_send_ms": 2000}
+
+        await afe.enqueue_command(AFECommand.setRegulator_ramp_enabled_byMask, [
+            subdevice, 1 if status else 0], **commandKwargs)
+
     async def start_afe_temperature_loop(self, afe_id, afe_subdevice: AFECommandSubdevice, preserve=False, callback=None):
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
@@ -605,6 +623,7 @@ class HUBDevice:
         temp_loop_fixed_V_master = afe.configuration["M"].get("fixed_V")
         temp_loop_fixed_V_slave = afe.configuration["S"].get("fixed_V")
         temp_loop_subdev = 0x00
+        # await self.default_start_temperature_ramp(afe_id, 1, AFECommandSubdevice.AFECommandSubdevice_both)
         if temp_loop_enabled_master and temp_loop_enabled_master:
             await self.default_start_temperature_loop(afe_id, 1, AFECommandSubdevice.AFECommandSubdevice_both)
         else:
@@ -612,10 +631,10 @@ class HUBDevice:
             await self.default_start_temperature_loop(afe_id, status=temp_loop_enabled_master, subdevice=AFECommandSubdevice.AFECommandSubdevice_master)
             await self.default_start_temperature_loop(afe_id, status=temp_loop_enabled_slave, subdevice=AFECommandSubdevice.AFECommandSubdevice_slave)
         
-        if temp_loop_fixed_V_master:
+        if temp_loop_fixed_V_master and temp_loop_enabled_master == 0:
             await p.print("#### Try set fixed voltage {} to master".format(temp_loop_fixed_V_master))
             await self.afe_set_sipm_target_voltage_si(afe_id, AFECommandSubdevice.AFECommandSubdevice_master, temp_loop_fixed_V_master)
-        if temp_loop_fixed_V_slave:
+        if temp_loop_fixed_V_slave and temp_loop_enabled_slave == 0:
             await p.print("#### Try set fixed voltage {} to slave".format(temp_loop_fixed_V_slave))
             await self.afe_set_sipm_target_voltage_si(afe_id, AFECommandSubdevice.AFECommandSubdevice_slave, temp_loop_fixed_V_slave)
             
