@@ -8,6 +8,9 @@ import pyb
 import uasyncio
 import micropython
 import _thread
+import sys
+import select
+import time
 # micropython.alloc_emergency_exception_buf(100)
 # import micropython
 # micropython.alloc_emergency_exception_buf(100)
@@ -16,9 +19,7 @@ from my_utilities import JSONLogger
 from my_utilities import rtc_unix_timestamp, rtc, rtc_datetime_pretty
 from my_RxDeviceCAN import RxDeviceCAN
 # from my_utilities import lock
-import time
-import sys
-import select
+
 
 can_bus = pyb.CAN(1)
 logger = JSONLogger(keep_file_open=True
