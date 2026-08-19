@@ -454,7 +454,8 @@ class AsyncWebServer:
                 await self.send_control_web_page(writer)
             else:
                 response = await self.handle_procedure(request_line, writer)
-                # await writer.awrite(response)
+                if response:
+                    await writer.awrite(response)
 
         except uasyncio.TimeoutError:
             await p.print("Timeout reading from", peername)
