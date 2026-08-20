@@ -22,6 +22,25 @@ import uasyncio as asyncio
 NTP_DELTA = 2208988800  # Seconds between NTP epoch (1900) and Unix epoch (1970)
 NTP_HOST = "pool.ntp.org"
 
+async def write_json_dict(writer, data):
+    await writer.awrite(b"{")
+
+    first = True
+
+    for key, value in data.items():
+        if not first:
+            await writer.awrite(b",")
+        first = False
+
+        key_bytes = ujson.dumps(key).encode()
+        await writer.awrite(key_bytes)
+        await writer.awrite(b":")
+
+        value_bytes = ujson.dumps(value).encode()
+        await writer.awrite(value_bytes)
+
+    await writer.awrite(b"}")
+    
 class AsyncWebServer:
     def __init__(self, hub: HUBDevice, dhcp=True, static_ip_config=None, port=5555):
         """
@@ -48,7 +67,7 @@ class AsyncWebServer:
         self.max_procedures_keep_len = 32
         
         self.tcp_requests = {}
-        self.tcp_requests_max = 3
+        self.tcp_requests_max = 10
 
         self.RESPONSE_OK = b'{"status":"OK"}'
 
@@ -236,7 +255,26 @@ class AsyncWebServer:
                 await writer.awrite(value_bytes)
                 
             # 5. Close the root JSON object
-            await writer.awrite(b"}")
+            await writer.awrite(b"}\r\n")
+
+            return None
+    
+        elif procedure == "get_all_latest_status":
+            await writer.awrite(b"{")
+
+            first_device = True
+
+            for afe_device in self.hub.afe_devices:
+                if not first_device:
+                    await writer.awrite(b",")
+                first_device = False
+
+                key_str = '"' + str(afe_device.device_id) + '":'
+                await writer.awrite(key_str.encode())
+
+                await write_json_dict(writer, afe_device.latest_status)
+
+            await writer.awrite(b"}\r\n")
 
             return None
 
@@ -455,6 +493,7 @@ class AsyncWebServer:
             else:
                 response = await self.handle_procedure(request_line, writer)
                 if response:
+                    # await p.print("%",response)
                     await writer.awrite(response)
 
         except uasyncio.TimeoutError:

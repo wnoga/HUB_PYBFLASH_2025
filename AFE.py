@@ -93,6 +93,9 @@ class AFEDevice:
         self.current_status_average_data = [
             {"timestamp_ms": None, "value": None} for x in range(self.total_channels)]
 
+        self.parsed_data = {}
+        self.latest_status = {}
+        
         self.init_after_restart()
 
     def default_log_dict(self, extra_fields=None, timestamp_ms=None, unix_timestamp=None):
@@ -439,7 +442,7 @@ class AFEDevice:
         chunk_id = None
         max_chunks = None
         chunk_payload = []
-        parsed_data = {}
+        parsed_data = self.parsed_data
         if True:
             data_bytes = list(bytes(received_data[3]))
             device_id = (received_data[0] >> 2) & 0xFF
@@ -733,11 +736,6 @@ class AFEDevice:
             elif command == AFECommand.setDACTargetSi_bySubdeviceMask:
                 pass
                     
-            elif command == AFECommand.setDAC_bySubdeviceMask:
-                pass
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    pass
-                    
             elif command == AFECommand.debug_machine_control:
                 await self._handle_get_subdevice_status(self.debug_machine_control_msg, chunk_id, chunk_payload)
             else:
@@ -757,7 +755,47 @@ class AFEDevice:
                                 self.executing["retval"][key].update(value)
                             else:
                                 self.executing["retval"][key] = value
-            if chunk_id == max_chunks:
+            if chunk_id == max_chunks and received_data:
+                for key, value in parsed_data.items():
+
+                    if isinstance(value, dict):
+                        # Nested data, e.g. last_data / average_data
+                        if key == "last_data":
+                            timestamp_ms = value.get("timestamp_ms")
+                        else:
+                            timestamp_ms = parsed_data.get("timestamp_ms")
+
+                        if timestamp_ms is None:
+                            continue
+
+                        if key not in self.latest_status:
+                            self.latest_status[key] = {}
+
+                        for k, v in value.items():
+                            if k == "timestamp_ms":
+                                continue
+
+                            self.latest_status[key][k] = {
+                                "timestamp_ms": timestamp_ms,
+                                "value": v
+                            }
+
+                    else:
+                        # Simple value, e.g. version, AFE_timestamp_ms, etc.
+                        timestamp_ms = parsed_data.get("timestamp_ms")
+
+                        if timestamp_ms is None:
+                            timestamp_ms = millis()
+
+                        self.latest_status[key] = {
+                            "timestamp_ms": timestamp_ms,
+                            "value": value
+                        }
+                # await p.print("%", str(self.latest_status).replace("'",'"'))
+                    # s = "$ " + str(key) + " -> " + str(value)
+                    # await p.print(s)
+                #     self.latest_status["key"]
+                await p.print("$", parsed_data)
                 if self.executing is not None:
                     if command == self.executing["command"]:
                         self.executing["status"] = CommandStatus.RECIEVED
