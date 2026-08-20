@@ -277,6 +277,16 @@ class AsyncWebServer:
             await writer.awrite(b"}\r\n")
 
             return None
+        
+        elif procedure == "get_all_afe_id":
+            first_device = True
+            await writer.awrite(b'{"available_afe":[')
+            for afe_device in self.hub.afe_devices:
+                if not first_device:
+                    await writer.awrite(b",")
+                first_device = False
+                await writer.awrite(str(afe_device.device_id).encode())
+            await writer.awrite(b"]}\r\n")
 
         elif procedure == "hub_close_all":
             await self.hub.close_all()
@@ -495,6 +505,7 @@ class AsyncWebServer:
                 if response:
                     # await p.print("%",response)
                     await writer.awrite(response)
+                    await writer.awrite(b"\r\n")
 
         except uasyncio.TimeoutError:
             await p.print("Timeout reading from", peername)
