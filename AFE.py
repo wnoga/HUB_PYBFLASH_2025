@@ -181,7 +181,7 @@ class AFEDevice:
         tmp = "AFE{}:\n".format(self.device_id)
         for ch in self.channels:
             tmp += "\t{}->{}\n".format(ch.name, ch.config)
-        await p.print(tmp)
+        # await p.print(tmp)
 
     # Changed to async def
     async def start_periodic_measurement_for_channels(self, report_every_ms, channels=0xFF):
@@ -795,7 +795,7 @@ class AFEDevice:
                     # s = "$ " + str(key) + " -> " + str(value)
                     # await p.print(s)
                 #     self.latest_status["key"]
-                await p.print("$", parsed_data)
+                # await p.print("$", parsed_data)
                 if self.executing is not None:
                     if command == self.executing["command"]:
                         self.executing["status"] = CommandStatus.RECIEVED
