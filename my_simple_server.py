@@ -47,6 +47,8 @@ DASHBOARD_CSS = (
     b".scroll-box::-webkit-scrollbar{width:6px;}"
     b".scroll-box::-webkit-scrollbar-track{background:#1e1e1e;}"
     b".scroll-box::-webkit-scrollbar-thumb{background:#3c3c3c;border-radius:3px;}"
+    b".btn-dl{background:#0e639c;color:#fff;padding:3px 8px;text-decoration:none;border-radius:3px;font-size:0.85em;display:inline-block;}"
+    b".btn-dl:hover{background:#1177bb;}"
 )
 
 
@@ -410,7 +412,58 @@ class AsyncWebServer:
             await self._send_raw(
                 sock, b'{"status":"ERROR","info":"Unknown procedure"}\r\n'
             )
+            
+    async def handle_log_download(self, filename, writer):
+        """Streams a log file directly from SD card in small 512-byte chunks."""
+        # Sanitize filename to prevent directory traversal attacks
+        clean_filename = filename.split("/")[-1].split("\\")[-1]
+        filepath = "/sd/logs/" + clean_filename
 
+        try:
+            # Check if file exists and get size
+            stat = uos.stat(filepath)
+            file_size = stat[6]
+        except OSError:
+            header = (
+                "HTTP/1.1 404 Not Found\r\n"
+                "Content-Type: text/plain\r\n"
+                "Connection: close\r\n\r\n"
+                "File Not Found"
+            )
+            writer.write(header.encode("ascii"))
+            await writer.drain()
+            return
+
+        # Send HTTP download headers (using "rb" mode works fine on active log files)
+        header = (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/octet-stream\r\n"
+            "Content-Disposition: attachment; filename=\"{}\"\r\n"
+            "Content-Length: {}\r\n"
+            "Connection: close\r\n\r\n"
+        ).format(clean_filename, file_size)
+
+        try:
+            writer.write(header.encode("ascii"))
+            await writer.drain()
+
+            # Stream file in low-RAM 512-byte chunks
+            chunk = bytearray(512)
+            with open(filepath, "rb") as f:
+                while True:
+                    bytes_read = f.readinto(chunk)
+                    if not bytes_read:
+                        break
+                    # Memoryview slice avoids allocation
+                    writer.write(memoryview(chunk)[:bytes_read])
+                    await writer.drain()
+                    await asyncio.sleep_ms(1)  # Yield to keep network loop responsive
+        except OSError:
+            pass
+        finally:
+            writer.close()
+            await writer.wait_closed()
+        
     def format_afe_status_html(self, status_data):
             """Generates a compact, dark-themed visual HTML card for SiPM telemetry."""
             if not isinstance(status_data, dict) or "last_data" not in status_data:
@@ -654,7 +707,94 @@ class AsyncWebServer:
                     uptime_s,
                 )
             )
+            
+            try:
+                log_files = uos.listdir("/sd/logs")
+            except OSError:
+                log_files = []
 
+            await send_chunk(
+                '<div class="card"><h2>SD Card Log Files</h2>'
+            )
+
+            if log_files:
+                await send_chunk(
+                    '<table><tr><th>Filename</th><th>Size</th><th>Action</th></tr>'
+                )
+                for file_name in log_files:
+                    filepath = "/sd/logs/" + file_name
+                    try:
+                        file_stat = uos.stat(filepath)
+                        size_str = "%d KB" % (file_stat[6] // 1024)
+                    except OSError:
+                        size_str = "N/A"
+
+                    await send_chunk(
+                        '<tr><td><strong>%s</strong></td><td>%s</td>'
+                        '<td><a class="btn-dl" href="/download_log?file=%s">Download</a></td></tr>'
+                        % (file_name, size_str, file_name)
+                    )
+                await send_chunk('</table></div>')
+            else:
+                await send_chunk('<p>No log files found in <code>/sd/logs</code>.</p></div>')
+
+            # =========================================================================
+            # SD CARD STORAGE SPACE CALCULATION & UI
+            # =========================================================================
+
+            total_mb = 0.0
+            free_mb = 0.0
+            used_pct = 0.0
+            sd_mounted = False
+
+            try:
+                # statvfs returns: (f_bsize, f_frsize, f_blocks, f_bfree, f_bavail, f_files, f_ffree, f_favail, f_flag, f_namemax)
+                vfs = uos.statvfs("/sd")
+                
+                # Use f_frsize (fragment size) if available, fall back to f_bsize (block size)
+                block_size = vfs[1] if vfs[1] > 0 else vfs[0]
+                total_blocks = vfs[2]
+                free_blocks = vfs[3]
+
+                if total_blocks > 0:
+                    total_bytes = total_blocks * block_size
+                    free_bytes = free_blocks * block_size
+                    used_bytes = total_bytes - free_bytes
+
+                    total_mb = total_bytes / (1024 * 1024)
+                    free_mb = free_bytes / (1024 * 1024)
+                    used_pct = (used_bytes / total_bytes) * 100.0
+                    sd_mounted = True
+            except OSError:
+                sd_mounted = False
+
+            # Render SD Storage Metrics Card
+            if sd_mounted:
+                await send_chunk(
+                    '<div class="card"><h2>SD Card Storage Metrics</h2><table>'
+                    '<tr><th>Status</th><td><span class="badge-on">MOUNTED</span></td></tr>'
+                    '<tr><th>Total Space</th><td>%.2f MB</td></tr>'
+                    '<tr><th>Free Space</th><td>%.2f MB</td></tr>'
+                    '<tr><th>Usage</th><td>'
+                    '<div style="background:#333;border-radius:3px;overflow:hidden;width:100%%;max-width:200px;display:inline-block;vertical-align:middle;margin-right:8px;">'
+                    '<div style="background:%s;width:%.1f%%;height:12px;"></div>'
+                    '</div>%.1f%%'
+                    '</td></tr>'
+                    '</table></div>'
+                    % (
+                        total_mb,
+                        free_mb,
+                        "#dc3545" if used_pct > 90 else "#28a745",  # Turns red if >90% full
+                        used_pct,
+                        used_pct,
+                    )
+                )
+            else:
+                await send_chunk(
+                    '<div class="card"><h2>SD Card Storage Metrics</h2>'
+                    '<p><span class="badge-off">UNMOUNTED / NOT FOUND</span></p></div>'
+                )
+    
             writer.write(b"0\r\n\r\n")
             await writer.drain()
 
@@ -700,9 +840,8 @@ class AsyncWebServer:
             return
 
         sock, _, buf, buf_len = state
-        
+
         if buf_len >= self.BUFFER_SIZE:
-            # Buffer overrun without newline - drop client to prevent memory leak
             self._close_client(client_sock)
             return
 
@@ -721,16 +860,25 @@ class AsyncWebServer:
                 line_view = memoryview(buf)[:newline_idx]
 
                 if newline_idx >= 3 and line_view[:3] == b"GET":
+                    req_line = str(bytes(line_view), "utf-8")
+                    path = req_line.split(" ")[1] if " " in req_line else "/"
+
                     reader = asyncio.StreamReader(client_sock)
                     writer = asyncio.StreamWriter(client_sock, {})
-                    await self.send_control_web_page_raw(reader, writer)
+
+                    # Route file downloads
+                    if "/download_log?file=" in path:
+                        filename = path.split("?file=")[1].split(" ")[0]
+                        await self.handle_log_download(filename, writer)
+                    else:
+                        await self.send_control_web_page_raw(reader, writer)
                 else:
                     await self.handle_procedure_raw(line_view, client_sock)
 
                 self._close_client(client_sock)
 
         except OSError as e:
-            if e.args[0] not in (errno.EAGAIN, errno.ETIMEDOUT):
+            if e.args[0] not in (11, 110):  # EAGAIN / EWOULDBLOCK
                 self._close_client(client_sock)
 
     async def socket_poll_task(self):
