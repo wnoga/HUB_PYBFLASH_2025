@@ -291,14 +291,14 @@ class AsyncWebServer:
 
     def send_control_web_page_raw(self, client_sock):
         """
-        Streams an HTML dashboard in small chunks over the socket to prevent
-        MicroPython MemoryError / heap fragmentation.
+        Streams an HTML dashboard in small chunks over the socket displaying
+        HUB status timeouts/active flags, per-AFE status flags, and server metrics.
         """
         try:
-            # Run garbage collection before allocation
+            # Reclaim RAM before starting string output
             gc.collect()
 
-            # 1. Send HTTP Response Header using HTTP Chunked Transfer Encoding
+            # 1. Send HTTP Header using Chunked Transfer Encoding
             header = (
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: text/html; charset=utf-8\r\n"
@@ -308,7 +308,7 @@ class AsyncWebServer:
             )
             client_sock.sendall(header.encode("utf-8"))
 
-            # Helper function to send small chunks safely
+            # Helper function to send memory-efficient chunks
             def send_chunk(text):
                 if not text:
                     return
@@ -316,22 +316,52 @@ class AsyncWebServer:
                 chunk_header = "%X\r\n" % len(data)
                 client_sock.sendall(chunk_header.encode("utf-8") + data + b"\r\n")
 
-            # 2. Stream HTML Head and Page Title
+            # 2. Stream HTML Head & Global CSS Styles
             send_chunk(
                 "<!DOCTYPE html><html><head>"
                 '<meta name="viewport" content="width=device-width, initial-scale=1">'
-                "<title>HUB - AFE Dashboard</title><style>"
+                "<title>HUB - Status Dashboard</title><style>"
                 "body{font-family:monospace,sans-serif;margin:15px;background:#1e1e1e;color:#d4d4d4;}"
                 ".card{background:#252526;padding:15px;border-radius:6px;border:1px solid #3c3c3c;margin-bottom:15px;}"
                 "h2{color:#569cd6;margin-top:0;font-size:1.1em;border-bottom:1px solid #3c3c3c;padding-bottom:5px;}"
                 "table{width:100%;border-collapse:collapse;margin-top:10px;}"
                 "td,th{padding:6px 10px;text-align:left;border-bottom:1px solid #333;font-size:0.85em;vertical-align:top;}"
-                "th{color:#9cdcfe;width:20%;background-color:#2d2d2d;}"
+                "th{color:#9cdcfe;width:30%;background-color:#2d2d2d;}"
+                ".badge-on{background:#28a745;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;}"
+                ".badge-off{background:#dc3545;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;}"
                 "pre{margin:0;white-space:pre-wrap;word-wrap:break-word;color:#ce9178;font-size:0.85em;}"
                 '</style><meta http-equiv="refresh" content="5"></head><body>'
             )
 
-            # 3. Stream AFE Devices dynamically one-by-one
+            # 3. Calculate Discovery Timeout State
+            try:
+                # Assumes millis() is a helper or method on self/hub, or fallback to utime.ticks_ms()
+                current_ms = getattr(self, "millis", utime.ticks_ms)()
+                start_time = getattr(self.hub, "discovery_start_time", 0)
+                timeout_ms = getattr(self.hub, "discovery_timeout_ms", 0)
+                
+                discovery_timed_out = utime.ticks_diff(current_ms, start_time) >= timeout_ms
+            except Exception:
+                discovery_timed_out = "N/A"
+
+            # Read HUB Active Flags
+            afe_manage_active = getattr(self.hub, "afe_manage_active", False)
+            rx_process_active = getattr(self.hub, "rx_process_active", False)
+
+            # 4. Stream HUB Status Card
+            send_chunk(
+                '<div class="card"><h2>Current HUB Status</h2><table>'
+                "<tr><th>Discovery Timed Out</th><td>%s</td></tr>"
+                "<tr><th>AFE Manage Active</th><td>%s</td></tr>"
+                "<tr><th>RX Process Active</th><td>%s</td></tr>"
+                "</table></div>" % (
+                    '<span class="badge-off">TRUE</span>' if discovery_timed_out is True else ('<span class="badge-on">FALSE</span>' if discovery_timed_out is False else "N/A"),
+                    '<span class="badge-on">ACTIVE</span>' if afe_manage_active else '<span class="badge-off">INACTIVE</span>',
+                    '<span class="badge-on">ACTIVE</span>' if rx_process_active else '<span class="badge-off">INACTIVE</span>'
+                )
+            )
+
+            # 5. Stream AFE Devices with Detailed Per-AFE States
             afe_devices = getattr(self.hub, "afe_devices", [])
 
             if afe_devices:
@@ -341,7 +371,14 @@ class AsyncWebServer:
                     channels = getattr(afe, "channels", {})
                     raw_status = getattr(afe, "latest_status", {})
 
-                    # Format status as JSON
+                    # Detailed AFE Flags
+                    is_online = getattr(afe, "is_online", False)
+                    firmware_version = getattr(afe, "firmware_version", "N/A")
+                    version_checked = getattr(afe, "version_checked", False)
+                    is_configured = getattr(afe, "is_configured", False)
+                    is_config_started = getattr(afe, "is_configuration_started", False)
+
+                    # Format status JSON safely
                     try:
                         if isinstance(raw_status, str):
                             status_json = raw_status
@@ -350,7 +387,7 @@ class AsyncWebServer:
                     except Exception:
                         status_json = str(raw_status)
 
-                    # Format configuration
+                    # Format configuration string
                     config_str = ""
                     if isinstance(config, dict):
                         for k, v in config.items():
@@ -359,13 +396,26 @@ class AsyncWebServer:
                     else:
                         config_str = str(config)
 
-                    # Send Card Top
+                    # Stream Card Header + Detailed Flags
                     send_chunk(
                         '<div class="card"><h2>AFE Device: %s</h2><table>'
-                        "<tr><th>Configuration</th><td>%s</td></tr>" % (str(dev_id), config_str if config_str else "N/A")
+                        "<tr><th>Online Status</th><td>%s</td></tr>"
+                        "<tr><th>Firmware Version</th><td><strong>%s</strong></td></tr>"
+                        "<tr><th>Version Checked</th><td>%s</td></tr>"
+                        "<tr><th>Configured</th><td>%s</td></tr>"
+                        "<tr><th>Configuration Started</th><td>%s</td></tr>"
+                        "<tr><th>Configuration</th><td>%s</td></tr>" % (
+                            str(dev_id),
+                            '<span class="badge-on">ONLINE</span>' if is_online else '<span class="badge-off">OFFLINE</span>',
+                            str(firmware_version),
+                            '<span class="badge-on">YES</span>' if version_checked else '<span class="badge-off">NO</span>',
+                            '<span class="badge-on">YES</span>' if is_configured else '<span class="badge-off">NO</span>',
+                            '<span class="badge-on">YES</span>' if is_config_started else '<span class="badge-off">NO</span>',
+                            config_str if config_str else "N/A"
+                        )
                     )
 
-                    # Stream channels
+                    # Stream Channels
                     send_chunk("<tr><th>Channels</th><td>")
                     if isinstance(channels, dict):
                         for ch, val in channels.items():
@@ -377,18 +427,17 @@ class AsyncWebServer:
                         send_chunk(str(channels))
                     send_chunk("</td></tr>")
 
-                    # Send status JSON & Card Bottom
+                    # Stream JSON Status & Close Card
                     send_chunk(
                         "<tr><th>Latest Status (JSON)</th><td><pre>%s</pre></td></tr>"
                         "</table></div>" % status_json
                     )
 
-                    # Clean up memory loop iteration
                     gc.collect()
             else:
-                send_chunk('<div class="card"><h2>AFE Devices</h2><p>No AFE devices detected.</p></div>')
+                send_chunk('<div class="card"><h2>AFE Devices</h2><p>No AFE devices detected in self.hub.afe_devices.</p></div>')
 
-            # 4. Stream Server Metrics
+            # 6. Stream Server Health Metrics
             free_ram = gc.mem_free()
             uptime_s = int(time.time())
             active_clients = len(self.client_sockets)
@@ -406,12 +455,12 @@ class AsyncWebServer:
                 )
             )
 
-            # 5. Send Terminal Chunk to signal end of HTTP Transfer
+            # 7. Finalize HTTP Chunked Stream
             client_sock.sendall(b"0\r\n\r\n")
 
         except OSError:
-            pass  # Socket disconnect
-    
+            pass  # Non-blocking socket cleanup handles disconnects safely
+        
     # =========================================================================
     # RAW SOCKET POLLING & ZERO-ALLOCATION LOOP
     # =========================================================================
