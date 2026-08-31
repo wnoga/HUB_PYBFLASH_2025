@@ -27,6 +27,28 @@ from my_utilities import (
 NTP_DELTA = 2208988800  # Seconds between NTP epoch (1900) and Unix epoch (1970)
 NTP_HOST = "pool.ntp.org"
 
+DASHBOARD_CSS = (
+    b"body{font-family:monospace,sans-serif;margin:15px;background:#1e1e1e;color:#d4d4d4;}"
+    b".card{background:#252526;padding:15px;border-radius:6px;border:1px solid #3c3c3c;margin-bottom:15px;}"
+    b"h2{color:#569cd6;margin-top:0;font-size:1.1em;border-bottom:1px solid #3c3c3c;padding-bottom:5px;}"
+    b"table{width:100%;border-collapse:collapse;margin-top:10px;}"
+    b"td,th{padding:6px 10px;text-align:left;border-bottom:1px solid #333;font-size:0.85em;vertical-align:top;}"
+    b"th{color:#9cdcfe;width:30%;background-color:#2d2d2d;}"
+    b".badge-on{background:#28a745;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;}"
+    b".badge-off{background:#dc3545;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;}"
+    b"pre{margin:0;white-space:pre-wrap;word-wrap:break-word;color:#ce9178;font-size:0.85em;}"
+    b".sipm-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;}"
+    b".sipm-chan{background:#1e1e1e;padding:8px;border-radius:4px;border:1px solid #333;}"
+    b".sipm-chan h3{margin:0 0 6px 0;font-size:0.9em;color:#4ec9b0;border-bottom:1px solid #333;padding-bottom:3px;}"
+    b".metric{display:flex;justify-content:space-between;font-size:0.8em;margin-bottom:3px;}"
+    b".metric-val{font-weight:bold;color:#b5cea8;}"
+    b".sys-row{display:flex;gap:15px;background:#1e1e1e;padding:6px 10px;border-radius:4px;font-size:0.8em;margin-top:4px;}"
+    b".scroll-box{max-height:140px;overflow-y:auto;background:#1e1e1e;padding:8px;border-radius:4px;border:1px solid #3c3c3c;}"
+    b".scroll-box::-webkit-scrollbar{width:6px;}"
+    b".scroll-box::-webkit-scrollbar-track{background:#1e1e1e;}"
+    b".scroll-box::-webkit-scrollbar-thumb{background:#3c3c3c;border-radius:3px;}"
+)
+
 
 class AsyncWebServer:
 
@@ -434,8 +456,25 @@ class AsyncWebServer:
                 % (temp_ext, temp_loc, uid, u0, i0_na, int(dc0), u1, i1_na, int(dc1))
             )
 
+    async def _send_chunk_raw(self, writer, data: bytes):
+            """Helper to stream pre-encoded raw byte chunks directly."""
+            if not data:
+                return
+            writer.write(("%X\r\n" % len(data)).encode("ascii"))
+            writer.write(data)
+            writer.write(b"\r\n")
+            await writer.drain()
+
     async def send_control_web_page_raw(self, reader, writer):
-        """Streams an HTML dashboard in chunks using non-blocking uasyncio Streams."""
+        """Streams HTML dashboard while pushing pre-encoded static CSS directly."""
+        async def send_chunk(text):
+                if not text:
+                    return
+                data = text.encode("utf-8")
+                writer.write(("%X\r\n" % len(data)).encode("utf-8"))
+                writer.write(data)
+                writer.write(b"\r\n")
+                await writer.drain()
         try:
             gc.collect()
 
@@ -445,42 +484,24 @@ class AsyncWebServer:
                 "Transfer-Encoding: chunked\r\n"
                 "Connection: close\r\n\r\n"
             )
-            writer.write(header.encode("utf-8"))
+            writer.write(header.encode("ascii"))
             await writer.drain()
 
-            async def send_chunk(text):
-                if not text:
-                    return
-                data = text.encode("utf-8")
-                writer.write(("%X\r\n" % len(data)).encode("utf-8"))
-                writer.write(data)
-                writer.write(b"\r\n")
-                await writer.drain()
+            # HTML Shell Start
+            await self._send_chunk_raw(
+                writer,
+                b'<!DOCTYPE html><html><head>'
+                b'<meta name="viewport" content="width=device-width, initial-scale=1">'
+                b'<title>HUB - Status Dashboard</title><style>'
+            )
 
-            await send_chunk(
-                "<!DOCTYPE html><html><head>"
-                '<meta name="viewport" content="width=device-width, initial-scale=1">'
-                "<title>HUB - Status Dashboard</title><style>"
-                "body{font-family:monospace,sans-serif;margin:15px;background:#1e1e1e;color:#d4d4d4;}"
-                ".card{background:#252526;padding:15px;border-radius:6px;border:1px solid #3c3c3c;margin-bottom:15px;}"
-                "h2{color:#569cd6;margin-top:0;font-size:1.1em;border-bottom:1px solid #3c3c3c;padding-bottom:5px;}"
-                "table{width:100%;border-collapse:collapse;margin-top:10px;}"
-                "td,th{padding:6px 10px;text-align:left;border-bottom:1px solid #333;font-size:0.85em;vertical-align:top;}"
-                "th{color:#9cdcfe;width:30%;background-color:#2d2d2d;}"
-                ".badge-on{background:#28a745;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;}"
-                ".badge-off{background:#dc3545;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;}"
-                "pre{margin:0;white-space:pre-wrap;word-wrap:break-word;color:#ce9178;font-size:0.85em;}"
-                ".sipm-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;}"
-                ".sipm-chan{background:#1e1e1e;padding:8px;border-radius:4px;border:1px solid #333;}"
-                ".sipm-chan h3{margin:0 0 6px 0;font-size:0.9em;color:#4ec9b0;border-bottom:1px solid #333;padding-bottom:3px;}"
-                ".metric{display:flex;justify-content:space-between;font-size:0.8em;margin-bottom:3px;}"
-                ".metric-val{font-weight:bold;color:#b5cea8;}"
-                ".sys-row{display:flex;gap:15px;background:#1e1e1e;padding:6px 10px;border-radius:4px;font-size:0.8em;margin-top:4px;}"
-                ".scroll-box{max-height:140px;overflow-y:auto;background:#1e1e1e;padding:8px;border-radius:4px;border:1px solid #3c3c3c;}"
-                ".scroll-box::-webkit-scrollbar{width:6px;}"
-                ".scroll-box::-webkit-scrollbar-track{background:#1e1e1e;}"
-                ".scroll-box::-webkit-scrollbar-thumb{background:#3c3c3c;border-radius:3px;}"
-                '</style><meta http-equiv="refresh" content="5"></head><body>'
+            # Stream Static CSS directly from constant byte payload (zero allocations)
+            await self._send_chunk_raw(writer, DASHBOARD_CSS)
+
+            # HTML Shell Continuation
+            await self._send_chunk_raw(
+                writer,
+                b'</style><meta http-equiv="refresh" content="5"></head><body>'
             )
 
             try:
