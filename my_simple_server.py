@@ -8,6 +8,8 @@ import struct
 import uos
 import gc
 
+json = ujson
+
 from HUB import HUBDevice
 from my_utilities import wdt, millis, is_timeout
 from my_utilities import p, rtc, rtc_synced, rtc_datetime_pretty, dump_json_sorted
@@ -289,48 +291,82 @@ class AsyncWebServer:
 
     def send_control_web_page_raw(self, client_sock):
         """
-        Renders an HTML dashboard listing all AFE modules with 
-        their respective parameters and real-time readings.
+        Renders an HTML dashboard iterating through self.hub.afe_devices 
+        to display device IDs, configuration, channels, and JSON status.
         """
         try:
-            # 1. Fetch AFE channel data dynamically
-            # Accepts dictionary structure: {'AFE1': {'Gain': 10, 'Voltage': 3.3, 'Status': 'OK'}}
-            # or object lists depending on self.hub implementation.
-            afe_data = getattr(self.hub, "afe_channels", {})
-            
-            if not afe_data and hasattr(self.hub, "get_afe_status"):
-                afe_data = self.hub.get_afe_status()
+            # 1. Safely retrieve AFE devices list
+            afe_devices = getattr(self.hub, "afe_devices", [])
 
-            # 2. Build dynamic dynamic table rows for AFEs
-            afe_rows = ""
-            if afe_data:
-                for afe_name, params in afe_data.items():
-                    if isinstance(params, dict):
-                        for param_name, val in params.items():
-                            afe_rows += (
-                                "<tr>"
-                                "<td>%s</td>"
-                                "<td>%s</td>"
-                                "<td><strong>%s</strong></td>"
-                                "</tr>\n" % (str(afe_name), str(param_name), str(val))
-                            )
+            # 2. Build dynamic HTML for each AFE device
+            afe_sections = ""
+            if afe_devices:
+                for afe in afe_devices:
+                    # Safely pull attributes
+                    dev_id = getattr(afe, "device_id", "Unknown")
+                    config = getattr(afe, "configuration", {})
+                    channels = getattr(afe, "channels", {})
+                    raw_status = getattr(afe, "latest_status", {})
+
+                    # Format status as pretty-printed/formatted JSON string
+                    try:
+                        if isinstance(raw_status, str):
+                            status_json = raw_status
+                        else:
+                            status_json = json.dumps(raw_status)
+                    except Exception:
+                        status_json = str(raw_status)
+
+                    # Format configuration key-values
+                    config_str = ""
+                    if isinstance(config, dict):
+                        for k, v in config.items():
+                            config_str += "%s: %s | " % (str(k), str(v))
+                        config_str = config_str.rstrip(" | ")
                     else:
-                        afe_rows += (
-                            "<tr>"
-                            "<td>%s</td>"
-                            "<td>Value</td>"
-                            "<td><strong>%s</strong></td>"
-                            "</tr>\n" % (str(afe_name), str(params))
-                        )
-            else:
-                afe_rows = "<tr><td colspan='3'>No Active AFE Devices Detected</td></tr>"
+                        config_str = str(config)
 
-            # 3. System Metrics
+                    # Format channels
+                    channels_str = ""
+                    if isinstance(channels, (dict, list, tuple)):
+                        for ch in channels:
+                            if isinstance(channels, dict):
+                                channels_str += "Ch %s: %s<br>" % (str(ch), str(channels[ch]))
+                            else:
+                                channels_str += "%s<br>" % str(ch)
+                    else:
+                        channels_str = str(channels)
+
+                    # Build HTML Card for this AFE
+                    afe_sections += (
+                        '<div class="card">\n'
+                        "    <h2>AFE Device: %s</h2>\n"
+                        "    <table>\n"
+                        "        <tr><th>Configuration</th><td>%s</td></tr>\n"
+                        "        <tr><th>Channels</th><td>%s</td></tr>\n"
+                        "        <tr><th>Latest Status (JSON)</th><td><pre>%s</pre></td></tr>\n"
+                        "    </table>\n"
+                        "</div>\n" % (
+                            str(dev_id),
+                            config_str if config_str else "N/A",
+                            channels_str if channels_str else "N/A",
+                            status_json
+                        )
+                    )
+            else:
+                afe_sections = (
+                    '<div class="card">\n'
+                    "    <h2>AFE Devices</h2>\n"
+                    "    <p>No AFE devices detected in self.hub.afe_devices.</p>\n"
+                    "</div>\n"
+                )
+
+            # 3. Telemetry metrics
             free_ram = gc.mem_free()
             uptime_s = int(time.time())
             active_clients = len(self.client_sockets)
 
-            # 4. Construct Full Webpage (%-formatting only)
+            # 4. Construct Full HTML Document (%-formatting only)
             html_body = (
                 "<!DOCTYPE html>\n"
                 "<html>\n"
@@ -340,37 +376,27 @@ class AsyncWebServer:
                 "    <style>\n"
                 "        body { font-family: monospace, sans-serif; margin: 15px; background: #1e1e1e; color: #d4d4d4; }\n"
                 "        .card { background: #252526; padding: 15px; border-radius: 6px; border: 1px solid #3c3c3c; margin-bottom: 15px; }\n"
-                "        h2 { color: #569cd6; margin-top: 0; font-size: 1.2em; }\n"
+                "        h2 { color: #569cd6; margin-top: 0; font-size: 1.1em; border-bottom: 1px solid #3c3c3c; padding-bottom: 5px; }\n"
                 "        table { width: 100%%; border-collapse: collapse; margin-top: 10px; }\n"
-                "        td, th { padding: 6px 10px; text-align: left; border-bottom: 1px solid #333; font-size: 0.9em; }\n"
-                "        th { background-color: #2d2d2d; color: #9cdcfe; }\n"
-                "        tr:nth-child(even) { background-color: #1a1a1a; }\n"
+                "        td, th { padding: 6px 10px; text-align: left; border-bottom: 1px solid #333; font-size: 0.85em; vertical-align: top; }\n"
+                "        th { color: #9cdcfe; width: 20%%; background-color: #2d2d2d; }\n"
+                "        pre { margin: 0; white-space: pre-wrap; word-wrap: break-word; color: #ce9178; font-size: 0.85em; }\n"
                 "    </style>\n"
                 '    <meta http-equiv="refresh" content="3">\n'
                 "</head>\n"
                 "<body>\n"
+                "    %s\n"
                 '    <div class="card">\n'
-                "        <h2>Analog Front-End (AFE) Parameters</h2>\n"
+                "        <h2>Server Metrics</h2>\n"
                 "        <table>\n"
-                "            <thead>\n"
-                "                <tr><th>AFE Module</th><th>Parameter</th><th>Latest Value</th></tr>\n"
-                "            </thead>\n"
-                "            <tbody>\n"
-                "                %s\n"
-                "            </tbody>\n"
-                "        </table>\n"
-                "    </div>\n"
-                '    <div class="card">\n'
-                "        <h2>System Health</h2>\n"
-                "        <table>\n"
-                "            <tr><td>Free RAM</td><td>%d bytes</td></tr>\n"
-                "            <tr><td>Active Sockets</td><td>%d / %d</td></tr>\n"
-                "            <tr><td>Uptime</td><td>%d s</td></tr>\n"
+                "            <tr><th>Free RAM</th><td>%d bytes</td></tr>\n"
+                "            <tr><th>Active Sockets</th><td>%d / %d</td></tr>\n"
+                "            <tr><th>Uptime</th><td>%d s</td></tr>\n"
                 "        </table>\n"
                 "    </div>\n"
                 "</body>\n"
                 "</html>" % (
-                    afe_rows,
+                    afe_sections,
                     free_ram,
                     active_clients,
                     self.tcp_requests_max,
@@ -378,7 +404,7 @@ class AsyncWebServer:
                 )
             )
 
-            # 5. Build HTTP Headers and Payload
+            # 5. Send HTTP Response
             response = (
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: text/html; charset=utf-8\r\n"
@@ -388,12 +414,11 @@ class AsyncWebServer:
                 "%s" % (len(html_body), html_body)
             )
 
-            # 6. Send Response
             client_sock.sendall(response.encode("utf-8"))
 
         except OSError:
-            pass  # Handle non-blocking socket disconnects safely
-        
+            pass  # Handle client disconnect gracefully
+      
     # =========================================================================
     # RAW SOCKET POLLING & ZERO-ALLOCATION LOOP
     # =========================================================================
