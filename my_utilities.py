@@ -4,6 +4,7 @@ except:
     pass
 import json
 import os
+import utime
 
 try:
     class DummyLock:

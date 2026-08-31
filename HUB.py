@@ -60,6 +60,9 @@ class HUBDevice:
         self.discovery_active = False  # enable discovery subprocess
         self.afe_manage_active = False  # enable management of the AFEs
         self.rx_process_active = False
+        
+        self.discovery_start_time = millis()
+        self.discovery_timeout_ms = 300000
 
         self.afe_id_min = 1
         self.afe_id_max = 255
@@ -251,47 +254,79 @@ class HUBDevice:
 
     # Renamed to avoid conflict if old one is kept temporarily
     async def discover_devices_async(self):
-        """ Periodically discover AFEs on the CAN bus. """
-        if not self.discovery_active:
-            return
+            """Periodically discover AFEs on the CAN bus with a 5-minute timeout."""
+            if not self.discovery_active:
+                return
 
-        if len(self.afe_devices) >= self.afe_devices_max:  # Use >= for safety
-            self.stop_discovery()
-            return
+            # Stop if 5 minutes (300,000 ms) have passed since discovery started
+            if utime.ticks_diff(millis(), self.discovery_start_time) >= self.discovery_timeout_ms:
+                await self.logger.log(
+                    VerbosityLevel["INFO"],
+                    {
+                        "device_id": 0,
+                        "timestamp_ms": millis(),
+                        "message": "Discovery timeout reached (5 minutes). Stopping.",
+                    },
+                )
+                self.stop_discovery()
+                return
 
-        if self.use_tx_delay and is_delay(self.last_tx_time, self.tx_delay_ms):
-            return
+            if len(self.afe_devices) >= self.afe_devices_max:
+                self.stop_discovery()
+                return
 
-        if self.can_interface.state() > 1:
-            if self.can_interface.state() > 2:  # Corresponds to pyb.CAN.BUS_OFF or more severe
+            if self.use_tx_delay and is_delay(self.last_tx_time, self.tx_delay_ms):
+                return
 
-                await self.logger.log(VerbosityLevel["ERROR"], {
-                    "device_id": 0,
-                    "timestamp_ms": millis(),
-                    "error": "CAN bus error state {}, attempting restart.".format(self.can_interface.state())})
-                self.can_interface.restart()
-            else:
+            if self.can_interface.state() > 1:
+                if self.can_interface.state() > 2:
+                    await self.logger.log(
+                        VerbosityLevel["ERROR"],
+                        {
+                            "device_id": 0,
+                            "timestamp_ms": millis(),
+                            "error": (
+                                "CAN bus error state {}, attempting restart.".format(
+                                    self.can_interface.state()
+                                )
+                            ),
+                        },
+                    )
+                    self.can_interface.restart()
+                else:
+                    await self.logger.log(
+                        VerbosityLevel["WARNING"],
+                        {
+                            "device_id": 0,
+                            "timestamp_ms": millis(),
+                            "error": "CAN bus warning state {}.".format(
+                                self.can_interface.state()
+                            ),
+                        },
+                    )
+                return
 
-                await self.logger.log(VerbosityLevel["WARNING"], {
-                    "device_id": 0,
-                    "timestamp_ms": millis(),
-                    "error": "CAN bus warning state {}.".format(self.can_interface.state())})
-            return
+            if self.current_discovery_id > self.afe_id_max:
+                self.current_discovery_id = self.afe_id_min
 
-        if self.current_discovery_id > self.afe_id_max:
-            self.current_discovery_id = self.afe_id_min
-
-        if not any(afe.is_online and afe.device_id == self.current_discovery_id for afe in self.afe_devices):
-            send_result = await self.can_interface.send(
-                toSend=b"\x00\x11",  # Command to request AFE presence/ID
-                can_address=self.current_discovery_id << 2,
-                timeout_ms=self.tx_timeout_ms
-            )
-            if send_result is None:  # Indicates successful scheduling by can_interface
-                self.last_tx_time = millis()
-
-                await self.logger.log(VerbosityLevel["DEBUG"], "Sent discovery to ID: {}".format(self.current_discovery_id))
-        self.current_discovery_id += 1
+            if not any(
+                afe.is_online and afe.device_id == self.current_discovery_id
+                for afe in self.afe_devices
+            ):
+                send_result = await self.can_interface.send(
+                    toSend=b"\x00\x11",
+                    can_address=self.current_discovery_id << 2,
+                    timeout_ms=self.tx_timeout_ms,
+                )
+                if send_result is None:
+                    self.last_tx_time = millis()
+                    await self.logger.log(
+                        VerbosityLevel["DEBUG"],
+                        "Sent discovery to ID: {}".format(
+                            self.current_discovery_id
+                        ),
+                    )
+            self.current_discovery_id += 1
 
     async def start_discovery(self):  # Changed to async def
         """ Start the device discovery process. """

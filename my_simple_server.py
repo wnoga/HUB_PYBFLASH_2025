@@ -291,24 +291,57 @@ class AsyncWebServer:
 
     def send_control_web_page_raw(self, client_sock):
         """
-        Renders an HTML dashboard iterating through self.hub.afe_devices 
-        to display device IDs, configuration, channels, and JSON status.
+        Streams an HTML dashboard in small chunks over the socket to prevent
+        MicroPython MemoryError / heap fragmentation.
         """
         try:
-            # 1. Safely retrieve AFE devices list
+            # Run garbage collection before allocation
+            gc.collect()
+
+            # 1. Send HTTP Response Header using HTTP Chunked Transfer Encoding
+            header = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/html; charset=utf-8\r\n"
+                "Transfer-Encoding: chunked\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+            client_sock.sendall(header.encode("utf-8"))
+
+            # Helper function to send small chunks safely
+            def send_chunk(text):
+                if not text:
+                    return
+                data = text.encode("utf-8")
+                chunk_header = "%X\r\n" % len(data)
+                client_sock.sendall(chunk_header.encode("utf-8") + data + b"\r\n")
+
+            # 2. Stream HTML Head and Page Title
+            send_chunk(
+                "<!DOCTYPE html><html><head>"
+                '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                "<title>HUB - AFE Dashboard</title><style>"
+                "body{font-family:monospace,sans-serif;margin:15px;background:#1e1e1e;color:#d4d4d4;}"
+                ".card{background:#252526;padding:15px;border-radius:6px;border:1px solid #3c3c3c;margin-bottom:15px;}"
+                "h2{color:#569cd6;margin-top:0;font-size:1.1em;border-bottom:1px solid #3c3c3c;padding-bottom:5px;}"
+                "table{width:100%;border-collapse:collapse;margin-top:10px;}"
+                "td,th{padding:6px 10px;text-align:left;border-bottom:1px solid #333;font-size:0.85em;vertical-align:top;}"
+                "th{color:#9cdcfe;width:20%;background-color:#2d2d2d;}"
+                "pre{margin:0;white-space:pre-wrap;word-wrap:break-word;color:#ce9178;font-size:0.85em;}"
+                '</style><meta http-equiv="refresh" content="5"></head><body>'
+            )
+
+            # 3. Stream AFE Devices dynamically one-by-one
             afe_devices = getattr(self.hub, "afe_devices", [])
 
-            # 2. Build dynamic HTML for each AFE device
-            afe_sections = ""
             if afe_devices:
                 for afe in afe_devices:
-                    # Safely pull attributes
                     dev_id = getattr(afe, "device_id", "Unknown")
                     config = getattr(afe, "configuration", {})
                     channels = getattr(afe, "channels", {})
                     raw_status = getattr(afe, "latest_status", {})
 
-                    # Format status as pretty-printed/formatted JSON string
+                    # Format status as JSON
                     try:
                         if isinstance(raw_status, str):
                             status_json = raw_status
@@ -317,7 +350,7 @@ class AsyncWebServer:
                     except Exception:
                         status_json = str(raw_status)
 
-                    # Format configuration key-values
+                    # Format configuration
                     config_str = ""
                     if isinstance(config, dict):
                         for k, v in config.items():
@@ -326,77 +359,46 @@ class AsyncWebServer:
                     else:
                         config_str = str(config)
 
-                    # Format channels
-                    channels_str = ""
-                    if isinstance(channels, (dict, list, tuple)):
-                        for ch in channels:
-                            if isinstance(channels, dict):
-                                channels_str += "Ch %s: %s<br>" % (str(ch), str(channels[ch]))
-                            else:
-                                channels_str += "%s<br>" % str(ch)
-                    else:
-                        channels_str = str(channels)
-
-                    # Build HTML Card for this AFE
-                    afe_sections += (
-                        '<div class="card">\n'
-                        "    <h2>AFE Device: %s</h2>\n"
-                        "    <table>\n"
-                        "        <tr><th>Configuration</th><td>%s</td></tr>\n"
-                        "        <tr><th>Channels</th><td>%s</td></tr>\n"
-                        "        <tr><th>Latest Status (JSON)</th><td><pre>%s</pre></td></tr>\n"
-                        "    </table>\n"
-                        "</div>\n" % (
-                            str(dev_id),
-                            config_str if config_str else "N/A",
-                            channels_str if channels_str else "N/A",
-                            status_json
-                        )
+                    # Send Card Top
+                    send_chunk(
+                        '<div class="card"><h2>AFE Device: %s</h2><table>'
+                        "<tr><th>Configuration</th><td>%s</td></tr>" % (str(dev_id), config_str if config_str else "N/A")
                     )
-            else:
-                afe_sections = (
-                    '<div class="card">\n'
-                    "    <h2>AFE Devices</h2>\n"
-                    "    <p>No AFE devices detected in self.hub.afe_devices.</p>\n"
-                    "</div>\n"
-                )
 
-            # 3. Telemetry metrics
+                    # Stream channels
+                    send_chunk("<tr><th>Channels</th><td>")
+                    if isinstance(channels, dict):
+                        for ch, val in channels.items():
+                            send_chunk("Ch %s: %s<br>" % (str(ch), str(val)))
+                    elif isinstance(channels, (list, tuple)):
+                        for ch in channels:
+                            send_chunk("%s<br>" % str(ch))
+                    else:
+                        send_chunk(str(channels))
+                    send_chunk("</td></tr>")
+
+                    # Send status JSON & Card Bottom
+                    send_chunk(
+                        "<tr><th>Latest Status (JSON)</th><td><pre>%s</pre></td></tr>"
+                        "</table></div>" % status_json
+                    )
+
+                    # Clean up memory loop iteration
+                    gc.collect()
+            else:
+                send_chunk('<div class="card"><h2>AFE Devices</h2><p>No AFE devices detected.</p></div>')
+
+            # 4. Stream Server Metrics
             free_ram = gc.mem_free()
             uptime_s = int(time.time())
             active_clients = len(self.client_sockets)
 
-            # 4. Construct Full HTML Document (%-formatting only)
-            html_body = (
-                "<!DOCTYPE html>\n"
-                "<html>\n"
-                "<head>\n"
-                '    <meta name="viewport" content="width=device-width, initial-scale=1">\n'
-                "    <title>HUB - AFE Status Dashboard</title>\n"
-                "    <style>\n"
-                "        body { font-family: monospace, sans-serif; margin: 15px; background: #1e1e1e; color: #d4d4d4; }\n"
-                "        .card { background: #252526; padding: 15px; border-radius: 6px; border: 1px solid #3c3c3c; margin-bottom: 15px; }\n"
-                "        h2 { color: #569cd6; margin-top: 0; font-size: 1.1em; border-bottom: 1px solid #3c3c3c; padding-bottom: 5px; }\n"
-                "        table { width: 100%%; border-collapse: collapse; margin-top: 10px; }\n"
-                "        td, th { padding: 6px 10px; text-align: left; border-bottom: 1px solid #333; font-size: 0.85em; vertical-align: top; }\n"
-                "        th { color: #9cdcfe; width: 20%%; background-color: #2d2d2d; }\n"
-                "        pre { margin: 0; white-space: pre-wrap; word-wrap: break-word; color: #ce9178; font-size: 0.85em; }\n"
-                "    </style>\n"
-                '    <meta http-equiv="refresh" content="3">\n'
-                "</head>\n"
-                "<body>\n"
-                "    %s\n"
-                '    <div class="card">\n'
-                "        <h2>Server Metrics</h2>\n"
-                "        <table>\n"
-                "            <tr><th>Free RAM</th><td>%d bytes</td></tr>\n"
-                "            <tr><th>Active Sockets</th><td>%d / %d</td></tr>\n"
-                "            <tr><th>Uptime</th><td>%d s</td></tr>\n"
-                "        </table>\n"
-                "    </div>\n"
-                "</body>\n"
-                "</html>" % (
-                    afe_sections,
+            send_chunk(
+                '<div class="card"><h2>Server Metrics</h2><table>'
+                "<tr><th>Free RAM</th><td>%d bytes</td></tr>"
+                "<tr><th>Active Sockets</th><td>%d / %d</td></tr>"
+                "<tr><th>Uptime</th><td>%d s</td></tr>"
+                "</table></div></body></html>" % (
                     free_ram,
                     active_clients,
                     self.tcp_requests_max,
@@ -404,21 +406,12 @@ class AsyncWebServer:
                 )
             )
 
-            # 5. Send HTTP Response
-            response = (
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/html; charset=utf-8\r\n"
-                "Content-Length: %d\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                "%s" % (len(html_body), html_body)
-            )
-
-            client_sock.sendall(response.encode("utf-8"))
+            # 5. Send Terminal Chunk to signal end of HTTP Transfer
+            client_sock.sendall(b"0\r\n\r\n")
 
         except OSError:
-            pass  # Handle client disconnect gracefully
-      
+            pass  # Socket disconnect
+    
     # =========================================================================
     # RAW SOCKET POLLING & ZERO-ALLOCATION LOOP
     # =========================================================================

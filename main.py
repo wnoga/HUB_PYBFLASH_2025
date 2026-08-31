@@ -147,7 +147,6 @@ async def main():
         use_rxcallback=use_rxcallback,
         use_automatic_restart=True
     )
-    hub.afe_devices_max = 1 # Configure after hub is initialized
 
     # Configure HUB (moved here after hub is initialized)
     hub.discovery_active = True
