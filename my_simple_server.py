@@ -391,9 +391,9 @@ class AsyncWebServer:
             )
 
     def format_afe_status_html(self, status_data):
-            """Generates a compact, dark-themed HTML card for SiPM telemetry."""
+            """Generates a compact, dark-themed visual HTML card for SiPM telemetry."""
             if not isinstance(status_data, dict) or "last_data" not in status_data:
-                return "<pre>%s</pre>" % str(status_data)
+                return ""
 
             last = status_data.get("last_data", {})
 
@@ -413,7 +413,6 @@ class AsyncWebServer:
             uid = status_data.get("unique_id_str", {}).get("value", "N/A")
 
             return (
-                '<div style="margin-top: 5px;">'
                 '<div class="sys-row">'
                 "<span><strong>Ext Temp:</strong> %.1f °C</span>"
                 "<span><strong>Loc Temp:</strong> %.1f °C</span>"
@@ -431,7 +430,6 @@ class AsyncWebServer:
                 '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
                 '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
                 '<div class="metric"><span>DC Offset:</span><span class="metric-val">%d</span></div>'
-                "</div>"
                 "</div>"
                 "</div>"
                 % (temp_ext, temp_loc, uid, u0, i0_na, int(dc0), u1, i1_na, int(dc1))
@@ -479,6 +477,10 @@ class AsyncWebServer:
                 ".metric{display:flex;justify-content:space-between;font-size:0.8em;margin-bottom:3px;}"
                 ".metric-val{font-weight:bold;color:#b5cea8;}"
                 ".sys-row{display:flex;gap:15px;background:#1e1e1e;padding:6px 10px;border-radius:4px;font-size:0.8em;margin-top:4px;}"
+                ".scroll-box{max-height:140px;overflow-y:auto;background:#1e1e1e;padding:8px;border-radius:4px;border:1px solid #3c3c3c;}"
+                ".scroll-box::-webkit-scrollbar{width:6px;}"
+                ".scroll-box::-webkit-scrollbar-track{background:#1e1e1e;}"
+                ".scroll-box::-webkit-scrollbar-thumb{background:#3c3c3c;border-radius:3px;}"
                 '</style><meta http-equiv="refresh" content="5"></head><body>'
             )
 
@@ -538,12 +540,15 @@ class AsyncWebServer:
                         afe, "is_configuration_started", False
                     )
 
-                    if isinstance(config, dict):
-                        config_str = " | ".join(
-                            "%s: %s" % (k, v) for k, v in config.items()
+                    # Serialize configuration to raw JSON format
+                    try:
+                        config_json = (
+                            config
+                            if isinstance(config, str)
+                            else json.dumps(config)
                         )
-                    else:
-                        config_str = str(config)
+                    except Exception:
+                        config_json = str(config)
 
                     await send_chunk(
                         '<div class="card"><h2>AFE Device: %s</h2><table>'
@@ -552,7 +557,7 @@ class AsyncWebServer:
                         "<tr><th>Version Checked</th><td>%s</td></tr>"
                         "<tr><th>Configured</th><td>%s</td></tr>"
                         "<tr><th>Configuration Started</th><td>%s</td></tr>"
-                        "<tr><th>Configuration</th><td>%s</td></tr>"
+                        '<tr><th>Configuration (JSON)</th><td><div class="scroll-box"><pre>%s</pre></div></td></tr>'
                         % (
                             str(dev_id),
                             (
@@ -576,18 +581,36 @@ class AsyncWebServer:
                                 if is_config_started
                                 else '<span class="badge-off">NO</span>'
                             ),
-                            config_str if config_str else "N/A",
+                            config_json if config_json else "N/A",
                         )
                     )
 
-                    # Render Visual Telemetry Card instead of raw JSON
+                    # Serialize latest status to raw JSON format
                     raw_status = getattr(afe, "latest_status", {})
-                    status_html = self.format_afe_status_html(raw_status)
+                    try:
+                        status_json = (
+                            raw_status
+                            if isinstance(raw_status, str)
+                            else json.dumps(raw_status)
+                        )
+                    except Exception:
+                        status_json = str(raw_status)
 
+                    # Render scrollable Raw JSON first
                     await send_chunk(
-                        "<tr><th>Telemetry</th><td>%s</td></tr>"
-                        "</table></div>" % status_html
+                        '<tr><th>Latest Data (JSON)</th><td><div class="scroll-box"><pre>%s</pre></div></td></tr>'
+                        % status_json
                     )
+
+                    # Render Visual Telemetry Card below the raw JSON
+                    status_html = self.format_afe_status_html(raw_status)
+                    if status_html:
+                        await send_chunk(
+                            "<tr><th>Telemetry Visual</th><td>%s</td></tr>"
+                            % status_html
+                        )
+
+                    await send_chunk("</table></div>")
                     gc.collect()
             else:
                 await send_chunk(
