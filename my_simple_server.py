@@ -454,9 +454,11 @@ class AsyncWebServer:
         clean_filename = filename.split("/")[-1].split("\\")[-1]
         filepath = "/sd/logs/" + clean_filename
 
+        # Prevent GC pauses mid-download
+        gc.collect()
+
         try:
-            stat = uos.stat(filepath)
-            file_size = stat[6]
+            uos.stat(filepath)
         except OSError:
             try:
                 raw_sock.send(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nFile Not Found")
@@ -465,13 +467,20 @@ class AsyncWebServer:
             self._close_client(raw_sock)
             return
 
+        try:
+            raw_sock.settimeout(None)
+        except (AttributeError, OSError):
+            pass
+            
+        raw_sock.setblocking(False)
+
         header = (
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/octet-stream\r\n"
             "Content-Disposition: attachment; filename=\"{}\"\r\n"
-            "Content-Length: {}\r\n"
+            "Transfer-Encoding: chunked\r\n"
             "Connection: close\r\n\r\n"
-        ).format(clean_filename, file_size)
+        ).format(clean_filename)
 
         try:
             raw_sock.send(header.encode("ascii"))
@@ -479,12 +488,13 @@ class AsyncWebServer:
             self._close_client(raw_sock)
             return
 
-        # Start non-blocking background streaming task
-        asyncio.create_task(self._stream_file_background(filepath, raw_sock))
+        asyncio.create_task(self._stream_chunked_background(filepath, raw_sock))
 
+    async def _stream_chunked_background(self, filepath, raw_sock):
+        chunk = bytearray(2048)
+        poller = uselect.poll()
+        poller.register(raw_sock, uselect.POLLOUT)
 
-    async def _stream_file_background(self, filepath, raw_sock):
-        chunk = bytearray(1024)
         try:
             with open(filepath, "rb") as f:
                 while True:
@@ -492,29 +502,52 @@ class AsyncWebServer:
                     if not bytes_read:
                         break
 
-                    view = memoryview(chunk)[:bytes_read]
-                    bytes_sent = 0
+                    # HTTP Chunk Format: <hex_size>\r\n<data>\r\n
+                    chunk_header = "{:X}\r\n".format(bytes_read).encode("ascii")
+                    chunk_footer = b"\r\n"
 
-                    # Loop until current chunk is completely sent over raw non-blocking socket
-                    while bytes_sent < bytes_read:
-                        try:
-                            sent = raw_sock.send(view[bytes_sent:])
-                            if sent:
-                                bytes_sent += sent
-                        except OSError as e:
-                            # Handle EAGAIN / EWOULDBLOCK (buffer full, wait next tick)
-                            if e.args[0] in (11, 110):
-                                await asyncio.sleep_ms(1)
-                            else:
-                                raise e
+                    # Send chunk header, data slice, and footer
+                    await self._raw_send_all(raw_sock, poller, chunk_header)
+                    await self._raw_send_all(raw_sock, poller, memoryview(chunk)[:bytes_read])
+                    await self._raw_send_all(raw_sock, poller, chunk_footer)
 
-                    # Yield control to keep the main webpage responsive
-                    await asyncio.sleep_ms(10)
+                    # Yield control so web control page stays responsive
+                    await asyncio.sleep_ms(2)
+
+            # Terminating HTTP Chunk (0\r\n\r\n) tells browser download is 100% complete
+            await self._raw_send_all(raw_sock, poller, b"0\r\n\r\n")
 
         except OSError:
             pass
         finally:
+            try:
+                poller.unregister(raw_sock)
+            except OSError:
+                pass
             self._close_client(raw_sock)
+
+
+    async def _raw_send_all(self, raw_sock, poller, data):
+        """Guarantees every byte of a payload slice is delivered without premature socket closure."""
+        view = memoryview(data)
+        total_bytes = len(view)
+        bytes_sent = 0
+
+        while bytes_sent < total_bytes:
+            try:
+                sent = raw_sock.send(view[bytes_sent:])
+                if sent and sent > 0:
+                    bytes_sent += sent
+                else:
+                    await asyncio.sleep_ms(2)
+            except OSError as e:
+                if e.args[0] in (11, 110):  # EAGAIN / EWOULDBLOCK
+                    events = poller.poll(500)
+                    if not events:
+                        raise OSError("Socket timeout during transfer")
+                    await asyncio.sleep_ms(1)
+                else:
+                    raise e
         
     def format_afe_status_html(self, status_data):
             """Generates a compact, dark-themed visual HTML card for SiPM telemetry."""
@@ -928,8 +961,13 @@ class AsyncWebServer:
                     # Route file downloads
                     if "/download_log?file=" in path:
                         filename = path.split("?file=")[1].split(" ")[0]
+                        
+                        # CRITICAL: Pop socket from main server state table so background 
+                        # cleanup/watchdog tasks don't auto-close it!
+                        self.client_sockets.pop(sock_id, None)
+                        
                         await self.handle_log_download(filename, client_sock)
-                        return  # <--- CRITICAL: Do NOT fall through to _close_client here!
+                        return
                     else:
                         reader = asyncio.StreamReader(client_sock)
                         writer = asyncio.StreamWriter(client_sock, {})
