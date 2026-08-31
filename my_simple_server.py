@@ -49,6 +49,8 @@ DASHBOARD_CSS = (
     b".scroll-box::-webkit-scrollbar-thumb{background:#3c3c3c;border-radius:3px;}"
     b".btn-dl{background:#0e639c;color:#fff;padding:3px 8px;text-decoration:none;border-radius:3px;font-size:0.85em;display:inline-block;}"
     b".btn-dl:hover{background:#1177bb;}"
+    b"tr:nth-child(even){background:#333;}"
+    b"tr:hover {background:#515;}"
 )
 
 
@@ -412,7 +414,42 @@ class AsyncWebServer:
             await self._send_raw(
                 sock, b'{"status":"ERROR","info":"Unknown procedure"}\r\n'
             )
-            
+
+    def sort_log_files(self, file_list):
+        """
+        Sorts log files from latest to oldest.
+        Handles:
+        - Timestamped: log_YYYYMMDD_HHMMSS.json
+        - Unsynced indexed: log_1.json, log_2.json
+        - Unsynced base: log.json
+        """
+        def file_sort_key(filename):
+            # 1. Standard timestamp log: log_20260724_100839.json -> 24 chars
+            if filename.startswith("log_") and filename.endswith(".json") and len(filename) == 24:
+                # Priority 3 (Highest): Raw timestamp text "20260724_100839"
+                timestamp_str = filename[4:19]
+                return (3, timestamp_str)
+
+            # 2. Sequential unsynced log: log_1.json, log_12.json
+            elif filename.startswith("log_") and filename.endswith(".json"):
+                try:
+                    # Priority 2: Extract index X as integer
+                    index = int(filename[4:-5])
+                    return (2, "%010d" % index)
+                except ValueError:
+                    pass
+
+            # 3. Base unsynced log: log.json
+            elif filename == "log.json":
+                # Priority 1
+                return (1, "0000000000")
+
+            # 4. Any other non-standard files
+            return (0, filename)
+
+        # Sort in reverse order (True = Latest to Oldest)
+        return sorted(file_list, key=file_sort_key, reverse=True)
+
     async def handle_log_download(self, filename, writer):
         """Streams a log file directly from SD card in small 512-byte chunks."""
         # Sanitize filename to prevent directory traversal attacks
@@ -657,7 +694,7 @@ class AsyncWebServer:
                             config_json if config_json else "N/A",
                         )
                     )
-
+                    gc.collect()
                     # Serialize latest status to raw JSON format
                     raw_status = getattr(afe, "latest_status", {})
                     try:
@@ -674,7 +711,7 @@ class AsyncWebServer:
                         '<tr><th>Latest Data (JSON)</th><td><div class="scroll-box"><pre>%s</pre></div></td></tr>'
                         % status_json
                     )
-
+                    gc.collect()
                     # Render Visual Telemetry Card below the raw JSON
                     status_html = self.format_afe_status_html(raw_status)
                     if status_html:
@@ -708,36 +745,6 @@ class AsyncWebServer:
                 )
             )
             
-            try:
-                log_files = uos.listdir("/sd/logs")
-            except OSError:
-                log_files = []
-
-            await send_chunk(
-                '<div class="card"><h2>SD Card Log Files</h2>'
-            )
-
-            if log_files:
-                await send_chunk(
-                    '<table><tr><th>Filename</th><th>Size</th><th>Action</th></tr>'
-                )
-                for file_name in log_files:
-                    filepath = "/sd/logs/" + file_name
-                    try:
-                        file_stat = uos.stat(filepath)
-                        size_str = "%d KB" % (file_stat[6] // 1024)
-                    except OSError:
-                        size_str = "N/A"
-
-                    await send_chunk(
-                        '<tr><td><strong>%s</strong></td><td>%s</td>'
-                        '<td><a class="btn-dl" href="/download_log?file=%s">Download</a></td></tr>'
-                        % (file_name, size_str, file_name)
-                    )
-                await send_chunk('</table></div>')
-            else:
-                await send_chunk('<p>No log files found in <code>/sd/logs</code>.</p></div>')
-
             # =========================================================================
             # SD CARD STORAGE SPACE CALCULATION & UI
             # =========================================================================
@@ -794,6 +801,37 @@ class AsyncWebServer:
                     '<div class="card"><h2>SD Card Storage Metrics</h2>'
                     '<p><span class="badge-off">UNMOUNTED / NOT FOUND</span></p></div>'
                 )
+            
+            # Read log files safely
+            try:
+                raw_files = uos.listdir("/sd/logs")
+                log_files = self.sort_log_files(raw_files)
+            except OSError:
+                log_files = []
+
+            await send_chunk('<div class="card"><h2>SD Card Log Files</h2>')
+
+            if log_files:
+                await send_chunk(
+                    '<table><tr><th>Filename</th><th>Size</th><th>Action</th></tr>'
+                )
+                for file_name in log_files:
+                    filepath = "/sd/logs/" + file_name
+                    try:
+                        file_stat = uos.stat(filepath)
+                        size_bytes = file_stat[6]
+                        size_str = "%d KB" % (size_bytes // 1024) if size_bytes >= 1024 else "%d B" % size_bytes
+                    except OSError:
+                        size_str = "N/A"
+
+                    await send_chunk(
+                        '<tr><td><strong>%s</strong></td><td>%s</td>'
+                        '<td><a class="btn-dl" href="/download_log?file=%s">Download</a></td></tr>'
+                        % (file_name, size_str, file_name)
+                    )
+                await send_chunk('</table></div>')
+            else:
+                await send_chunk('<p>No log files found in <code>/sd/logs</code>.</p></div>')
     
             writer.write(b"0\r\n\r\n")
             await writer.drain()
