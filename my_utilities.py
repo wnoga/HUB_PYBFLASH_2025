@@ -59,6 +59,10 @@ except ImportError:
 
         async def sleep_ms(self, t_ms):
             await asyncio.sleep(t_ms / 1000.0)
+        
+        async def gather(self, *aws, return_exceptions=False):
+            """Mock implementation of uasyncio.gather using asyncio.gather."""
+            return await asyncio.gather(*aws, return_exceptions=return_exceptions)
 
         def run_forever(self):  # This method is on the loop object
             if self._loop:
@@ -1128,161 +1132,166 @@ class JSONLogger:
         await uasyncio.sleep_ms(self.writer_main_loop_yield_ms)
 
 
-# cmndavrg = AFECommandAverage()
-AFE_Config = [
-    {
-        "afe_id": 35,
-        "afe_uid": "",
-        "channel": [
-            SensorChannel(0),
-            SensorChannel(1),
-            SensorChannel(2),
-            SensorChannel(3),
-            SensorChannel(4),
-            SensorChannel(5),
-            SensorChannel(6),
-            SensorChannel(7),
-        ],
-    }
-]
+# # cmndavrg = AFECommandAverage()
+# AFE_Config = [
+#     {
+#         "afe_id": 35,
+#         "afe_uid": "",
+#         "channel": [
+#             SensorChannel(0),
+#             SensorChannel(1),
+#             SensorChannel(2),
+#             SensorChannel(3),
+#             SensorChannel(4),
+#             SensorChannel(5),
+#             SensorChannel(6),
+#             SensorChannel(7),
+#         ],
+#     }
+# ]
+
+def parse_csv_line(line):
+    """
+    Splits a CSV line while properly handling quoted fields containing commas.
+    Example: '32,,,"0,06"' -> ['32', '', '', '0,06']
+    """
+    fields = []
+    current_field = []
+    in_quotes = False
+
+    for char in line:
+        if char == '"':
+            in_quotes = not in_quotes  # Toggle quote state
+        elif char == ',' and not in_quotes:
+            fields.append(''.join(current_field).strip())
+            current_field = []
+        else:
+            current_field.append(char)
+
+    fields.append(''.join(current_field).strip())
+    return fields
+
+
+def convert_value(key, value):
+    if not value:
+        return ''
+
+    if key == 'ID':
+        try:
+            return int(value)
+        except ValueError:
+            return value
+    elif key in ('SN_AFE', 'SN_SiPM', 'M/S'):
+        return value
+
+    # Convert comma decimal separators to standard dots
+    clean_val = value.replace(',', '.')
+    try:
+        return float(clean_val)
+    except ValueError:
+        return value
 
 
 async def callibration_reader_csv(csv_file):
-    def convert_value(key, value):
-        try:
-            if key == 'ID':
-                return int(value)
-            elif key in ['SN_AFE', 'SN_SiPM', 'M/S']:
-                # Skip these keys (keep them as strings)
-                return value
-            return float(value)
-        except ValueError:
-            try:
-                if value == '':
-                    return ''
-                return value
-            except:
-                return value
-
-    await uasyncio.sleep_ms(0)
     try:
         with open(csv_file, mode='r', encoding='utf-8') as file:
-            lines = file.readlines()
+            header_line = file.readline()
+            if not header_line:
+                return []
+
+            headers = parse_csv_line(header_line.strip())
+
+            rows = []
+            for line in file:
+                line_str = line.strip()
+                if not line_str:
+                    continue
+
+                values = parse_csv_line(line_str)
+                row_dict = {
+                    key: convert_value(key, val)
+                    for key, val in zip(headers, values)
+                }
+                rows.append(row_dict)
+
+            return rows
     except Exception as e:
-        await p.print("Error reading CSV file {}: {}".format(csv_file, e))
+        print("Error reading CSV file {}: {}".format(csv_file, e))
         return []
-    await uasyncio.sleep_ms(0)
-
-    if not lines:
-        return []
-
-    headers = lines[0].strip().split(',')
-
-    rows = []
-    for line in lines[1:]:
-        rows.append({key: convert_value(key, value)
-                     for key, value in zip(headers, line.strip().split(','))})
-        await uasyncio.sleep_ms(0)
-
-    return rows
 
 
 async def read_callibration_csv(file, toSi=False):
     callib_data = await callibration_reader_csv(file)
+    if not callib_data:
+        return [], {}
+
     callib_data_mean = {}
-    uniq_id = []
-    groups = ['M', 'S']
-    # Collect values for mean calculation and get unique ID
+    uniq_id = set()
+
     for c in callib_data:
-        g = c['M/S']
+        g = c.get('M/S')
+        if not g:
+            continue
+
         if g not in callib_data_mean:
             callib_data_mean[g] = {}
+
         for k, v in c.items():
             if k == 'ID':
-                if v not in uniq_id:
-                    uniq_id.append(v)
+                uniq_id.add(v)
                 continue
+
             if isinstance(v, (float, int)):
-                if toSi:
-                    unit = None
-                    if len(k.split(" ")) > 1:
-                        unit = k.split(" ")[1]
-                        unit = extract_bracketed(unit)
-                        if len(unit):
-                            unit = unit[0]
-                        else:
-                            unit = None
-                    v_si = convert_to_si(v, unit)
-                else:
-                    v_si = v
                 if k not in callib_data_mean[g]:
                     callib_data_mean[g][k] = []
-                callib_data_mean[g][k].append(v_si)
-        await uasyncio.sleep_ms(0)
+                callib_data_mean[g][k].append(v)
 
-    # Compute the mean for each key
+    groups = ('M', 'S')
     for g in groups:
         if g in callib_data_mean:
-            for k in callib_data_mean[g]:
-                values = callib_data_mean[g][k]
-                callib_data_mean[g][k] = sum(
-                    values) / len(values) if values else None
-            callib_data_mean[g]['ID'] = 0  # append ID as default
-            callib_data_mean[g]['M/S'] = g
-        await uasyncio.sleep_ms(0)
+            group_dict = callib_data_mean[g]
+            for k, values in group_dict.items():
+                group_dict[k] = sum(values) / len(values) if values else None
+            group_dict['ID'] = 0
+            group_dict['M/S'] = g
 
     return callib_data, callib_data_mean
 
-async def get_configuration_from_files(afe_id, callibration_data_file_csv="dane_kalibracyjne.csv", TempLoop_file_csv="TempLoop.csv", UID=None):
-    """
-    Retrieves calibration data for a specific AFE from CSV files.
 
-    This function reads calibration data from two CSV files: one for general
-    calibration data and another for temperature loop data. It then filters
-    this data to find entries that match the specified AFE ID and optional UID.
-    The function also checks for missing or empty calibration values and
-    provides warnings if such issues are found.
+async def get_configuration_from_files(
+    afe_id,
+    callibration_data_file_csv="dane_kalibracyjne.csv",
+    TempLoop_file_csv="TempLoop.csv",
+    UID=None
+):
+    (TempLoop_data, TempLoop_data_mean), (callib_data, callib_data_mean) = await uasyncio.gather(
+        read_callibration_csv(TempLoop_file_csv),
+        read_callibration_csv(callibration_data_file_csv)
+    )
 
-    Args:
-        afe_id (int): The ID of the AFE for which to retrieve calibration data.
-        callibration_data_file_csv (str, optional): The path to the CSV file
-            containing general calibration data. Defaults to "dane_kalibracyjne.csv".
-        TempLoop_file_csv (str, optional): The path to the CSV file containing
-            temperature loop data. Defaults to "TempLoop.csv".
-        UID (str, optional): The unique identifier of the AFE. If provided,
-            only data matching this UID will be considered. Defaults to None.
-    Returns:
-        dict: A dictionary containing the calibration data for the specified AFE.
-    """
-    TempLoop_data, TempLoop_data_mean = await read_callibration_csv(
-        TempLoop_file_csv)
-    await uasyncio.sleep_ms(0)
-    callib_data, callib_data_mean = await read_callibration_csv(
-        callibration_data_file_csv)
-    await uasyncio.sleep_ms(0)
     callibration = {'ID': afe_id}
-    for c0 in [callib_data, TempLoop_data]:
+
+    for c0 in (callib_data, TempLoop_data):
         for c in c0:
-            if c['ID'] != afe_id:
-                continue
-            if UID is not None:
-                if c['SN_AFE'] != UID:
+            if c.get('ID') == afe_id:
+                if UID is not None and c.get('SN_AFE') != UID:
                     continue
-            g = c['M/S']
-            if g not in callibration:
-                callibration[g] = {}
-            callibration[g].update(c)
-            await uasyncio.sleep_ms(0)
-    for c0 in [callib_data_mean, TempLoop_data_mean]:
-        for g in ['M', 'S']:
-            for k, v in c0[g].items():
-                if k not in callibration[g]:  # no key
-                    # await self.logger.log(
-                    #     VerbosityLevel["WARNING"], "Calibration data: AFE {}: No key: {}".format(afe_id, k))
-                    callibration[g][k] = ''
-                elif len(str(callibration[g][k])) == 0:  # empty string:
-                    # await self.logger.log(
-                    #     VerbosityLevel["WARNING"], "Calibration data: AFE {}: No value {}, set to {}".format(afe_id, k, v))
-                    callibration[g][k] = v  # set default value
-            await uasyncio.sleep_ms(0)
+                g = c.get('M/S')
+                if g:
+                    if g not in callibration:
+                        callibration[g] = {}
+                    callibration[g].update(c)
+
+    for c0 in (callib_data_mean, TempLoop_data_mean):
+        for g in ('M', 'S'):
+            if g in c0:
+                if g not in callibration:
+                    callibration[g] = {}
+                for k, default_val in c0[g].items():
+                    current_val = callibration[g].get(k)
+                    if current_val is None:
+                        callibration[g][k] = ''
+                    elif str(current_val) == '':
+                        callibration[g][k] = default_val
+
     return callibration

@@ -248,6 +248,10 @@ class UasyncioShim:
 
     async def sleep_ms(self, t_ms):
         await asyncio.sleep(t_ms / 1000.0)
+        
+    async def gather(self, *aws, return_exceptions=False):
+        """Mock implementation of uasyncio.gather using asyncio.gather."""
+        return await asyncio.gather(*aws, return_exceptions=return_exceptions)
 
     def run_forever(self): # This method is on the loop object
         if self._loop:
