@@ -390,6 +390,53 @@ class AsyncWebServer:
                 sock, b'{"status":"ERROR","info":"Unknown procedure"}\r\n'
             )
 
+    def format_afe_status_html(self, status_data):
+            """Generates a compact, dark-themed HTML card for SiPM telemetry."""
+            if not isinstance(status_data, dict) or "last_data" not in status_data:
+                return "<pre>%s</pre>" % str(status_data)
+
+            last = status_data.get("last_data", {})
+
+            # Extract values
+            u0 = last.get("U_SIPM_MEAS0", {}).get("value", 0.0)
+            u1 = last.get("U_SIPM_MEAS1", {}).get("value", 0.0)
+
+            # Convert A to nA for better readability
+            i0_na = last.get("I_SIPM_MEAS0", {}).get("value", 0.0) * 1e9
+            i1_na = last.get("I_SIPM_MEAS1", {}).get("value", 0.0) * 1e9
+
+            dc0 = last.get("DC_LEVEL_MEAS0", {}).get("value", 0)
+            dc1 = last.get("DC_LEVEL_MEAS1", {}).get("value", 0)
+
+            temp_ext = last.get("TEMP_EXT", {}).get("value", 0.0)
+            temp_loc = last.get("TEMP_LOCAL", {}).get("value", 0.0)
+            uid = status_data.get("unique_id_str", {}).get("value", "N/A")
+
+            return (
+                '<div style="margin-top: 5px;">'
+                '<div class="sys-row">'
+                "<span><strong>Ext Temp:</strong> %.1f °C</span>"
+                "<span><strong>Loc Temp:</strong> %.1f °C</span>"
+                "<span><strong>UID:</strong> %s</span>"
+                "</div>"
+                '<div class="sipm-grid">'
+                '<div class="sipm-chan">'
+                "<h3>Channel 0</h3>"
+                '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
+                '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
+                '<div class="metric"><span>DC Offset:</span><span class="metric-val">%d</span></div>'
+                "</div>"
+                '<div class="sipm-chan">'
+                "<h3>Channel 1</h3>"
+                '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
+                '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
+                '<div class="metric"><span>DC Offset:</span><span class="metric-val">%d</span></div>'
+                "</div>"
+                "</div>"
+                "</div>"
+                % (temp_ext, temp_loc, uid, u0, i0_na, int(dc0), u1, i1_na, int(dc1))
+            )
+
     async def send_control_web_page_raw(self, reader, writer):
         """Streams an HTML dashboard in chunks using non-blocking uasyncio Streams."""
         try:
@@ -426,6 +473,12 @@ class AsyncWebServer:
                 ".badge-on{background:#28a745;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;}"
                 ".badge-off{background:#dc3545;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;}"
                 "pre{margin:0;white-space:pre-wrap;word-wrap:break-word;color:#ce9178;font-size:0.85em;}"
+                ".sipm-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;}"
+                ".sipm-chan{background:#1e1e1e;padding:8px;border-radius:4px;border:1px solid #333;}"
+                ".sipm-chan h3{margin:0 0 6px 0;font-size:0.9em;color:#4ec9b0;border-bottom:1px solid #333;padding-bottom:3px;}"
+                ".metric{display:flex;justify-content:space-between;font-size:0.8em;margin-bottom:3px;}"
+                ".metric-val{font-weight:bold;color:#b5cea8;}"
+                ".sys-row{display:flex;gap:15px;background:#1e1e1e;padding:6px 10px;border-radius:4px;font-size:0.8em;margin-top:4px;}"
                 '</style><meta http-equiv="refresh" content="5"></head><body>'
             )
 
@@ -527,19 +580,13 @@ class AsyncWebServer:
                         )
                     )
 
+                    # Render Visual Telemetry Card instead of raw JSON
                     raw_status = getattr(afe, "latest_status", {})
-                    try:
-                        status_json = (
-                            raw_status
-                            if isinstance(raw_status, str)
-                            else json.dumps(raw_status)
-                        )
-                    except Exception:
-                        status_json = str(raw_status)
+                    status_html = self.format_afe_status_html(raw_status)
 
                     await send_chunk(
-                        "<tr><th>Latest Status (JSON)</th><td><pre>%s</pre></td></tr>"
-                        "</table></div>" % status_json
+                        "<tr><th>Telemetry</th><td>%s</td></tr>"
+                        "</table></div>" % status_html
                     )
                     gc.collect()
             else:
