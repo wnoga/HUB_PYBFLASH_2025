@@ -546,21 +546,30 @@ class AsyncWebServer:
                 % (temp_ext, temp_loc, uid, u0, i0_na, int(dc0), u1, i1_na, int(dc1))
             )
 
-    async def _send_chunk_raw(self, writer, data: bytes):
-            """Helper to stream pre-encoded raw byte chunks directly."""
-            if not data:
-                return
-            writer.write(("%X\r\n" % len(data)).encode("ascii"))
-            writer.write(data)
+    async def _send_chunk_raw(self, writer, data: bytes, chunk_size: int = 512):
+        """Helper to stream pre-encoded raw byte chunks directly in smaller fragments."""
+        if not data:
+            return
+
+        # Slice and send the data in fixed-size buffers
+        for i in range(0, len(data), chunk_size):
+            sub_chunk = data[i : i + chunk_size]
+            writer.write(("%X\r\n" % len(sub_chunk)).encode("ascii"))
+            writer.write(sub_chunk)
             writer.write(b"\r\n")
             await writer.drain()
-
+            
     async def send_control_web_page_raw(self, reader, writer):
         """Streams HTML dashboard while pushing pre-encoded static CSS directly."""
-        async def send_chunk(text):
-                if not text:
-                    return
-                data = text.encode("utf-8")
+        async def send_chunk(text, chunk_size: int = 512):
+            if not text:
+                return
+            
+            # Process the text in smaller string slices
+            for i in range(0, len(text), chunk_size):
+                chunk_str = text[i : i + chunk_size]
+                data = chunk_str.encode("utf-8")
+                
                 writer.write(("%X\r\n" % len(data)).encode("utf-8"))
                 writer.write(data)
                 writer.write(b"\r\n")
