@@ -450,28 +450,21 @@ class AsyncWebServer:
         # Sort in reverse order (True = Latest to Oldest)
         return sorted(file_list, key=file_sort_key, reverse=True)
 
-    async def handle_log_download(self, filename, writer):
-        """Streams a log file directly from SD card in small 512-byte chunks."""
-        # Sanitize filename to prevent directory traversal attacks
+    async def handle_log_download(self, filename, raw_sock):
         clean_filename = filename.split("/")[-1].split("\\")[-1]
         filepath = "/sd/logs/" + clean_filename
 
         try:
-            # Check if file exists and get size
             stat = uos.stat(filepath)
             file_size = stat[6]
         except OSError:
-            header = (
-                "HTTP/1.1 404 Not Found\r\n"
-                "Content-Type: text/plain\r\n"
-                "Connection: close\r\n\r\n"
-                "File Not Found"
-            )
-            writer.write(header.encode("ascii"))
-            await writer.drain()
+            try:
+                raw_sock.send(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nFile Not Found")
+            except OSError:
+                pass
+            self._close_client(raw_sock)
             return
 
-        # Send HTTP download headers (using "rb" mode works fine on active log files)
         header = (
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/octet-stream\r\n"
@@ -481,25 +474,47 @@ class AsyncWebServer:
         ).format(clean_filename, file_size)
 
         try:
-            writer.write(header.encode("ascii"))
-            await writer.drain()
+            raw_sock.send(header.encode("ascii"))
+        except OSError:
+            self._close_client(raw_sock)
+            return
 
-            # Stream file in low-RAM 512-byte chunks
-            chunk = bytearray(512)
+        # Start non-blocking background streaming task
+        asyncio.create_task(self._stream_file_background(filepath, raw_sock))
+
+
+    async def _stream_file_background(self, filepath, raw_sock):
+        chunk = bytearray(1024)
+        try:
             with open(filepath, "rb") as f:
                 while True:
                     bytes_read = f.readinto(chunk)
                     if not bytes_read:
                         break
-                    # Memoryview slice avoids allocation
-                    writer.write(memoryview(chunk)[:bytes_read])
-                    await writer.drain()
-                    await asyncio.sleep_ms(1)  # Yield to keep network loop responsive
+
+                    view = memoryview(chunk)[:bytes_read]
+                    bytes_sent = 0
+
+                    # Loop until current chunk is completely sent over raw non-blocking socket
+                    while bytes_sent < bytes_read:
+                        try:
+                            sent = raw_sock.send(view[bytes_sent:])
+                            if sent:
+                                bytes_sent += sent
+                        except OSError as e:
+                            # Handle EAGAIN / EWOULDBLOCK (buffer full, wait next tick)
+                            if e.args[0] in (11, 110):
+                                await asyncio.sleep_ms(1)
+                            else:
+                                raise e
+
+                    # Yield control to keep the main webpage responsive
+                    await asyncio.sleep_ms(10)
+
         except OSError:
             pass
         finally:
-            writer.close()
-            await writer.wait_closed()
+            self._close_client(raw_sock)
         
     def format_afe_status_html(self, status_data):
             """Generates a compact, dark-themed visual HTML card for SiPM telemetry."""
@@ -910,14 +925,14 @@ class AsyncWebServer:
                     req_line = str(bytes(line_view), "utf-8")
                     path = req_line.split(" ")[1] if " " in req_line else "/"
 
-                    reader = asyncio.StreamReader(client_sock)
-                    writer = asyncio.StreamWriter(client_sock, {})
-
                     # Route file downloads
                     if "/download_log?file=" in path:
                         filename = path.split("?file=")[1].split(" ")[0]
-                        await self.handle_log_download(filename, writer)
+                        await self.handle_log_download(filename, client_sock)
+                        return  # <--- CRITICAL: Do NOT fall through to _close_client here!
                     else:
+                        reader = asyncio.StreamReader(client_sock)
+                        writer = asyncio.StreamWriter(client_sock, {})
                         await self.send_control_web_page_raw(reader, writer)
                 else:
                     await self.handle_procedure_raw(line_view, client_sock)
