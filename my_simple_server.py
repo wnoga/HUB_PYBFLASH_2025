@@ -72,7 +72,6 @@ class AsyncWebServer:
     # =========================================================================
 
     async def _send_raw(self, sock, data: bytes):
-        """Async helper to send bytes over non-blocking raw socket without freezing loop."""
         total_sent = 0
         while total_sent < len(data):
             try:
@@ -81,7 +80,7 @@ class AsyncWebServer:
                     raise OSError("Socket closed by peer")
                 total_sent += sent
             except OSError as e:
-                if e.args[0] in (11, 110):  # EAGAIN / EWOULDBLOCK
+                if e.args[0] in (errno.EAGAIN, errno.ETIMEDOUT):
                     await asyncio.sleep_ms(10)
                     continue
                 raise e
@@ -680,12 +679,13 @@ class AsyncWebServer:
             return
 
         sock, _, buf, buf_len = state
-
-        free_space = memoryview(buf)[buf_len:]
-        if len(free_space) == 0:
+        
+        if buf_len >= self.BUFFER_SIZE:
+            # Buffer overrun without newline - drop client to prevent memory leak
             self._close_client(client_sock)
             return
 
+        free_space = memoryview(buf)[buf_len:]
         try:
             bytes_read = sock.readinto(free_space)
             if bytes_read is None or bytes_read == 0:
@@ -700,7 +700,6 @@ class AsyncWebServer:
                 line_view = memoryview(buf)[:newline_idx]
 
                 if newline_idx >= 3 and line_view[:3] == b"GET":
-                    # Adapt raw socket to StreamWriter/StreamReader interface
                     reader = asyncio.StreamReader(client_sock)
                     writer = asyncio.StreamWriter(client_sock, {})
                     await self.send_control_web_page_raw(reader, writer)
@@ -710,7 +709,7 @@ class AsyncWebServer:
                 self._close_client(client_sock)
 
         except OSError as e:
-            if e.args[0] not in (11, 110):  # Not EAGAIN / EWOULDBLOCK
+            if e.args[0] not in (errno.EAGAIN, errno.ETIMEDOUT):
                 self._close_client(client_sock)
 
     async def socket_poll_task(self):
