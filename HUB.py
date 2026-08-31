@@ -260,7 +260,7 @@ class HUBDevice:
                 return
 
             # Stop if 5 minutes (300,000 ms) have passed since discovery started
-            if utime.ticks_diff(millis(), self.discovery_start_time) >= self.discovery_timeout_ms:
+            if (utime.ticks_diff(millis(), self.discovery_start_time) >= self.discovery_timeout_ms) and (len(self.afe_devices) > 0):
                 await self.logger.log(
                     VerbosityLevel["INFO"],
                     {
@@ -331,6 +331,7 @@ class HUBDevice:
 
     async def start_discovery(self):  # Changed to async def
         """ Start the device discovery process. """
+        self.discovery_start_time = millis()
         self.discovery_active = True
 
     async def stop_discovery(self):  # Changed to async def
