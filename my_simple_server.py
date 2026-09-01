@@ -583,6 +583,7 @@ class AsyncWebServer:
                     chunk_view = memoryview(buf)[:nread]
                     await self._send_chunk_raw(writer, chunk_view, max_chunk=512)
                     gc.collect()
+                    await asyncio.sleep_ms(0)
 
             # Zero-length HTTP chunk signals end of stream.
             if hasattr(writer, "send"):
@@ -945,6 +946,7 @@ class AsyncWebServer:
                 await writer.drain()
 
             offset += chunk_len
+            await asyncio.sleep_ms(0)
 
     async def _send_chunk_str(self, writer, text: str, max_chunk: int = 512):
         """Encode and stream string data in controlled chunks."""
@@ -1110,6 +1112,7 @@ class AsyncWebServer:
 
                 length += nread
                 client_info["length"] = length
+                await asyncio.sleep_ms(0)
 
             # Strip CR/LF in place logically, without decoding the whole buffer.
             request_line_end = request_line_len
@@ -1172,6 +1175,7 @@ class AsyncWebServer:
                 client_info["length"] = length
 
                 header_end = bytes(buf).find(b"\r\n\r\n", request_line_len)
+                await asyncio.sleep_ms(0)
 
             # -------------------------------------------------------------
             # Route request. Existing handlers now support raw sockets
@@ -1200,7 +1204,7 @@ class AsyncWebServer:
         except Exception as e:
             try:
                 line_number = e.__traceback__.tb_lineno
-                await p.print("Client socket processing error at line", line_number, ":", e)
+                await p.print(line_number, "Client socket processing error:", e)
             except Exception:
                 pass
         finally:
