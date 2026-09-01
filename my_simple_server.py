@@ -1,4 +1,5 @@
 import gc
+import errno
 import network
 import socket
 import struct
@@ -525,6 +526,93 @@ class AsyncWebServer:
         except OSError:
             pass
         finally:
+            await self._close_stream_or_socket(writer)
+
+    async def handle_log_download(self, request_path, reader, writer):
+        """
+        Handles endpoint '/download_log?file=log_1.json'.
+        Streams the requested file directly from SD card in 512-byte chunks.
+        """
+        file_name = None
+
+        # Parse query parameter ?file=<filename>
+        if "?" in request_path:
+            query_str = request_path.split("?", 1)[1]
+            for param in query_str.split("&"):
+                if param.startswith("file="):
+                    file_name = param.split("=", 1)[1]
+                    break
+
+        # Security & Sanity Checks
+        if not file_name or "/" in file_name or "\\" in file_name or ".." in file_name:
+            await self._send_http_error(writer, 400, "Bad Request: Invalid file parameter")
+            return
+
+        filepath = "/sd/logs/" + file_name
+
+        # Check file existence and size
+        try:
+            file_stat = uos.stat(filepath)
+            file_size = file_stat[6]
+        except OSError:
+            await self._send_http_error(writer, 404, "File Not Found")
+            return
+
+        try:
+            gc.collect()
+
+            # Stream HTTP Headers
+            header = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/json\r\n"
+                'Content-Disposition: attachment; filename="%s"\r\n'
+                "Transfer-Encoding: chunked\r\n"
+                "Connection: close\r\n\r\n" % file_name
+            )
+            await self._send_chunk_raw(writer, header.encode("ascii"), max_chunk=512)
+
+            # Stream file in 512-byte chunks directly from disk
+            buf = bytearray(512)
+            with open(filepath, "rb") as f:
+                while True:
+                    nread = f.readinto(buf)
+                    if not nread or nread == 0:
+                        break
+
+                    # Slice to exact read length
+                    chunk_view = memoryview(buf)[:nread]
+                    await self._send_chunk_raw(writer, chunk_view, max_chunk=512)
+                    gc.collect()
+
+            # Zero-length HTTP chunk signals end of stream.
+            if hasattr(writer, "send"):
+                await self._send_raw(writer, b"0\r\n\r\n")
+            else:
+                writer.write(b"0\r\n\r\n")
+                await writer.drain()
+
+        except OSError:
+            pass
+        finally:
+            await self._close_stream_or_socket(writer)
+
+
+    async def _send_http_error(self, writer, code, message):
+        """Helper to stream standard HTTP error responses with low memory overhead."""
+        try:
+            body = "<h1>%d %s</h1>" % (code, message)
+            header = (
+                "HTTP/1.1 %d %s\r\n"
+                "Content-Type: text/html\r\n"
+                "Content-Length: %d\r\n"
+                "Connection: close\r\n\r\n"
+                "%s" % (code, message, len(body), body)
+            )
+            writer.write(header.encode("ascii"))
+            await writer.drain()
+        except OSError:
+            pass
+        finally:
             writer.close()
             await writer.wait_closed()
 
@@ -717,6 +805,12 @@ class AsyncWebServer:
             self.procedure_events.pop(afe_id, None)
             self.procedure_results.pop(afe_id, None)
 
+    async def _send_json_dict_chunked(self, sock, obj):
+        """Compatibility helper for the raw procedure dispatcher."""
+        await self._stream_json_key_by_key(
+            sock, obj, is_async_writer=False
+        )
+
     # =========================================================================
     # HTTP & PROCEDURE DISPATCHERS
     # =========================================================================
@@ -823,22 +917,148 @@ class AsyncWebServer:
     # RAW SOCKET POLLING & ZERO-ALLOCATION LOOP
     # =========================================================================
 
+    async def _send_chunk_raw(self, writer, data: bytes, max_chunk: int = 512):
+        """Send HTTP chunked data through either a uasyncio writer or raw socket."""
+        if not data:
+            return
+
+        view = memoryview(data)
+        total_len = len(view)
+        offset = 0
+
+        while offset < total_len:
+            chunk_len = min(max_chunk, total_len - offset)
+            sub_chunk = view[offset:offset + chunk_len]
+
+            header = ("%X\r\n" % chunk_len).encode("ascii")
+
+            if hasattr(writer, "send"):
+                # Raw MicroPython socket path.
+                await self._send_raw(writer, header)
+                await self._send_raw(writer, sub_chunk)
+                await self._send_raw(writer, b"\r\n")
+            else:
+                # Existing uasyncio Stream path.
+                writer.write(header)
+                writer.write(sub_chunk)
+                writer.write(b"\r\n")
+                await writer.drain()
+
+            offset += chunk_len
+
+    async def _send_chunk_str(self, writer, text: str, max_chunk: int = 512):
+        """Encode and stream string data in controlled chunks."""
+        if not text:
+            return
+
+        for i in range(0, len(text), max_chunk):
+            slice_str = text[i:i + max_chunk]
+            data = slice_str.encode("utf-8")
+            await self._send_chunk_raw(writer, data, max_chunk=max_chunk)
+
+    async def _close_stream_or_socket(self, obj):
+        """Close either a raw socket or a uasyncio Stream."""
+        if obj is None:
+            return
+
+        try:
+            obj.close()
+        except Exception:
+            pass
+
+        if not hasattr(obj, "send"):
+            try:
+                await obj.wait_closed()
+            except Exception:
+                pass
+
+    async def _send_http_error(self, writer, code, message):
+        """Send a small HTTP error through either raw socket or uasyncio writer."""
+        try:
+            body = ("<h1>%d %s</h1>" % (code, message)).encode("ascii")
+            header = (
+                "HTTP/1.1 %d %s\r\n"
+                "Content-Type: text/html\r\n"
+                "Content-Length: %d\r\n"
+                "Connection: close\r\n\r\n"
+                % (code, message, len(body))
+            ).encode("ascii")
+
+            if hasattr(writer, "send"):
+                await self._send_raw(writer, header)
+                await self._send_raw(writer, body)
+            else:
+                writer.write(header)
+                writer.write(body)
+                await writer.drain()
+        except OSError:
+            pass
+        finally:
+            await self._close_stream_or_socket(writer)
+
+    async def _recv_into_buffer(self, sock, buf, offset):
+        """
+        Receive directly into an existing bytearray.
+
+        This uses MicroPython's socket.readinto(), which is available in the
+        v1.16 API and avoids the temporary bytes allocation from recv().
+        """
+        available = len(buf) - offset
+        if available <= 0:
+            return 0
+
+        try:
+            view = memoryview(buf)[offset:]
+            nread = sock.readinto(view)
+
+            if nread is None:
+                return -1
+            if nread == 0:
+                return 0
+
+            return nread
+
+        except OSError as e:
+            err = e.errno if hasattr(e, "errno") else (e.args[0] if e.args else None)
+
+            if err in (errno.EAGAIN, errno.EWOULDBLOCK, 11):
+                return -1
+
+            raise
+
     def _accept_client(self):
+        """Accept a client and register one fixed-size receive buffer."""
         try:
             client_sock, client_addr = self.server_sock.accept()
+
             if len(self.client_sockets) >= self.tcp_requests_max:
-                client_sock.sendall(self.RESPONSE_SERVER_BUSY)
-                client_sock.close()
+                try:
+                    client_sock.send(self.RESPONSE_SERVER_BUSY)
+                except OSError:
+                    pass
+                try:
+                    client_sock.close()
+                except OSError:
+                    pass
                 return
 
             client_sock.setblocking(False)
-            self.poller.register(client_sock, uselect.POLLIN)
 
             sock_id = id(client_sock)
             buf = bytearray(self.BUFFER_SIZE)
 
-            self.client_sockets[sock_id] = [client_sock, time.time(), buf, 0]
+            self.client_sockets[sock_id] = {
+                "sock": client_sock,
+                "addr": client_addr,
+                "buf": buf,
+                "length": 0,
+                "start_time": utime.ticks_ms(),
+                "task": None,
+            }
             self.sock_map[sock_id] = client_sock
+
+            self.poller.register(client_sock, uselect.POLLIN)
+
         except OSError:
             pass
 
@@ -848,83 +1068,217 @@ class AsyncWebServer:
                 return i + 1
         return -1
 
-    async def _process_client_read(self, client_sock):
-        sock_id = id(client_sock)
-        state = self.client_sockets.get(sock_id)
-        if not state:
-            return
+    async def _process_client_read(self, client_sock, client_info):
+        """
+        Read and dispatch one HTTP request using only the raw socket.
 
-        sock, _, buf, buf_len = state
-
-        if buf_len >= self.BUFFER_SIZE:
-            self._close_client(client_sock)
-            return
-
-        free_space = memoryview(buf)[buf_len:]
+        No StreamReader/StreamWriter objects are created. A single 512-byte
+        bytearray belongs to the client for the lifetime of the request.
+        """
         try:
-            bytes_read = sock.readinto(free_space)
-            if bytes_read is None or bytes_read == 0:
-                self._close_client(client_sock)
+            gc.collect()
+
+            buf = client_info["buf"]
+            length = client_info["length"]
+
+            # -------------------------------------------------------------
+            # Read request line.
+            # -------------------------------------------------------------
+            while True:
+                newline_pos = self._find_newline_and_length(buf, length)
+
+                if newline_pos >= 0:
+                    request_line_len = newline_pos
+                    break
+
+                if length >= len(buf):
+                    await self._send_http_error(
+                        client_sock, 400, "Request line too long"
+                    )
+                    return
+
+                nread = await self._recv_into_buffer(
+                    client_sock, buf, length
+                )
+
+                if nread == 0:
+                    return
+
+                if nread < 0:
+                    await asyncio.sleep_ms(5)
+                    continue
+
+                length += nread
+                client_info["length"] = length
+
+            # Strip CR/LF in place logically, without decoding the whole buffer.
+            request_line_end = request_line_len
+            while request_line_end > 0 and buf[request_line_end - 1] in (10, 13):
+                request_line_end -= 1
+
+            first_space = -1
+            second_space = -1
+
+            for i in range(request_line_end):
+                if buf[i] == 32:
+                    if first_space < 0:
+                        first_space = i
+                    else:
+                        second_space = i
+                        break
+
+            if first_space <= 0 or second_space <= first_space + 1:
+                await self._send_http_error(
+                    client_sock, 400, "Bad Request"
+                )
                 return
 
-            new_len = buf_len + bytes_read
-            state[3] = new_len
+            method = bytes(buf[:first_space])
+            request_path = bytes(buf[first_space + 1:second_space])
 
-            newline_idx = self._find_newline_and_length(buf, new_len)
-            if newline_idx != -1:
-                line_view = memoryview(buf)[:newline_idx]
+            try:
+                method = method.decode("ascii")
+                request_path = request_path.decode("utf-8")
+            except (UnicodeError, ValueError):
+                await self._send_http_error(
+                    client_sock, 400, "Invalid Request"
+                )
+                return
 
-                if newline_idx >= 3 and line_view[:3] == b"GET":
-                    req_line = str(bytes(line_view), "utf-8")
-                    path = req_line.split(" ")[1] if " " in req_line else "/"
+            # -------------------------------------------------------------
+            # Drain remaining HTTP headers.
+            # -------------------------------------------------------------
+            header_end = buf.find(b"\r\n\r\n", request_line_len)
 
-                    # Route file downloads
-                    if "/download_log?file=" in path:
-                        filename = path.split("?file=")[1].split(" ")[0]
-                        
-                        # CRITICAL: Pop socket from main server state table so background 
-                        # cleanup/watchdog tasks don't auto-close it!
-                        self.client_sockets.pop(sock_id, None)
-                        
-                        await self.handle_log_download(filename, client_sock)
-                        return
-                    else:
-                        reader = asyncio.StreamReader(client_sock)
-                        writer = asyncio.StreamWriter(client_sock, {})
-                        await self.send_control_web_page_raw(reader, writer)
+            while header_end < 0:
+                if length >= len(buf):
+                    await self._send_http_error(
+                        client_sock, 400, "Headers Too Large"
+                    )
+                    return
+
+                nread = await self._recv_into_buffer(
+                    client_sock, buf, length
+                )
+
+                if nread == 0:
+                    return
+
+                if nread < 0:
+                    await asyncio.sleep_ms(5)
+                    continue
+
+                length += nread
+                client_info["length"] = length
+
+                header_end = buf.find(b"\r\n\r\n", request_line_len)
+
+            # -------------------------------------------------------------
+            # Route request. Existing handlers now support raw sockets
+            # because _send_chunk_raw() detects socket.send().
+            # -------------------------------------------------------------
+            if method == "GET":
+                if request_path.startswith("/download_log"):
+                    await self.handle_log_download(
+                        request_path, None, client_sock
+                    )
+                elif request_path in ("/", "/index.html"):
+                    await self.send_control_web_page_raw(
+                        None, client_sock
+                    )
                 else:
-                    await self.handle_procedure_raw(line_view, client_sock)
+                    await self._send_http_error(
+                        client_sock, 404, "Not Found"
+                    )
+            else:
+                await self._send_http_error(
+                    client_sock, 405, "Method Not Allowed"
+                )
 
-                self._close_client(client_sock)
-
-        except OSError as e:
-            if e.args[0] not in (11, 110):  # EAGAIN / EWOULDBLOCK
-                self._close_client(client_sock)
+        except OSError:
+            pass
+        except Exception as e:
+            try:
+                await p.print("Client socket processing error:", e)
+            except Exception:
+                pass
+        finally:
+            self._close_client(client_sock)
+            gc.collect()
 
     async def socket_poll_task(self):
         """Main non-blocking event loop driven by uselect.poll()."""
         while self.lan_connected and self.server_sock:
-            events = self.poller.poll(0)
+            try:
+                events = self.poller.poll(0)
 
-            for obj, event in events:
-                if obj == self.server_sock:
-                    self._accept_client()
-                else:
+                for obj, event in events:
+                    if obj == self.server_sock:
+                        self._accept_client()
+                        continue
+
                     sock_id = id(obj)
-                    if sock_id in self.client_sockets:
-                        if event & uselect.POLLIN:
-                            await self._process_client_read(obj)
-                        elif event & (uselect.POLLHUP | uselect.POLLERR):
-                            self._close_client(obj)
+                    client_info = self.client_sockets.get(sock_id)
 
-            now = time.time()
-            for sock_id, (sock, start_time, _, _) in list(
-                self.client_sockets.items()
-            ):
-                if now - start_time > self.CLIENT_TIMEOUT_S:
-                    self._close_client(sock)
+                    if client_info is None:
+                        continue
 
-            await asyncio.sleep_ms(self.main_loop_yield_wait_ms)
+                    if event & (uselect.POLLHUP | uselect.POLLERR):
+                        self._close_client(obj)
+                        continue
+
+                    if event & uselect.POLLIN:
+                        task = client_info.get("task")
+
+                        if task is None:
+                            try:
+                                self.poller.unregister(obj)
+                            except OSError:
+                                pass
+
+                            task = asyncio.create_task(
+                                self._process_client_read(
+                                    obj, client_info
+                                )
+                            )
+                            client_info["task"] = task
+
+                # ---------------------------------------------------------
+                # Client timeout handling. Both accept time and timeout use
+                # utime.ticks_ms(), avoiding the old time.time()/ticks mix.
+                # ---------------------------------------------------------
+                current_ms = utime.ticks_ms()
+                timeout_ms = (
+                    getattr(self, "CLIENT_TIMEOUT_S", 5) * 1000
+                )
+
+                for sock_id, client_info in list(
+                    self.client_sockets.items()
+                ):
+                    if not isinstance(client_info, dict):
+                        continue
+
+                    sock = client_info.get("sock")
+                    start_time = client_info.get(
+                        "start_time", current_ms
+                    )
+
+                    if sock is not None and utime.ticks_diff(
+                        current_ms, start_time
+                    ) > timeout_ms:
+                        self._close_client(sock)
+
+            except Exception as e:
+                try:
+                    await p.print(
+                        "Error in socket_poll_task:", e
+                    )
+                except Exception:
+                    pass
+
+            await asyncio.sleep_ms(
+                getattr(self, "main_loop_yield_wait_ms", 20)
+            )
 
     # =========================================================================
     # NTP SYNC & BACKGROUND TASKS
@@ -990,74 +1344,99 @@ class AsyncWebServer:
     # =========================================================================
 
     async def start(self):
+        """Main manager loop for socket server lifecycle and connection health."""
         while True:
             try:
                 wdt.feed()
+
+                # 1. Ethernet Connection Management
                 if not self.lan_connected:
                     await p.print("Attempting to reconnect Ethernet...")
                     try:
                         await self.connect_ethernet()
-                    except RuntimeError:
-                        await p.print(
-                            "Ethernet connection failed. Retrying in 10s."
-                        )
-                        await asyncio.sleep(10)
+                    except (RuntimeError, Exception) as e:
+                        await p.print("Ethernet connection failed. Retrying in 10s.")
+                        # Sleep in small steps to keep feeding WDT during retry delay
+                        for _ in range(10):
+                            wdt.feed()
+                            await asyncio.sleep(1)
                         continue
 
+                # 2. Server Socket Initialization
                 if self.server_sock is None:
                     await p.print("Attempting to start server...")
                     try:
-                        self.server_sock = socket.socket(
-                            socket.AF_INET, socket.SOCK_STREAM
-                        )
-                        self.server_sock.setsockopt(
-                            socket.SOL_SOCKET, socket.SO_REUSEADDR, 1
-                        )
-                        self.server_sock.setblocking(False)
-                        self.server_sock.bind(("0.0.0.0", self.port))
-                        self.server_sock.listen(5)
+                        gc.collect()
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        sock.setblocking(False)
+                        sock.bind(("0.0.0.0", getattr(self, "port", 80)))
+                        sock.listen(5)
 
+                        self.server_sock = sock
                         self.poller.register(self.server_sock, uselect.POLLIN)
 
-                        # Cleanly handle task creation
-                        if self.poll_task:
+                        # Cancel old poll task cleanly if active
+                        if hasattr(self, "poll_task") and self.poll_task:
                             self.poll_task.cancel()
-                        self.poll_task = asyncio.create_task(
-                            self.socket_poll_task()
-                        )
+                            self.poll_task = None
 
-                        if not self.ntp_task:
-                            self.ntp_task = asyncio.create_task(
-                                self.sync_ntp_loop()
-                            )
+                        self.poll_task = asyncio.create_task(self.socket_poll_task())
 
-                        await p.print(
-                            "Server running at http://{}:{}".format(
-                                self.lan.ifconfig()[0], self.port
-                            )
-                        )
+                        # Start NTP background task if not already running
+                        if not getattr(self, "ntp_task", None):
+                            self.ntp_task = asyncio.create_task(self.sync_ntp_loop())
+
+                        ip = self.lan.ifconfig()[0] if hasattr(self, "lan") else "0.0.0.0"
+                        await p.print("Server running at http://%s:%d" % (ip, self.port))
+
                     except Exception as e:
-                        await p.print(
-                            "Failed to start server: {}. Retrying in 10s.".format(
-                                e
-                            )
-                        )
+                        await p.print("Failed to start server. Retrying in 10s.")
+                        if "sock" in locals() and sock:
+                            try:
+                                sock.close()
+                            except OSError:
+                                pass
                         self.server_sock = None
-                        await asyncio.sleep(10)
+
+                        for _ in range(10):
+                            wdt.feed()
+                            await asyncio.sleep(1)
                         continue
 
-                if is_timeout(self.last_lan_check_ms, 5000):
-                    if not self.lan.isconnected():
+                # 3. Periodic LAN Connection Health Check
+                current_ms = getattr(self, "millis", utime.ticks_ms)()
+                last_check = getattr(self, "last_lan_check_ms", 0)
+
+                if utime.ticks_diff(current_ms, last_check) >= 5000:
+                    if hasattr(self, "lan") and not self.lan.isconnected():
                         await p.print("Ethernet disconnected.")
                         self.lan_connected = False
+
+                        # Unregister and close main server socket
                         if self.server_sock:
-                            self.poller.unregister(self.server_sock)
-                            self.server_sock.close()
+                            try:
+                                self.poller.unregister(self.server_sock)
+                            except (KeyError, OSError):
+                                pass
+                            try:
+                                self.server_sock.close()
+                            except OSError:
+                                pass
                             self.server_sock = None
-                    self.last_lan_check_ms = millis()
+
+                        # Cancel polling task on network drop
+                        if getattr(self, "poll_task", None):
+                            self.poll_task.cancel()
+                            self.poll_task = None
+
+                    self.last_lan_check_ms = current_ms
+
             except Exception as e:
                 await p.print("AsyncWebServer main loop error:", e)
-            await asyncio.sleep_ms(self.main_loop_yield_wait_ms)
+
+            wdt.feed()
+            await asyncio.sleep_ms(getattr(self, "main_loop_yield_wait_ms", 50))
 
     def run(self):
         try:

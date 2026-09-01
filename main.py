@@ -166,9 +166,9 @@ async def main():
     tasks.append(uasyncio.create_task(hub.main_loop()))
     await p.print("hub.main_loop task created.") # Added await
 
-    if server:
-        tasks.append(uasyncio.create_task(server.sync_ntp_loop()))
-        await p.print("server.sync_ntp_loop task created.") # Added await
+    # if server:
+    #     tasks.append(uasyncio.create_task(server.sync_ntp_loop()))
+    #     await p.print("server.sync_ntp_loop task created.") # Added await
     
     tasks.append(uasyncio.create_task(rxDeviceCAN.main_loop()))
     await p.print("rxDeviceCAN.main_loop task created.") # Added await
