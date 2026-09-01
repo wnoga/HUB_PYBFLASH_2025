@@ -1082,7 +1082,6 @@ class AsyncWebServer:
 
             buf = client_info["buf"]
             length = client_info["length"]
-
             # -------------------------------------------------------------
             # Read request line.
             # -------------------------------------------------------------
@@ -1131,9 +1130,15 @@ class AsyncWebServer:
                         break
 
             if first_space <= 0 or second_space <= first_space + 1:
-                await self._send_http_error(
-                    client_sock, 400, "Bad Request"
-                )
+                await p.print("@", length, buf)
+                try:
+                    procedure_json = json.loads(buf)
+                    # await p.print (procedure_json)
+                    await self.handle_procedure_raw(buf, client_sock)
+                except:
+                    await self._send_http_error(
+                        client_sock, 400, "Bad Request"
+                    )
                 return
 
             method = bytes(buf[:first_space])
@@ -1176,7 +1181,7 @@ class AsyncWebServer:
 
                 header_end = bytes(buf).find(b"\r\n\r\n", request_line_len)
                 await asyncio.sleep_ms(0)
-
+            await p.print("@", method, "->", request_path)
             # -------------------------------------------------------------
             # Route request. Existing handlers now support raw sockets
             # because _send_chunk_raw() detects socket.send().
