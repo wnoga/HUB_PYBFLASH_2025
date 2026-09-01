@@ -593,6 +593,53 @@ class AsyncWebServer:
                 "</div>"
                 % (temp_ext, temp_loc, uid, u0, i0_na, int(dc0), u1, i1_na, int(dc1))
             )
+                
+    async def _send_format_afe_status_html(self, writer, status_data):
+            """Generates a compact, dark-themed visual HTML card for SiPM telemetry."""
+            if not isinstance(status_data, dict) or "last_data" not in status_data:
+                return ""
+
+            last = status_data.get("last_data", {})
+
+            # Extract values
+            u0 = last.get("U_SIPM_MEAS0", {}).get("value", 0.0)
+            u1 = last.get("U_SIPM_MEAS1", {}).get("value", 0.0)
+
+            # Convert A to nA for better readability
+            i0_na = last.get("I_SIPM_MEAS0", {}).get("value", 0.0) * 1e9
+            i1_na = last.get("I_SIPM_MEAS1", {}).get("value", 0.0) * 1e9
+
+            dc0 = last.get("DC_LEVEL_MEAS0", {}).get("value", 0)
+            dc1 = last.get("DC_LEVEL_MEAS1", {}).get("value", 0)
+
+            temp_ext = last.get("TEMP_EXT", {}).get("value", 0.0)
+            temp_loc = last.get("TEMP_LOCAL", {}).get("value", 0.0)
+            uid = status_data.get("unique_id_str", {}).get("value", "N/A")
+
+            await self._send_chunk_raw(writer,
+                '<tr><th>Telemetry Visual</th><td>'
+                '<div class="sys-row">'
+                "<span><strong>Ext Temp:</strong> %.1f °C</span>"
+                "<span><strong>Loc Temp:</strong> %.1f °C</span>"
+                "<span><strong>UID:</strong> %s</span>"
+                "</div>"
+                '<div class="sipm-grid">'
+                '<div class="sipm-chan">'
+                "<h3>Channel 0</h3>"
+                '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
+                '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
+                '<div class="metric"><span>DC Offset:</span><span class="metric-val">%d</span></div>'
+                "</div>"
+                '<div class="sipm-chan">'
+                "<h3>Channel 1</h3>"
+                '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
+                '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
+                '<div class="metric"><span>DC Offset:</span><span class="metric-val">%d</span></div>'
+                "</div>"
+                "</div>"
+                '</td></tr></table></div>'
+                % (temp_ext, temp_loc, uid, u0, i0_na, int(dc0), u1, i1_na, int(dc1))
+            )
 
     async def _send_chunk_raw(self, writer, data: bytes, chunk_size: int = 512):
         """Helper to stream pre-encoded raw byte chunks directly in smaller fragments."""
@@ -751,7 +798,6 @@ class AsyncWebServer:
                             config_json if config_json else "N/A",
                         )
                     )
-                    gc.collect()
                     # Serialize latest status to raw JSON format
                     raw_status = getattr(afe, "latest_status", {})
                     try:
@@ -764,20 +810,19 @@ class AsyncWebServer:
                         status_json = str(raw_status)
 
                     # Render scrollable Raw JSON first
-                    await send_chunk(
-                        '<tr><th>Latest Data (JSON)</th><td><div class="scroll-box"><pre>%s</pre></div></td></tr>'
-                        % status_json
-                    )
-                    gc.collect()
+                    await send_chunk('<tr><th>Latest Data (JSON)</th><td><div class="scroll-box"><pre>')
+                    await self._send_chunk_raw(writer, status_json)
+                    await send_chunk('</pre></div></td></tr>')
                     # Render Visual Telemetry Card below the raw JSON
                     status_html = self.format_afe_status_html(raw_status)
-                    if status_html:
-                        await send_chunk(
-                            "<tr><th>Telemetry Visual</th><td>%s</td></tr>"
-                            % status_html
-                        )
+                    self._send_format_afe_status_html(writer, raw_status)
+                    # if status_html:
+                    #     await send_chunk(
+                    #         "<tr><th>Telemetry Visual</th><td>%s</td></tr>"
+                    #         % status_html
+                    #     )
 
-                    await send_chunk("</table></div>")
+                    # await send_chunk("</table></div>")
                     gc.collect()
             else:
                 await send_chunk(
