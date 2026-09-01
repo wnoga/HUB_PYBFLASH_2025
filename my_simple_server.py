@@ -99,30 +99,434 @@ class AsyncWebServer:
 
     async def _send_raw(self, sock, data: bytes):
         total_sent = 0
-        while total_sent < len(data):
+        view = memoryview(data)
+        while total_sent < len(view):
             try:
-                sent = sock.send(data[total_sent:])
+                sent = sock.send(view[total_sent:])
                 if sent == 0 or sent is None:
                     raise OSError("Socket closed by peer")
                 total_sent += sent
             except OSError as e:
-                if e.args[0] in (errno.EAGAIN, errno.ETIMEDOUT):
+                err = e.errno if hasattr(e, "errno") else (e.args[0] if e.args else None)
+                if err in (errno.EAGAIN, errno.ETIMEDOUT, 11, 110):
                     await asyncio.sleep_ms(10)
                     continue
                 raise e
 
-    async def _send_json_dict_chunked(self, sock, data: dict):
-        """Serializes dictionary directly to socket in small chunks."""
-        await self._send_raw(sock, b"{")
-        first = True
-        for key, value in data.items():
-            if not first:
-                await self._send_raw(sock, b",")
-            first = False
-            await self._send_raw(sock, ujson.dumps(key).encode())
-            await self._send_raw(sock, b":")
-            await self._send_raw(sock, ujson.dumps(value).encode())
-        await self._send_raw(sock, b"}")
+
+    async def _send_chunk_raw(self, writer, data: bytes, max_chunk: int = 512):
+        """Streams byte data in chunks up to max_chunk bytes to prevent large allocations."""
+        if not data:
+            return
+
+        view = memoryview(data)
+        total_len = len(view)
+        offset = 0
+
+        while offset < total_len:
+            chunk_len = min(max_chunk, total_len - offset)
+            sub_chunk = view[offset : offset + chunk_len]
+
+            # HTTP Chunk header (<hex_size>\r\n)
+            header = ("%X\r\n" % chunk_len).encode("ascii")
+            writer.write(header)
+            writer.write(sub_chunk)
+            writer.write(b"\r\n")
+            await writer.drain()
+
+            offset += chunk_len
+
+
+    async def _send_chunk_str(self, writer, text: str, max_chunk: int = 512):
+        """Encodes and streams string data in controlled 512-byte allocations."""
+        if not text:
+            return
+
+        for i in range(0, len(text), max_chunk):
+            slice_str = text[i : i + max_chunk]
+            data = slice_str.encode("utf-8")
+            await self._send_chunk_raw(writer, data, max_chunk=max_chunk)
+
+
+    async def _stream_json_key_by_key(self, writer_or_sock, obj, is_async_writer=True):
+        """
+        Recursively serializes and sends JSON key-by-key / element-by-element
+        to keep allocations well below 512 bytes.
+        """
+        async def _write_bytes(raw_b):
+            if is_async_writer:
+                await self._send_chunk_raw(writer_or_sock, raw_b, max_chunk=512)
+            else:
+                await self._send_raw(writer_or_sock, raw_b)
+
+        if obj is None:
+            await _write_bytes(b"null")
+        elif isinstance(obj, bool):
+            await _write_bytes(b"true" if obj else b"false")
+        elif isinstance(obj, (int, float)):
+            await _write_bytes(str(obj).encode("ascii"))
+        elif isinstance(obj, str):
+            await _write_bytes(ujson.dumps(obj).encode("utf-8"))
+        elif isinstance(obj, dict):
+            await _write_bytes(b"{")
+            first = True
+            for k, v in obj.items():
+                if not first:
+                    await _write_bytes(b",")
+                first = False
+
+                await _write_bytes(ujson.dumps(str(k)).encode("utf-8"))
+                await _write_bytes(b":")
+
+                await self._stream_json_key_by_key(writer_or_sock, v, is_async_writer)
+                gc.collect()
+
+            await _write_bytes(b"}")
+        elif isinstance(obj, (list, tuple)):
+            await _write_bytes(b"[")
+            first = True
+            for item in obj:
+                if not first:
+                    await _write_bytes(b",")
+                first = False
+
+                await self._stream_json_key_by_key(writer_or_sock, item, is_async_writer)
+                gc.collect()
+
+            await _write_bytes(b"]")
+
+
+    def sort_log_files(self, file_list):
+        """
+        Sorts log files from latest to oldest.
+        Handles:
+        - Timestamped: log_YYYYMMDD_HHMMSS.json
+        - Unsynced indexed: log_1.json, log_2.json
+        - Unsynced base: log.json
+        """
+        def file_sort_key(filename):
+            if filename == "log.json":
+                return (1, 0)
+
+            if filename.startswith("log_") and filename.endswith(".json"):
+                core = filename[4:-5]
+                if core.isdigit():
+                    return (2, int(core))
+                return (3, core)
+
+            return (0, filename)
+
+        return sorted(file_list, key=file_sort_key, reverse=True)
+
+
+    async def stream_afe_status_html(self, writer, status_data):
+        """Streams the AFE status HTML directly to the writer in sub-512 byte chunks."""
+        if not isinstance(status_data, dict) or "last_data" not in status_data:
+            return
+
+        last = status_data.get("last_data", {})
+
+        u0 = last.get("U_SIPM_MEAS0", {}).get("value", 0.0)
+        u1 = last.get("U_SIPM_MEAS1", {}).get("value", 0.0)
+        i0_na = last.get("I_SIPM_MEAS0", {}).get("value", 0.0) * 1e9
+        i1_na = last.get("I_SIPM_MEAS1", {}).get("value", 0.0) * 1e9
+        dc0 = last.get("DC_LEVEL_MEAS0", {}).get("value", 0)
+        dc1 = last.get("DC_LEVEL_MEAS1", {}).get("value", 0)
+        temp_ext = last.get("TEMP_EXT", {}).get("value", 0.0)
+        temp_loc = last.get("TEMP_LOCAL", {}).get("value", 0.0)
+        uid = status_data.get("unique_id_str", {}).get("value", "N/A")
+
+        await self._send_chunk_str(
+            writer,
+            '<div class="sys-row">'
+            "<span><strong>Ext Temp:</strong> %.1f °C</span>"
+            "<span><strong>Loc Temp:</strong> %.1f °C</span>"
+            "<span><strong>UID:</strong> %s</span>"
+            "</div>" % (temp_ext, temp_loc, str(uid)),
+            max_chunk=512,
+        )
+
+        await self._send_chunk_str(
+            writer,
+            '<div class="sipm-grid">'
+            '<div class="sipm-chan"><h3>Channel 0</h3>'
+            '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
+            '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
+            '<div class="metric"><span>DC Offset:</span><span class="metric-val">%d</span></div>'
+            "</div>" % (u0, i0_na, int(dc0)),
+            max_chunk=512,
+        )
+
+        await self._send_chunk_str(
+            writer,
+            '<div class="sipm-chan"><h3>Channel 1</h3>'
+            '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
+            '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
+            '<div class="metric"><span>DC Offset:</span><span class="metric-val">%d</span></div>'
+            "</div></div>" % (u1, i1_na, int(dc1)),
+            max_chunk=512,
+        )
+
+
+    async def send_control_web_page_raw(self, reader, writer):
+        """Streams HTML dashboard keeping allocations strictly under 512 bytes and JSON key-by-key."""
+        try:
+            gc.collect()
+
+            # 1. HTTP Headers
+            header = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/html; charset=utf-8\r\n"
+                "Transfer-Encoding: chunked\r\n"
+                "Connection: close\r\n\r\n"
+            )
+            await self._send_chunk_raw(writer, header.encode("ascii"), max_chunk=512)
+
+            # 2. Document Shell & Static CSS
+            await self._send_chunk_raw(
+                writer,
+                b'<!DOCTYPE html><html><head>'
+                b'<meta name="viewport" content="width=device-width, initial-scale=1">'
+                b'<title>HUB - Status Dashboard</title><style>',
+                max_chunk=512,
+            )
+
+            await self._send_chunk_raw(writer, DASHBOARD_CSS, max_chunk=512)
+
+            await self._send_chunk_raw(
+                writer,
+                b'</style><meta http-equiv="refresh" content="5"></head><body>',
+                max_chunk=512,
+            )
+
+            # 3. System Status
+            gc.collect()
+            current_ms = getattr(self, "millis", utime.ticks_ms)()
+            start_time = getattr(self.hub, "discovery_start_time", 0)
+            timeout_ms = getattr(self.hub, "discovery_timeout_ms", 0)
+
+            try:
+                discovery_timed_out = utime.ticks_diff(current_ms, start_time) >= timeout_ms
+            except Exception:
+                discovery_timed_out = "N/A"
+
+            afe_manage_active = getattr(self.hub, "afe_manage_active", False)
+            rx_process_active = getattr(self.hub, "rx_process_active", False)
+
+            await self._send_chunk_str(
+                writer,
+                '<div class="card"><h2>Current HUB Status</h2><table>'
+                "<tr><th>Discovery Timed Out</th><td>%s</td></tr>"
+                "<tr><th>AFE Manage Active</th><td>%s</td></tr>"
+                "<tr><th>RX Process Active</th><td>%s</td></tr>"
+                "</table></div>"
+                % (
+                    '<span class="badge-off">TRUE</span>' if discovery_timed_out is True
+                    else ('<span class="badge-on">FALSE</span>' if discovery_timed_out is False else "N/A"),
+                    '<span class="badge-on">ACTIVE</span>' if afe_manage_active else '<span class="badge-off">INACTIVE</span>',
+                    '<span class="badge-on">ACTIVE</span>' if rx_process_active else '<span class="badge-off">INACTIVE</span>',
+                ),
+                max_chunk=512,
+            )
+
+            # 4. AFE Devices
+            afe_devices = getattr(self.hub, "afe_devices", [])
+            if afe_devices:
+                for afe in afe_devices:
+                    gc.collect()
+                    dev_id = getattr(afe, "device_id", "Unknown")
+                    config = getattr(afe, "configuration", {})
+
+                    is_online = getattr(afe, "is_online", False)
+                    firmware_version = getattr(afe, "firmware_version", "N/A")
+                    version_checked = getattr(afe, "version_checked", False)
+                    is_configured = getattr(afe, "is_configured", False)
+                    is_config_started = getattr(afe, "is_configuration_started", False)
+
+                    await self._send_chunk_str(
+                        writer,
+                        '<div class="card"><h2>AFE Device: %s</h2><table>'
+                        "<tr><th>Online Status</th><td>%s</td></tr>"
+                        "<tr><th>Firmware Version</th><td><strong>%s</strong></td></tr>"
+                        "<tr><th>Version Checked</th><td>%s</td></tr>"
+                        "<tr><th>Configured</th><td>%s</td></tr>"
+                        "<tr><th>Configuration Started</th><td>%s</td></tr>"
+                        '<tr><th>Configuration (JSON)</th><td><div class="scroll-box"><pre>'
+                        % (
+                            str(dev_id),
+                            '<span class="badge-on">ONLINE</span>' if is_online else '<span class="badge-off">OFFLINE</span>',
+                            str(firmware_version),
+                            '<span class="badge-on">YES</span>' if version_checked else '<span class="badge-off">NO</span>',
+                            '<span class="badge-on">YES</span>' if is_configured else '<span class="badge-off">NO</span>',
+                            '<span class="badge-on">YES</span>' if is_config_started else '<span class="badge-off">NO</span>',
+                        ),
+                        max_chunk=512,
+                    )
+
+                    # Stream Configuration JSON Key-by-Key
+                    if isinstance(config, (dict, list)):
+                        await self._stream_json_key_by_key(writer, config, is_async_writer=True)
+                    else:
+                        await self._send_chunk_str(writer, str(config), max_chunk=512)
+
+                    await self._send_chunk_str(writer, "</pre></div></td></tr>", max_chunk=512)
+
+                    # Stream Latest Data JSON Key-by-Key
+                    raw_status = getattr(afe, "latest_status", {})
+                    await self._send_chunk_str(
+                        writer,
+                        '<tr><th>Latest Data (JSON)</th><td><div class="scroll-box"><pre>',
+                        max_chunk=512,
+                    )
+
+                    if isinstance(raw_status, (dict, list)):
+                        await self._stream_json_key_by_key(writer, raw_status, is_async_writer=True)
+                    else:
+                        await self._send_chunk_str(writer, str(raw_status), max_chunk=512)
+
+                    await self._send_chunk_str(writer, "</pre></div></td></tr>", max_chunk=512)
+
+                    # Stream Visual Telemetry Card directly to socket
+                    if isinstance(raw_status, dict) and "last_data" in raw_status:
+                        await self._send_chunk_str(
+                            writer,
+                            "<tr><th>Telemetry Visual</th><td>",
+                            max_chunk=512,
+                        )
+                        await self.stream_afe_status_html(writer, raw_status)
+                        await self._send_chunk_str(writer, "</td></tr>", max_chunk=512)
+
+                    await self._send_chunk_str(writer, "</table></div>", max_chunk=512)
+            else:
+                await self._send_chunk_str(
+                    writer,
+                    '<div class="card"><h2>AFE Devices</h2><p>No AFE devices detected.</p></div>',
+                    max_chunk=512,
+                )
+
+            # 5. Server Metrics
+            gc.collect()
+            free_ram = gc.mem_free()
+            uptime_s = int(utime.time())
+            active_clients = len(getattr(self, "client_sockets", []))
+
+            await self._send_chunk_str(
+                writer,
+                '<div class="card"><h2>Server Metrics</h2><table>'
+                "<tr><th>Free RAM</th><td>%d bytes</td></tr>"
+                "<tr><th>Active Sockets</th><td>%d / %d</td></tr>"
+                "<tr><th>Uptime</th><td>%d s</td></tr>"
+                "</table></div>"
+                % (free_ram, active_clients, getattr(self, "tcp_requests_max", 0), uptime_s),
+                max_chunk=512,
+            )
+
+            # 6. SD Card Storage Metrics
+            gc.collect()
+            total_mb, free_mb, used_pct, sd_mounted = 0.0, 0.0, 0.0, False
+            try:
+                vfs = uos.statvfs("/sd")
+                block_size = vfs[1] if vfs[1] > 0 else vfs[0]
+                total_blocks, free_blocks = vfs[2], vfs[3]
+
+                if total_blocks > 0:
+                    total_bytes = total_blocks * block_size
+                    free_bytes = free_blocks * block_size
+                    used_bytes = total_bytes - free_bytes
+
+                    total_mb = total_bytes / (1024 * 1024)
+                    free_mb = free_bytes / (1024 * 1024)
+                    used_pct = (used_bytes / total_bytes) * 100.0
+                    sd_mounted = True
+            except OSError:
+                sd_mounted = False
+
+            if sd_mounted:
+                await self._send_chunk_str(
+                    writer,
+                    '<div class="card"><h2>SD Card Storage Metrics</h2><table>'
+                    '<tr><th>Status</th><td><span class="badge-on">MOUNTED</span></td></tr>'
+                    '<tr><th>Total Space</th><td>%.2f MB</td></tr>'
+                    '<tr><th>Free Space</th><td>%.2f MB</td></tr>'
+                    '<tr><th>Usage</th><td>'
+                    '<div style="background:#333;border-radius:3px;overflow:hidden;width:100%%;max-width:200px;display:inline-block;vertical-align:middle;margin-right:8px;">'
+                    '<div style="background:%s;width:%.1f%%;height:12px;"></div>'
+                    '</div>%.1f%%'
+                    '</td></tr>'
+                    '</table></div>'
+                    % (
+                        total_mb,
+                        free_mb,
+                        "#dc3545" if used_pct > 90 else "#28a745",
+                        used_pct,
+                        used_pct,
+                    ),
+                    max_chunk=512,
+                )
+            else:
+                await self._send_chunk_str(
+                    writer,
+                    '<div class="card"><h2>SD Card Storage Metrics</h2>'
+                    '<p><span class="badge-off">UNMOUNTED / NOT FOUND</span></p></div>',
+                    max_chunk=512,
+                )
+
+            # 7. SD Card Log Files List with Download Buttons
+            gc.collect()
+            try:
+                raw_files = uos.listdir("/sd/logs")
+                log_files = self.sort_log_files(raw_files)
+            except OSError:
+                log_files = []
+
+            await self._send_chunk_str(writer, '<div class="card"><h2>SD Card Log Files</h2>', max_chunk=512)
+
+            if log_files:
+                await self._send_chunk_str(
+                    writer,
+                    "<table><tr><th>Filename</th><th>Size</th><th>Action</th></tr>",
+                    max_chunk=512,
+                )
+                for file_name in log_files:
+                    filepath = "/sd/logs/" + file_name
+                    try:
+                        file_stat = uos.stat(filepath)
+                        size_bytes = file_stat[6]
+                        size_str = (
+                            "%d KB" % (size_bytes // 1024)
+                            if size_bytes >= 1024
+                            else "%d B" % size_bytes
+                        )
+                    except OSError:
+                        size_str = "N/A"
+
+                    await self._send_chunk_str(
+                        writer,
+                        '<tr><td><strong>%s</strong></td><td>%s</td>'
+                        '<td><a class="btn-dl" href="/download_log?file=%s">Download</a></td></tr>'
+                        % (file_name, size_str, file_name),
+                        max_chunk=512,
+                    )
+                await self._send_chunk_str(writer, "</table></div>", max_chunk=512)
+            else:
+                await self._send_chunk_str(
+                    writer,
+                    "<p>No log files found in <code>/sd/logs</code>.</p></div>",
+                    max_chunk=512,
+                )
+
+            # 8. Close Document Tags Properly
+            await self._send_chunk_str(writer, "</body></html>", max_chunk=512)
+
+            # Zero-length HTTP chunk to signal end of stream
+            writer.write(b"0\r\n\r\n")
+            await writer.drain()
+
+        except OSError:
+            pass
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
     def _close_client(self, client_sock):
         """Unregisters socket from poller and safely cleans up references."""
@@ -414,535 +818,6 @@ class AsyncWebServer:
             await self._send_raw(
                 sock, b'{"status":"ERROR","info":"Unknown procedure"}\r\n'
             )
-
-    def sort_log_files(self, file_list):
-        """
-        Sorts log files from latest to oldest.
-        Handles:
-        - Timestamped: log_YYYYMMDD_HHMMSS.json
-        - Unsynced indexed: log_1.json, log_2.json
-        - Unsynced base: log.json
-        """
-        def file_sort_key(filename):
-            # 1. Standard timestamp log: log_20260724_100839.json -> 24 chars
-            if filename.startswith("log_") and filename.endswith(".json") and len(filename) == 24:
-                # Priority 3 (Highest): Raw timestamp text "20260724_100839"
-                timestamp_str = filename[4:19]
-                return (3, timestamp_str)
-
-            # 2. Sequential unsynced log: log_1.json, log_12.json
-            elif filename.startswith("log_") and filename.endswith(".json"):
-                try:
-                    # Priority 2: Extract index X as integer
-                    index = int(filename[4:-5])
-                    return (2, "%010d" % index)
-                except ValueError:
-                    pass
-
-            # 3. Base unsynced log: log.json
-            elif filename == "log.json":
-                # Priority 1
-                return (1, "0000000000")
-
-            # 4. Any other non-standard files
-            return (0, filename)
-
-        # Sort in reverse order (True = Latest to Oldest)
-        return sorted(file_list, key=file_sort_key, reverse=True)
-
-    async def handle_log_download(self, filename, raw_sock):
-        clean_filename = filename.split("/")[-1].split("\\")[-1]
-        filepath = "/sd/logs/" + clean_filename
-
-        # Prevent GC pauses mid-download
-        gc.collect()
-
-        try:
-            uos.stat(filepath)
-        except OSError:
-            try:
-                raw_sock.send(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nFile Not Found")
-            except OSError:
-                pass
-            self._close_client(raw_sock)
-            return
-
-        try:
-            raw_sock.settimeout(None)
-        except (AttributeError, OSError):
-            pass
-            
-        raw_sock.setblocking(False)
-
-        header = (
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/octet-stream\r\n"
-            "Content-Disposition: attachment; filename=\"{}\"\r\n"
-            "Transfer-Encoding: chunked\r\n"
-            "Connection: close\r\n\r\n"
-        ).format(clean_filename)
-
-        try:
-            raw_sock.send(header.encode("ascii"))
-        except OSError:
-            self._close_client(raw_sock)
-            return
-
-        asyncio.create_task(self._stream_chunked_background(filepath, raw_sock))
-
-    async def _stream_chunked_background(self, filepath, raw_sock):
-        chunk = bytearray(2048)
-        poller = uselect.poll()
-        poller.register(raw_sock, uselect.POLLOUT)
-
-        try:
-            with open(filepath, "rb") as f:
-                while True:
-                    bytes_read = f.readinto(chunk)
-                    if not bytes_read:
-                        break
-
-                    # HTTP Chunk Format: <hex_size>\r\n<data>\r\n
-                    chunk_header = "{:X}\r\n".format(bytes_read).encode("ascii")
-                    chunk_footer = b"\r\n"
-
-                    # Send chunk header, data slice, and footer
-                    await self._raw_send_all(raw_sock, poller, chunk_header)
-                    await self._raw_send_all(raw_sock, poller, memoryview(chunk)[:bytes_read])
-                    await self._raw_send_all(raw_sock, poller, chunk_footer)
-
-                    # Yield control so web control page stays responsive
-                    await asyncio.sleep_ms(2)
-
-            # Terminating HTTP Chunk (0\r\n\r\n) tells browser download is 100% complete
-            await self._raw_send_all(raw_sock, poller, b"0\r\n\r\n")
-
-        except OSError:
-            pass
-        finally:
-            try:
-                poller.unregister(raw_sock)
-            except OSError:
-                pass
-            self._close_client(raw_sock)
-
-
-    async def _raw_send_all(self, raw_sock, poller, data):
-        """Guarantees every byte of a payload slice is delivered without premature socket closure."""
-        view = memoryview(data)
-        total_bytes = len(view)
-        bytes_sent = 0
-
-        while bytes_sent < total_bytes:
-            try:
-                sent = raw_sock.send(view[bytes_sent:])
-                if sent and sent > 0:
-                    bytes_sent += sent
-                else:
-                    await asyncio.sleep_ms(2)
-            except OSError as e:
-                if e.args[0] in (11, 110):  # EAGAIN / EWOULDBLOCK
-                    events = poller.poll(500)
-                    if not events:
-                        raise OSError("Socket timeout during transfer")
-                    await asyncio.sleep_ms(1)
-                else:
-                    raise e
-        
-    def format_afe_status_html(self, status_data):
-            """Generates a compact, dark-themed visual HTML card for SiPM telemetry."""
-            if not isinstance(status_data, dict) or "last_data" not in status_data:
-                return ""
-
-            last = status_data.get("last_data", {})
-
-            # Extract values
-            u0 = last.get("U_SIPM_MEAS0", {}).get("value", 0.0)
-            u1 = last.get("U_SIPM_MEAS1", {}).get("value", 0.0)
-
-            # Convert A to nA for better readability
-            i0_na = last.get("I_SIPM_MEAS0", {}).get("value", 0.0) * 1e9
-            i1_na = last.get("I_SIPM_MEAS1", {}).get("value", 0.0) * 1e9
-
-            dc0 = last.get("DC_LEVEL_MEAS0", {}).get("value", 0)
-            dc1 = last.get("DC_LEVEL_MEAS1", {}).get("value", 0)
-
-            temp_ext = last.get("TEMP_EXT", {}).get("value", 0.0)
-            temp_loc = last.get("TEMP_LOCAL", {}).get("value", 0.0)
-            uid = status_data.get("unique_id_str", {}).get("value", "N/A")
-
-            return (
-                '<div class="sys-row">'
-                "<span><strong>Ext Temp:</strong> %.1f °C</span>"
-                "<span><strong>Loc Temp:</strong> %.1f °C</span>"
-                "<span><strong>UID:</strong> %s</span>"
-                "</div>"
-                '<div class="sipm-grid">'
-                '<div class="sipm-chan">'
-                "<h3>Channel 0</h3>"
-                '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
-                '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
-                '<div class="metric"><span>DC Offset:</span><span class="metric-val">%d</span></div>'
-                "</div>"
-                '<div class="sipm-chan">'
-                "<h3>Channel 1</h3>"
-                '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
-                '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
-                '<div class="metric"><span>DC Offset:</span><span class="metric-val">%d</span></div>'
-                "</div>"
-                "</div>"
-                % (temp_ext, temp_loc, uid, u0, i0_na, int(dc0), u1, i1_na, int(dc1))
-            )
-                
-    async def _send_format_afe_status_html(self, writer, status_data):
-            """Generates a compact, dark-themed visual HTML card for SiPM telemetry."""
-            if not isinstance(status_data, dict) or "last_data" not in status_data:
-                return ""
-
-            last = status_data.get("last_data", {})
-
-            # Extract values
-            u0 = last.get("U_SIPM_MEAS0", {}).get("value", 0.0)
-            u1 = last.get("U_SIPM_MEAS1", {}).get("value", 0.0)
-
-            # Convert A to nA for better readability
-            i0_na = last.get("I_SIPM_MEAS0", {}).get("value", 0.0) * 1e9
-            i1_na = last.get("I_SIPM_MEAS1", {}).get("value", 0.0) * 1e9
-
-            dc0 = last.get("DC_LEVEL_MEAS0", {}).get("value", 0)
-            dc1 = last.get("DC_LEVEL_MEAS1", {}).get("value", 0)
-
-            temp_ext = last.get("TEMP_EXT", {}).get("value", 0.0)
-            temp_loc = last.get("TEMP_LOCAL", {}).get("value", 0.0)
-            uid = status_data.get("unique_id_str", {}).get("value", "N/A")
-
-            await self._send_chunk_raw(writer,
-                '<tr><th>Telemetry Visual</th><td>'
-                '<div class="sys-row">'
-                "<span><strong>Ext Temp:</strong> %.1f °C</span>"
-                "<span><strong>Loc Temp:</strong> %.1f °C</span>"
-                "<span><strong>UID:</strong> %s</span>"
-                "</div>"
-                '<div class="sipm-grid">'
-                '<div class="sipm-chan">'
-                "<h3>Channel 0</h3>"
-                '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
-                '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
-                '<div class="metric"><span>DC Offset:</span><span class="metric-val">%d</span></div>'
-                "</div>"
-                '<div class="sipm-chan">'
-                "<h3>Channel 1</h3>"
-                '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
-                '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
-                '<div class="metric"><span>DC Offset:</span><span class="metric-val">%d</span></div>'
-                "</div>"
-                "</div>"
-                '</td></tr></table></div>'
-                % (temp_ext, temp_loc, uid, u0, i0_na, int(dc0), u1, i1_na, int(dc1))
-            )
-
-    async def _send_chunk_raw(self, writer, data: bytes, chunk_size: int = 512):
-        """Helper to stream pre-encoded raw byte chunks directly in smaller fragments."""
-        if not data:
-            return
-
-        # Slice and send the data in fixed-size buffers
-        for i in range(0, len(data), chunk_size):
-            sub_chunk = data[i : i + chunk_size]
-            writer.write(("%X\r\n" % len(sub_chunk)).encode("ascii"))
-            writer.write(sub_chunk)
-            writer.write(b"\r\n")
-            await writer.drain()
-            
-    async def send_control_web_page_raw(self, reader, writer):
-        """Streams HTML dashboard while pushing pre-encoded static CSS directly."""
-        async def send_chunk(text, chunk_size: int = 512):
-            if not text:
-                return
-            
-            # Process the text in smaller string slices
-            for i in range(0, len(text), chunk_size):
-                chunk_str = text[i : i + chunk_size]
-                data = chunk_str.encode("utf-8")
-                
-                writer.write(("%X\r\n" % len(data)).encode("utf-8"))
-                writer.write(data)
-                writer.write(b"\r\n")
-                await writer.drain()
-        try:
-            gc.collect()
-
-            header = (
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/html; charset=utf-8\r\n"
-                "Transfer-Encoding: chunked\r\n"
-                "Connection: close\r\n\r\n"
-            )
-            writer.write(header.encode("ascii"))
-            await writer.drain()
-
-            # HTML Shell Start
-            await self._send_chunk_raw(
-                writer,
-                b'<!DOCTYPE html><html><head>'
-                b'<meta name="viewport" content="width=device-width, initial-scale=1">'
-                b'<title>HUB - Status Dashboard</title><style>'
-            )
-
-            # Stream Static CSS directly from constant byte payload (zero allocations)
-            await self._send_chunk_raw(writer, DASHBOARD_CSS)
-
-            # HTML Shell Continuation
-            await self._send_chunk_raw(
-                writer,
-                b'</style><meta http-equiv="refresh" content="5"></head><body>'
-            )
-
-            try:
-                current_ms = getattr(self, "millis", utime.ticks_ms)()
-                start_time = getattr(self.hub, "discovery_start_time", 0)
-                timeout_ms = getattr(self.hub, "discovery_timeout_ms", 0)
-                discovery_timed_out = (
-                    utime.ticks_diff(current_ms, start_time) >= timeout_ms
-                )
-            except Exception:
-                discovery_timed_out = "N/A"
-
-            afe_manage_active = getattr(self.hub, "afe_manage_active", False)
-            rx_process_active = getattr(self.hub, "rx_process_active", False)
-
-            await send_chunk(
-                '<div class="card"><h2>Current HUB Status</h2><table>'
-                "<tr><th>Discovery Timed Out</th><td>%s</td></tr>"
-                "<tr><th>AFE Manage Active</th><td>%s</td></tr>"
-                "<tr><th>RX Process Active</th><td>%s</td></tr>"
-                "</table></div>"
-                % (
-                    (
-                        '<span class="badge-off">TRUE</span>'
-                        if discovery_timed_out is True
-                        else (
-                            '<span class="badge-on">FALSE</span>'
-                            if discovery_timed_out is False
-                            else "N/A"
-                        )
-                    ),
-                    (
-                        '<span class="badge-on">ACTIVE</span>'
-                        if afe_manage_active
-                        else '<span class="badge-off">INACTIVE</span>'
-                    ),
-                    (
-                        '<span class="badge-on">ACTIVE</span>'
-                        if rx_process_active
-                        else '<span class="badge-off">INACTIVE</span>'
-                    ),
-                )
-            )
-
-            afe_devices = getattr(self.hub, "afe_devices", [])
-            if afe_devices:
-                for afe in afe_devices:
-                    dev_id = getattr(afe, "device_id", "Unknown")
-                    config = getattr(afe, "configuration", {})
-
-                    is_online = getattr(afe, "is_online", False)
-                    firmware_version = getattr(afe, "firmware_version", "N/A")
-                    version_checked = getattr(afe, "version_checked", False)
-                    is_configured = getattr(afe, "is_configured", False)
-                    is_config_started = getattr(
-                        afe, "is_configuration_started", False
-                    )
-
-                    # Serialize configuration to raw JSON format
-                    try:
-                        config_json = (
-                            config
-                            if isinstance(config, str)
-                            else json.dumps(config)
-                        )
-                    except Exception:
-                        config_json = str(config)
-
-                    await send_chunk(
-                        '<div class="card"><h2>AFE Device: %s</h2><table>'
-                        "<tr><th>Online Status</th><td>%s</td></tr>"
-                        "<tr><th>Firmware Version</th><td><strong>%s</strong></td></tr>"
-                        "<tr><th>Version Checked</th><td>%s</td></tr>"
-                        "<tr><th>Configured</th><td>%s</td></tr>"
-                        "<tr><th>Configuration Started</th><td>%s</td></tr>"
-                        '<tr><th>Configuration (JSON)</th><td><div class="scroll-box"><pre>%s</pre></div></td></tr>'
-                        % (
-                            str(dev_id),
-                            (
-                                '<span class="badge-on">ONLINE</span>'
-                                if is_online
-                                else '<span class="badge-off">OFFLINE</span>'
-                            ),
-                            str(firmware_version),
-                            (
-                                '<span class="badge-on">YES</span>'
-                                if version_checked
-                                else '<span class="badge-off">NO</span>'
-                            ),
-                            (
-                                '<span class="badge-on">YES</span>'
-                                if is_configured
-                                else '<span class="badge-off">NO</span>'
-                            ),
-                            (
-                                '<span class="badge-on">YES</span>'
-                                if is_config_started
-                                else '<span class="badge-off">NO</span>'
-                            ),
-                            config_json if config_json else "N/A",
-                        )
-                    )
-                    # Serialize latest status to raw JSON format
-                    raw_status = getattr(afe, "latest_status", {})
-                    try:
-                        status_json = (
-                            raw_status
-                            if isinstance(raw_status, str)
-                            else json.dumps(raw_status)
-                        )
-                    except Exception:
-                        status_json = str(raw_status)
-
-                    # Render scrollable Raw JSON first
-                    await send_chunk('<tr><th>Latest Data (JSON)</th><td><div class="scroll-box"><pre>')
-                    await self._send_chunk_raw(writer, status_json)
-                    await send_chunk('</pre></div></td></tr>')
-                    # Render Visual Telemetry Card below the raw JSON
-                    status_html = self.format_afe_status_html(raw_status)
-                    self._send_format_afe_status_html(writer, raw_status)
-                    # if status_html:
-                    #     await send_chunk(
-                    #         "<tr><th>Telemetry Visual</th><td>%s</td></tr>"
-                    #         % status_html
-                    #     )
-
-                    # await send_chunk("</table></div>")
-                    gc.collect()
-            else:
-                await send_chunk(
-                    '<div class="card"><h2>AFE Devices</h2><p>No AFE devices detected.</p></div>'
-                )
-
-            free_ram = gc.mem_free()
-            uptime_s = int(utime.time())
-            active_clients = len(self.client_sockets)
-
-            await send_chunk(
-                '<div class="card"><h2>Server Metrics</h2><table>'
-                "<tr><th>Free RAM</th><td>%d bytes</td></tr>"
-                "<tr><th>Active Sockets</th><td>%d / %d</td></tr>"
-                "<tr><th>Uptime</th><td>%d s</td></tr>"
-                "</table></div></body></html>"
-                % (
-                    free_ram,
-                    active_clients,
-                    self.tcp_requests_max,
-                    uptime_s,
-                )
-            )
-            
-            # =========================================================================
-            # SD CARD STORAGE SPACE CALCULATION & UI
-            # =========================================================================
-
-            total_mb = 0.0
-            free_mb = 0.0
-            used_pct = 0.0
-            sd_mounted = False
-
-            try:
-                # statvfs returns: (f_bsize, f_frsize, f_blocks, f_bfree, f_bavail, f_files, f_ffree, f_favail, f_flag, f_namemax)
-                vfs = uos.statvfs("/sd")
-                
-                # Use f_frsize (fragment size) if available, fall back to f_bsize (block size)
-                block_size = vfs[1] if vfs[1] > 0 else vfs[0]
-                total_blocks = vfs[2]
-                free_blocks = vfs[3]
-
-                if total_blocks > 0:
-                    total_bytes = total_blocks * block_size
-                    free_bytes = free_blocks * block_size
-                    used_bytes = total_bytes - free_bytes
-
-                    total_mb = total_bytes / (1024 * 1024)
-                    free_mb = free_bytes / (1024 * 1024)
-                    used_pct = (used_bytes / total_bytes) * 100.0
-                    sd_mounted = True
-            except OSError:
-                sd_mounted = False
-
-            # Render SD Storage Metrics Card
-            if sd_mounted:
-                await send_chunk(
-                    '<div class="card"><h2>SD Card Storage Metrics</h2><table>'
-                    '<tr><th>Status</th><td><span class="badge-on">MOUNTED</span></td></tr>'
-                    '<tr><th>Total Space</th><td>%.2f MB</td></tr>'
-                    '<tr><th>Free Space</th><td>%.2f MB</td></tr>'
-                    '<tr><th>Usage</th><td>'
-                    '<div style="background:#333;border-radius:3px;overflow:hidden;width:100%%;max-width:200px;display:inline-block;vertical-align:middle;margin-right:8px;">'
-                    '<div style="background:%s;width:%.1f%%;height:12px;"></div>'
-                    '</div>%.1f%%'
-                    '</td></tr>'
-                    '</table></div>'
-                    % (
-                        total_mb,
-                        free_mb,
-                        "#dc3545" if used_pct > 90 else "#28a745",  # Turns red if >90% full
-                        used_pct,
-                        used_pct,
-                    )
-                )
-            else:
-                await send_chunk(
-                    '<div class="card"><h2>SD Card Storage Metrics</h2>'
-                    '<p><span class="badge-off">UNMOUNTED / NOT FOUND</span></p></div>'
-                )
-            
-            # Read log files safely
-            try:
-                raw_files = uos.listdir("/sd/logs")
-                log_files = self.sort_log_files(raw_files)
-            except OSError:
-                log_files = []
-
-            await send_chunk('<div class="card"><h2>SD Card Log Files</h2>')
-
-            if log_files:
-                await send_chunk(
-                    '<table><tr><th>Filename</th><th>Size</th><th>Action</th></tr>'
-                )
-                for file_name in log_files:
-                    filepath = "/sd/logs/" + file_name
-                    try:
-                        file_stat = uos.stat(filepath)
-                        size_bytes = file_stat[6]
-                        size_str = "%d KB" % (size_bytes // 1024) if size_bytes >= 1024 else "%d B" % size_bytes
-                    except OSError:
-                        size_str = "N/A"
-
-                    await send_chunk(
-                        '<tr><td><strong>%s</strong></td><td>%s</td>'
-                        '<td><a class="btn-dl" href="/download_log?file=%s">Download</a></td></tr>'
-                        % (file_name, size_str, file_name)
-                    )
-                await send_chunk('</table></div>')
-            else:
-                await send_chunk('<p>No log files found in <code>/sd/logs</code>.</p></div>')
-    
-            writer.write(b"0\r\n\r\n")
-            await writer.drain()
-
-        except OSError:
-            pass
-        finally:
-            writer.close()
-            await writer.wait_closed()
 
     # =========================================================================
     # RAW SOCKET POLLING & ZERO-ALLOCATION LOOP
