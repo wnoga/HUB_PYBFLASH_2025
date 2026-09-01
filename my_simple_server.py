@@ -1061,11 +1061,57 @@ class AsyncWebServer:
 
         except OSError:
             pass
+        
+    def _buffer_find(self, buf, pattern, start=0, end=None):
+        """
+        Find a byte sequence inside a bytearray without using
+        bytearray.find(), which is unavailable on MicroPython v1.16
+        STM32 builds.
 
+        Returns the starting index, or -1.
+        """
+        if end is None:
+            end = len(buf)
+
+        pattern_len = len(pattern)
+
+        if pattern_len == 0:
+            return start
+
+        max_start = end - pattern_len
+
+        if max_start < start:
+            return -1
+
+        i = start
+
+        while i <= max_start:
+            j = 0
+
+            while j < pattern_len:
+                if buf[i + j] != pattern[j]:
+                    break
+                j += 1
+
+            if j == pattern_len:
+                return i
+
+            i += 1
+
+        return -1
+    
     def _find_newline_and_length(self, buf, length):
-        for i in range(length):
+        """
+        Find LF in the received portion of the bytearray.
+        Returns position after LF, or -1.
+        """
+        i = 0
+
+        while i < length:
             if buf[i] == 10:  # '\n'
                 return i + 1
+            i += 1
+
         return -1
 
     async def _process_client_read(self, client_sock, client_info):
@@ -1148,7 +1194,12 @@ class AsyncWebServer:
             # -------------------------------------------------------------
             # Drain remaining HTTP headers.
             # -------------------------------------------------------------
-            header_end = buf.find(b"\r\n\r\n", request_line_len)
+            header_end = self._buffer_find(
+                buf,
+                b"\r\n\r\n",
+                request_line_len,
+                length
+            )
 
             while header_end < 0:
                 if length >= len(buf):
@@ -1171,7 +1222,12 @@ class AsyncWebServer:
                 length += nread
                 client_info["length"] = length
 
-                header_end = buf.find(b"\r\n\r\n", request_line_len)
+                header_end = self._buffer_find(
+                    buf,
+                    b"\r\n\r\n",
+                    request_line_len,
+                    length
+                )
 
             # -------------------------------------------------------------
             # Route request. Existing handlers now support raw sockets
