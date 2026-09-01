@@ -713,6 +713,7 @@ class AsyncWebServer:
         timeout_duration,
         required_params_map=None,
     ):
+        await p.print("_execute_afe_procedure", request_json)
         afe_id = request_json.get("afe_id", None)
         if afe_id is None:
             return ujson.dumps(
@@ -768,6 +769,7 @@ class AsyncWebServer:
             ).encode()
 
         async def _execute_and_wait():
+            await p.print("_execute_and_wait")
             await hub_method_ref(afe_id=afe_id, **hub_call_kwargs)
             await event.wait()
 
@@ -776,6 +778,7 @@ class AsyncWebServer:
                 _execute_and_wait(), timeout=timeout_duration
             )
             result_data = self.procedure_results.pop(afe_id, None)
+            await p.print("!!", result_data)
             return (
                 result_data
                 if result_data
@@ -908,7 +911,9 @@ class AsyncWebServer:
                 required_params_map={"dac_master": int, "dac_slave": int},
             )
             await self._send_raw(sock, res + b"\r\n")
-
+        elif procedure == "afe_set_sipm_voltage_si":
+            res = await self._execute_afe_procedure(request_json, "afe_set_sipm_voltage_si", 10.0, required_params_map={"voltage": float, "afe_subdevice": int})
+            await self._send_raw(sock, res + b"\r\n")
         else:
             await self._send_raw(
                 sock, b'{"status":"ERROR","info":"Unknown procedure"}\r\n'
@@ -1129,16 +1134,17 @@ class AsyncWebServer:
                         second_space = i
                         break
 
+            try:
+                procedure_json = json.loads(buf)
+                await p.print(procedure_json)
+                await self.handle_procedure_raw(buf, client_sock)
+                return
+            except:
+                pass
             if first_space <= 0 or second_space <= first_space + 1:
-                await p.print("@", length, buf)
-                try:
-                    procedure_json = json.loads(buf)
-                    # await p.print (procedure_json)
-                    await self.handle_procedure_raw(buf, client_sock)
-                except:
-                    await self._send_http_error(
-                        client_sock, 400, "Bad Request"
-                    )
+                await self._send_http_error(
+                    client_sock, 400, "Bad Request"
+                )
                 return
 
             method = bytes(buf[:first_space])
