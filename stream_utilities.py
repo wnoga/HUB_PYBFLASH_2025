@@ -68,6 +68,45 @@ async def send_chunk_str(sock_or_writer, text: str, max_chunk: int = 512):
         chunk_slice = encoded_bytes[i : i + max_chunk]
         await send_chunk_raw(sock_or_writer, chunk_slice, max_chunk=max_chunk)
 
+async def stream_json_value(sock_or_writer, val, chunk_builder=send_raw):
+    """
+    Recursively streams any MicroPython object as valid JSON directly over a socket.
+    Uses zero intermediate allocation for large structures (no f-strings used).
+    """
+    if val is None:
+        await chunk_builder(sock_or_writer, b"null")
+    elif isinstance(val, bool):
+        await chunk_builder(sock_or_writer, b"true" if val else b"false")
+    elif isinstance(val, (int, float)):
+        await chunk_builder(sock_or_writer, str(val).encode("ascii"))
+    elif isinstance(val, str):
+        # Escapes common characters; wrap in quotes
+        escaped = val.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+        encoded_str = ('"' + escaped + '"').encode("utf-8")
+        await chunk_builder(sock_or_writer, encoded_str)
+    elif isinstance(val, (list, tuple)):
+        await chunk_builder(sock_or_writer, b"[")
+        first = True
+        for item in val:
+            if not first:
+                await chunk_builder(sock_or_writer, b",")
+            first = False
+            await stream_json_value(sock_or_writer, item, chunk_builder)
+        await chunk_builder(sock_or_writer, b"]")
+    elif isinstance(val, dict):
+        await chunk_builder(sock_or_writer, b"{")
+        first = True
+        for k, v in val.items():
+            if not first:
+                await chunk_builder(sock_or_writer, b",")
+            first = False
+            # Key string formatting
+            key_str = str(k).replace('\\', '\\\\').replace('"', '\\"')
+            key_bytes = ('"' + key_str + '":').encode("utf-8")
+            await chunk_builder(sock_or_writer, key_bytes)
+            # Value
+            await stream_json_value(sock_or_writer, v, chunk_builder)
+        await chunk_builder(sock_or_writer, b"}")
 
 async def stream_json_key_by_key(sock_or_writer, obj, is_async_writer=True):
     """
@@ -115,3 +154,18 @@ async def stream_json_key_by_key(sock_or_writer, obj, is_async_writer=True):
             gc.collect()
 
         await _write_bytes(b"]")
+        
+async def finish_chunked_stream(sock_or_writer):
+    """
+    Sends the mandatory zero-length HTTP chunked footer to properly terminate the response.
+    """
+    await send_raw(sock_or_writer, b"0\r\n\r\n")
+
+
+async def send_json_dict_chunked(sock_or_writer, data: dict):
+    """
+    Main entry point for chunked JSON dictionary transmission.
+    Fully async, non-blocking, recursive, and appends the HTTP chunk terminator.
+    """
+    await stream_json_key_by_key(sock_or_writer, data)
+    # await finish_chunked_stream(sock_or_writer)

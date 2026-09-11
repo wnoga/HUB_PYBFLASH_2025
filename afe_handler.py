@@ -1,8 +1,9 @@
 import uasyncio as asyncio
 import ujson
 
-from stream_utilities import send_raw, stream_json_key_by_key
+from stream_utilities import send_raw, stream_json_key_by_key, stream_json_value
 from my_utilities import p
+import gc
 
 json = ujson
 
@@ -103,28 +104,46 @@ class AFEProcedureHandler:
             await send_raw(sock, b'{"status":"ERROR","info":"Procedure missing"}\r\n')
             return
 
-        if procedure == "get_all_afe_configuration":
+        elif procedure == "get_all_afe_configuration":
             await send_raw(sock, b"{")
             first = True
+            
             for afe_device in self.hub.afe_devices:
                 if not first:
                     await send_raw(sock, b",")
                 first = False
-                await send_raw(sock, ('"' + str(afe_device.device_id) + '":').encode())
-                await send_raw(sock, ujson.dumps(afe_device.configuration).encode())
+                
+                # Format key using direct string concatenation
+                key_bytes = ('"' + str(afe_device.device_id) + '":').encode("utf-8")
+                await send_raw(sock, key_bytes)
+                
+                # Stream configuration dict without ujson.dumps
+                await stream_json_value(sock, afe_device.configuration, chunk_builder=send_raw)
+                
+                gc.collect()
+                
             await send_raw(sock, b"}\r\n")
-
+            
         elif procedure == "get_all_latest_status":
             await send_raw(sock, b"{")
             first = True
+            
             for afe_device in self.hub.afe_devices:
                 if not first:
                     await send_raw(sock, b",")
                 first = False
-                await send_raw(sock, ('"' + str(afe_device.device_id) + '":').encode())
-                await stream_json_key_by_key(sock, afe_device.latest_status, is_async_writer=False)
+                
+                # Format key using direct string concatenation
+                key_bytes = ('"' + str(afe_device.device_id) + '":').encode("utf-8")
+                await send_raw(sock, key_bytes)
+                
+                # Stream configuration dict without ujson.dumps
+                await stream_json_value(sock, afe_device.latest_status, chunk_builder=send_raw)
+                
+                gc.collect()
+                
             await send_raw(sock, b"}\r\n")
-
+            
         elif procedure == "get_all_afe_id":
             ids = [str(afe.device_id) for afe in self.hub.afe_devices]
             res = '{"available_afe":[' + ",".join(ids) + "]}\r\n"
