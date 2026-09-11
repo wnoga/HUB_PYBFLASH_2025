@@ -1,76 +1,82 @@
-# stream_utilities.py
 import errno
 import gc
-import json
+import ujson as json
 import uasyncio as asyncio
 
 
-# =========================================================================
-# LOW-RAM RAW SOCKET HELPERS (ASYNC NON-BLOCKING)
-# =========================================================================
-
-async def send_raw(sock, data: bytes):
-    """Sends raw bytes over a non-blocking socket without high RAM allocation."""
-    total_sent = 0
-    view = memoryview(data)
-    while total_sent < len(view):
-        try:
-            sent = sock.send(view[total_sent:])
-            if sent == 0 or sent is None:
-                raise OSError("Socket closed by peer")
-            total_sent += sent
-        except OSError as e:
-            err = e.errno if hasattr(e, "errno") else (e.args[0] if e.args else None)
-            if err in (errno.EAGAIN, errno.ETIMEDOUT, 11, 110):
-                await asyncio.sleep_ms(10)
-                continue
-            raise e
-
-
-async def send_chunk_raw(writer, data: bytes, max_chunk: int = 512):
-    """Streams byte data using HTTP chunked encoding in max_chunk byte blocks."""
-    if not data:
+async def send_raw(sock_or_writer, raw_b: bytes):
+    """
+    Non-blocking socket/writer raw byte sender with retry on EAGAIN/EWOULDBLOCK.
+    """
+    if not raw_b:
         return
 
-    view = memoryview(data)
-    total_len = len(view)
-    offset = 0
+    # Check if object is a raw socket or a Stream
+    if hasattr(sock_or_writer, "send"):
+        view = memoryview(raw_b)
+        total_sent = 0
+        while total_sent < len(view):
+            try:
+                sent = sock_or_writer.send(view[total_sent:])
+                if sent is None or sent == 0:
+                    await asyncio.sleep_ms(10)
+                    continue
+                total_sent += sent
+            except OSError as e:
+                err = e.errno if hasattr(e, "errno") else (e.args[0] if e.args else None)
+                if err in (errno.EAGAIN, errno.EWOULDBLOCK, 11):
+                    await asyncio.sleep_ms(10)
+                else:
+                    raise e
+    else:
+        # uasyncio Stream
+        sock_or_writer.write(raw_b)
+        await sock_or_writer.drain()
 
-    while offset < total_len:
-        chunk_len = min(max_chunk, total_len - offset)
-        sub_chunk = view[offset : offset + chunk_len]
 
-        # HTTP Chunk header (<hex_size>\r\n)
-        header = ("%X\r\n" % chunk_len).encode("ascii")
-        writer.write(header)
-        writer.write(sub_chunk)
-        writer.write(b"\r\n")
-        await writer.drain()
+async def send_chunk_raw(sock_or_writer, raw_b: bytes, max_chunk: int = 512):
+    """
+    Streams raw byte data using HTTP Chunked Transfer Encoding (HEX_SIZE\\r\\nDATA\\r\\n).
+    Completely handles non-blocking EAGAIN retries.
+    """
+    if not raw_b:
+        return
 
-        offset += chunk_len
+    length = len(raw_b)
+    # 1. Format chunk header in uppercase Hexadecimal
+    chunk_header = ("%X\r\n" % length).encode("ascii")
+    
+    # 2. Transmit header, body payload, and trailing CRLF sequence
+    await send_raw(sock_or_writer, chunk_header)
+    await send_raw(sock_or_writer, raw_b)
+    await send_raw(sock_or_writer, b"\r\n")
 
 
-async def send_chunk_str(writer, text: str, max_chunk: int = 512):
-    """Encodes and streams string data in controlled chunk sizes."""
+async def send_chunk_str(sock_or_writer, text: str, max_chunk: int = 512):
+    """
+    Safely encodes string data to UTF-8 bytes first to avoid splitting 
+    multibyte characters, then streams in chunk blocks <= max_chunk.
+    """
     if not text:
         return
 
-    for i in range(0, len(text), max_chunk):
-        slice_str = text[i : i + max_chunk]
-        data = slice_str.encode("utf-8")
-        await send_chunk_raw(writer, data, max_chunk=max_chunk)
+    # Encode string to bytes first so multi-byte UTF-8 boundaries stay intact
+    encoded_bytes = text.encode("utf-8")
+    total_len = len(encoded_bytes)
+
+    for i in range(0, total_len, max_chunk):
+        chunk_slice = encoded_bytes[i : i + max_chunk]
+        await send_chunk_raw(sock_or_writer, chunk_slice, max_chunk=max_chunk)
 
 
-async def stream_json_key_by_key(writer_or_sock, obj, is_async_writer=True):
+async def stream_json_key_by_key(sock_or_writer, obj, is_async_writer=True):
     """
     Recursively serializes and streams JSON structures key-by-key
-    to keep memory allocations minimal on constrained MicroPython devices.
+    using HTTP Chunked Transfer Encoding to keep heap allocations minimal.
     """
     async def _write_bytes(raw_b):
-        if is_async_writer:
-            await send_chunk_raw(writer_or_sock, raw_b, max_chunk=512)
-        else:
-            await send_raw(writer_or_sock, raw_b)
+        # Always use chunked transfer encoding to keep response valid
+        await send_chunk_raw(sock_or_writer, raw_b, max_chunk=512)
 
     if obj is None:
         await _write_bytes(b"null")
@@ -88,10 +94,12 @@ async def stream_json_key_by_key(writer_or_sock, obj, is_async_writer=True):
                 await _write_bytes(b",")
             first = False
 
-            await _write_bytes(json.dumps(str(k)).encode("utf-8"))
+            # Format JSON string keys safely
+            key_str = str(k)
+            await _write_bytes(json.dumps(key_str).encode("utf-8"))
             await _write_bytes(b":")
 
-            await stream_json_key_by_key(writer_or_sock, v, is_async_writer)
+            await stream_json_key_by_key(sock_or_writer, v, is_async_writer)
             gc.collect()
 
         await _write_bytes(b"}")
@@ -103,7 +111,7 @@ async def stream_json_key_by_key(writer_or_sock, obj, is_async_writer=True):
                 await _write_bytes(b",")
             first = False
 
-            await stream_json_key_by_key(writer_or_sock, item, is_async_writer)
+            await stream_json_key_by_key(sock_or_writer, item, is_async_writer)
             gc.collect()
 
         await _write_bytes(b"]")

@@ -27,6 +27,7 @@ from stream_utilities import (
     send_raw,
     stream_json_key_by_key,
 )
+import my_webpage
 
 json = ujson
 
@@ -303,9 +304,10 @@ class AsyncWebServer:
 
             if method == "GET":
                 if request_path.startswith("/download_log"):
-                    await self.handle_log_download(request_path, None, client_sock)
+                    await my_webpage.handle_log_download(self, request_path, client_sock)
                 elif request_path in ("/", "/index.html"):
-                    await self.send_control_web_page_raw(None, client_sock)
+                    await p.print("@@", "index.html", " ========= ")
+                    await my_webpage.send_control_web_page_raw(self, client_sock)
                 else:
                     await self._send_http_error(client_sock, 404, "Not Found")
             else:
@@ -371,7 +373,6 @@ class AsyncWebServer:
             await asyncio.sleep_ms(getattr(self, "main_loop_yield_wait_ms", 20))
 
     async def sync_rtc_with_ntp(self):
-        global rtc_synced, p, rtc
         if not self.lan_connected:
             return False
 
@@ -401,7 +402,7 @@ class AsyncWebServer:
                 tm = time.gmtime(unix_secs - 946684800)
                 rtc.datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
                 self.ntp_synced = True
-                rtc_synced = True
+                my_utilities.rtc_synced = True
 
                 if not self.hub.logger.rtc_synced:
                     self.hub.logger.rtc_synced = True

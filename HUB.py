@@ -261,14 +261,15 @@ class HUBDevice:
 
             # Stop if 5 minutes (300,000 ms) have passed since discovery started
             if (utime.ticks_diff(millis(), self.discovery_start_time) >= self.discovery_timeout_ms) and (len(self.afe_devices) > 0):
-                await self.logger.log(
-                    VerbosityLevel["INFO"],
-                    {
-                        "device_id": 0,
-                        "timestamp_ms": millis(),
-                        "message": "Discovery timeout reached (5 minutes). Stopping.",
-                    },
-                )
+                if self.discovery_active:
+                    await self.logger.log(
+                        VerbosityLevel["INFO"],
+                        {
+                            "device_id": 0,
+                            "timestamp_ms": millis(),
+                            "message": "Discovery timeout reached (5 minutes). Stopping.",
+                        },
+                    )
                 self.stop_discovery()
                 return
 
