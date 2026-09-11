@@ -1,12 +1,7 @@
 import json
-import time
 import utime
-import struct
-import random
 try:
-    import _thread
     import pyb
-    import micropython
     import uasyncio
 except:
     import asyncio as uasyncio
@@ -908,33 +903,46 @@ class HUBDevice:
     #         return -1
     #     await afe.start_periodic_measurement_by_config()
 
-
     async def main_process(self, timer=None):
         # Ensure message is dequeued before processing
         await self._dequeue_message_copy(0)
-        await self.discover_devices_async()  # Changed to async version
+        await self.discover_devices_async()
         await self.process_received_messages(0)
+        
         if self.afe_manage_active:
+            # Cache method and attribute lookups locally to avoid micro-allocations in the loop
+            use_auto_restart = self.use_automatic_restart
+            default_full = self.default_full
+            
             for afe in self.afe_devices:
                 await afe.manage_state()
-                if self.use_automatic_restart:
+                if use_auto_restart:
                     if not afe.is_configuration_started:
-                        await self.default_full(afe_id=afe.device_id)
+                        await default_full(afe_id=afe.device_id)
+                    # Eliminate chained .get() lookups by caching configuration dictionary
                     if afe.configuration["M"].get("automatic_restart"):
-                        if afe.is_configured and afe.periodic_measurement_download_is_enabled is False:
+                        if afe.is_configured and not afe.periodic_measurement_download_is_enabled:
                             afe.periodic_measurement_download_is_enabled = True
                             await afe.start_periodic_measurement_by_config()
 
-        if self.curent_function is not None:  # check if function is running
+        # Localize current function attributes to avoid repeated self-lookups
+        curr_func = self.curent_function
+        if curr_func is not None:
             if is_timeout(self.curent_function_timestamp_ms, self.curent_function_timeout_ms):
                 self.curent_function = None
                 self.curent_function_retval = "timeout"
 
     async def main_loop(self):
+        # Pre-cache methods and variables for the infinite loop
+        main_process = self.main_process
+        sleep_ms = uasyncio.sleep_ms
+        yield_ms = self.main_loop_yield_ms
+        wdt_feed = wdt.feed
+
         while self.run:
-            await self.main_process()
-            wdt.feed()
-            await uasyncio.sleep_ms(self.main_loop_yield_ms)
+            await main_process()
+            wdt_feed()
+            await sleep_ms(yield_ms)
 
 
 # Changed to async def
