@@ -11,9 +11,9 @@ try:
 except:
     import asyncio as uasyncio
 
+from my_logger import JSONLogger
 from AFE import AFEDevice, AFECommand
-from my_utilities import JSONLogger, AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage, read_callibration_csv
-from my_utilities import channel_name_xxx, e_ADC_CHANNEL
+from my_utilities import AFECommandChannel, AFECommandSubdevice, AFECommandGPIO, AFECommandAverage
 from my_utilities import wdt
 from my_utilities import p
 from my_utilities import VerbosityLevel

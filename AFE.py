@@ -11,15 +11,15 @@ try:
 except:
     import asyncio as uasyncio
 
-from my_utilities import AFECommand, AFECommandGPIO, AFECommandChannel, AFECommandSubdevice, JSONLogger
+from my_logger import JSONLogger
+from my_utilities import AFECommand, AFECommandGPIO, AFECommandChannel, AFECommandSubdevice
 from my_utilities import millis, is_timeout, is_delay
 from my_utilities import e_ADC_CHANNEL, CommandStatus, ResetReason
 from my_utilities import p
 from my_utilities import VerbosityLevel
 from my_utilities import SensorChannel, AFECommandChannelMask, AFECommandAverage
 from my_utilities import extract_bracketed
-from my_utilities import rtc, rtc_synced, rtc_unix_timestamp
-from my_utilities import get_e_ADC_CHANNEL
+from my_utilities import rtc_unix_timestamp
 from my_utilities import convert_to_si
 from my_RxDeviceCAN import RxDeviceCAN
 

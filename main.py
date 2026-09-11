@@ -1,189 +1,133 @@
-# # main.py -- put your code here!
-# import misc
-# import afedrv
-# import server
-# import hub_test
-# import hub_interface_v3
+# main.py
 import pyb
 import uasyncio
 import micropython
-import _thread
 import sys
 import select
-import time
-# micropython.alloc_emergency_exception_buf(100)
-# import micropython
-# micropython.alloc_emergency_exception_buf(100)
+
 from my_utilities import p, wdt
-from my_utilities import JSONLogger
-from my_utilities import rtc_unix_timestamp, rtc, rtc_datetime_pretty
-from my_RxDeviceCAN import RxDeviceCAN
-# from my_utilities import lock
+from HUB import initialize_can_hub
+from my_simple_server import AsyncWebServer
+from my_logger import JSONLogger
+
+# Allocate emergency exception buffer for ISR and async exceptions
+micropython.alloc_emergency_exception_buf(100)
+
+# Configuration flags
+USE_ASYNC_SERVER = True
+USE_RX_CALLBACK = True
 
 
-can_bus = pyb.CAN(1)
-logger = JSONLogger(keep_file_open=True
-                    # ,parent_dir="/tmp/HUB_simulator/"
-                    )
-# print("RESTART") # This would need to be `await p.print` within an async context
-# wdt.feed()
-if False:
-    from my_database import SimpleFileDB, StatusFlags
-    db = SimpleFileDB()
-    db.save("test",StatusFlags.READY)
-    while True:
-        tmp = db.next(exclude_flags=0x00)
-        if tmp is None:
-            break
-        print(tmp)
-    print("#######")
-    db.read_pos = 0
-    cnt = 0
-    while True:
-        tmp = db.next(exclude_flags=0x00)
-        if tmp is None:
-            break
-        if cnt == 2:
-            db.update_status(tmp[0],StatusFlags.READY | StatusFlags.SAVED)
-        print(tmp)
-        cnt += 1
-    print("#######")
-    def t():
-        db.read_pos = 0
-        while True:
-            # tmp = db.next(exclude_flags=StatusFlags.SAVED | StatusFlags.SENT)
-            tmp = db.next(exclude_flags=StatusFlags.SAVED)
-            if tmp is None:
-                break
-            print("To send:",tmp)
-            
-can = None
-hub = None
-rxDeviceCAN = None # Initialize to None
-server = None # Initialize to None
+class HardwareConfig:
+    CAN_BUS_ID = 1
+    POLL_INTERVAL_MS = 50
+    AFE_ID_MIN = 1
+    AFE_ID_MAX = 99
+    TX_DELAY_MS = 1
 
-# Initialize components
-from HUB import initialize_can_hub # HUBDevice and RxDeviceCAN are returned by this
 
-use_async_server = True
-use_rxcallback = True
-
-async def periodic_tasks_loop():
-    """Handles periodic background tasks like watchdog, logging, and printing."""
-    await p.print("Periodic tasks loop started.") # Added await
+async def periodic_tasks_loop(logger):
+    """Background loop to feed hardware watchdog and service asynchronous logging queues."""
+    await p.print("Periodic background task started.")
     while True:
         wdt.feed()
-        await logger.machine()  # logger.machine() can have blocking I/O
-        await p.machine()  # p.process_queue() can have blocking I/O
-        await uasyncio.sleep_ms(50) # Overall frequency for this loop
-        
+        await logger.machine()  # Service buffered file system writes
+        await p.machine()       # Service print buffer
+        await uasyncio.sleep_ms(HardwareConfig.POLL_INTERVAL_MS)
 
-# Optional: you can use a globals dictionary to persist variables
-user_globals = {}
 
-async def async_repl():
-    print("Async REPL (type 'exit()' to quit):")
-    line = ''
+async def async_repl(user_globals):
+    """Non-blocking interactive REPL task over stdin/stdout."""
+    print("Async REPL initialized. Type 'exit()' or 'quit()' to detach.")
+    line = ""
+    
     while True:
-        # Check if data is available on stdin (non-blocking)
         if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
             char = sys.stdin.read(1)
-            if char in ('\n', '\r'):
-                if line.strip() in ('exit()', 'quit()'):
-                    print("Exiting REPL.")
+            
+            if char in ("\n", "\r"):
+                cmd = line.strip()
+                if cmd in ("exit()", "quit()"):
+                    print("Exiting REPL session.")
                     return
-                try:
-                    # Try evaluating the line
-                    result = eval(line, user_globals)
-                    if result is not None:
-                        print(repr(result))
-                except SyntaxError:
-                    # If not an expression, treat as statement
+                
+                if cmd:
                     try:
-                        exec(line, user_globals)
+                        result = eval(cmd, user_globals)
+                        if result is not None:
+                            print(repr(result))
+                    except SyntaxError:
+                        try:
+                            exec(cmd, user_globals)
+                        except Exception as e:
+                            print("Exec Error:", e)
                     except Exception as e:
-                        print("Exec error:", e)
-                except Exception as e:
-                    print("Eval error:", e)
-                line = ''  # Clear line buffer
-                print('>>> ', end='')  # Prompt again
+                        print("Eval Error:", e)
+                
+                line = ""
+                print(">>> ", end="")
+            elif char == "\x7f":  # Backspace handling
+                if line:
+                    line = line[:-1]
+                    print("\b \b", end="")
+            elif char == "\x1b":  # Drop escape sequences (arrow keys)
+                if sys.stdin.read(1) == "[":
+                    sys.stdin.read(1)
             else:
-                if char == '\x7f':  # Backspace
-                    if line:
-                        line = line[:-1]
-                        print('\b \b', end='')  # Erase character from terminal
-                elif char == '\x04':  # Ctrl+D (EOF)
-                    pass # Not implemented
-                else:
-                    # Handle arrow keys (common ANSI escape codes)
-                    if char == '\x1b':  # Start of an escape sequence
-                        next_char = sys.stdin.read(1)
-                        if next_char == '[':
-                            final_char = sys.stdin.read(1)
-                            if final_char == 'A': # Up arrow
-                                print("\nUp arrow pressed (not implemented)")
-                            elif final_char == 'B': # Down arrow
-                                print("\nDown arrow pressed (not implemented)")
-                            elif final_char == 'C': # Right arrow
-                                print("\nRight arrow pressed (not implemented)")
-                            elif final_char == 'D': # Left arrow
-                                print("\nLeft arrow pressed (not implemented)")
-                            continue # Skip adding escape sequence to line
-                    line += char
-                    print(char, end='') # Echo the character back to the user
-        await uasyncio.sleep(0.05)  # Yield to other tasks
+                line += char
+                print(char, end="")
+
+        await uasyncio.sleep_ms(50)
 
 
 async def main():
-    global can,hub,rxDeviceCAN,server
-    await p.print("Main async task started.") # Added await
+    await p.print("Initializing system components...")
 
-    # Create asyncio tasks list
-    tasks = []
-    
-    can, hub, rxDeviceCAN = await initialize_can_hub( # Added await
+    # Hardware & Subsystem Initialization
+    can_bus = pyb.CAN(HardwareConfig.CAN_BUS_ID)
+    logger = JSONLogger(keep_file_open=True)
+
+    can, hub, rx_device_can = await initialize_can_hub(
         can_bus=can_bus,
         logger=logger,
-        use_rxcallback=use_rxcallback,
-        use_automatic_restart=True
+        use_rxcallback=USE_RX_CALLBACK,
+        use_automatic_restart=True,
     )
 
-    # Configure HUB (moved here after hub is initialized)
+    # Hub Configuration
     hub.discovery_active = True
     hub.rx_process_active = True
     hub.use_tx_delay = True
     hub.afe_manage_active = True
-    hub.tx_delay_ms = 1
-    hub.afe_id_min = 1
-    hub.afe_id_max = 99 # Ensure this is less than afe_devices_max for discovery to stop if all found
-    await p.print("HUB configured.")
-    
-    if use_async_server:
-        from my_simple_server import AsyncWebServer
+    hub.tx_delay_ms = HardwareConfig.TX_DELAY_MS
+    hub.afe_id_min = HardwareConfig.AFE_ID_MIN
+    hub.afe_id_max = HardwareConfig.AFE_ID_MAX
+    await p.print("HUB initialized and configured.")
+
+    # Task Registration
+    tasks = [
+        uasyncio.create_task(hub.main_loop()),
+        uasyncio.create_task(rx_device_can.main_loop()),
+        uasyncio.create_task(periodic_tasks_loop(logger)),
+    ]
+
+    if USE_ASYNC_SERVER:
         server = AsyncWebServer(hub)
         tasks.append(uasyncio.create_task(server.start()))
+        await p.print("Async Web Server task detached.")
 
-    tasks.append(uasyncio.create_task(hub.main_loop()))
-    await p.print("hub.main_loop task created.") # Added await
+    # Optional REPL attach setup:
+    # repl_globals = {"hub": hub, "p": p, "logger": logger}
+    # tasks.append(uasyncio.create_task(async_repl(repl_globals)))
 
-    # if server:
-    #     tasks.append(uasyncio.create_task(server.sync_ntp_loop()))
-    #     await p.print("server.sync_ntp_loop task created.") # Added await
-    
-    tasks.append(uasyncio.create_task(rxDeviceCAN.main_loop()))
-    await p.print("rxDeviceCAN.main_loop task created.") # Added await
-    
-    # tasks.append(uasyncio.create_task(logger.writer_main_loop()))
-    # await p.print("logger.writer_main_loop task created.") # Added await
+    await p.print("All runtime tasks scheduled.")
 
-    tasks.append(uasyncio.create_task(periodic_tasks_loop()))
-    await p.print("periodic_tasks_loop task created.")
-    
-    # user_globals.update({'hub': hub, 'p': p, 'server': server})
-    # tasks.append(uasyncio.create_task(async_repl()))
+    # Block indefinitely while tasks execute concurrently
+    await uasyncio.gather(*tasks)
 
 
-loop = uasyncio.get_event_loop()
-loop.create_task(main())
-# _thread.start_new_thread(loop.run_forever, ()) # allow interactive mode (REPL)
-loop.run_forever() # Run withouth REPL
+if __name__ == "__main__":
+    try:
+        uasyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nSystem execution interrupted by user.")
