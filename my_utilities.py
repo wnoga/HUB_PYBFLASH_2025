@@ -443,3 +443,53 @@ async def get_configuration_from_files(
                         calibration[group][k] = default_val
 
     return calibration
+
+class PreallocatedRingBuffer:
+    """Fixed-size lock-free ring buffer designed for MicroPython zero-allocation enqueuing."""
+
+    def __init__(self, capacity=128):
+        self.capacity = capacity
+        # Pre-allocate array slots with placeholder mutable lists [level, message]
+        self._buf = [[0, ""] for _ in range(capacity)]
+        self._head = 0  # Write index
+        self._tail = 0  # Read index
+        self._size = 0
+
+    def is_full(self):
+        return self._size == self.capacity
+
+    def is_empty(self):
+        return self._size == 0
+
+    def push(self, level: int, message: str) -> bool:
+        """Overwrites pre-allocated slot without allocating memory."""
+        if self._size == self.capacity:
+            return False  # Buffer Full
+
+        # Mutate existing list elements in-place to avoid heap allocations
+        slot = self._buf[self._head]
+        slot[0] = level
+        slot[1] = message
+
+        self._head = (self._head + 1) % self.capacity
+        self._size += 1
+        return True
+
+    def pop_into(self, out_slot: list) -> bool:
+        """Copies next item into target `out_slot` [level, message] and frees internal slot."""
+        if self._size == 0:
+            return False
+
+        slot = self._buf[self._tail]
+        out_slot[0] = slot[0]
+        out_slot[1] = slot[1]
+
+        # Clear references in buffer slot to allow GC of message string if needed
+        slot[1] = ""
+
+        self._tail = (self._tail + 1) % self.capacity
+        self._size -= 1
+        return True
+
+    def __len__(self):
+        return self._size

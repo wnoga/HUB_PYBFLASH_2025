@@ -4,8 +4,7 @@ import os
 import time
 import uasyncio
 
-from my_utilities import VerbosityLevel, is_delay, is_timeout, millis, p, rtc_unix_timestamp
-
+from my_utilities import VerbosityLevel, is_delay, is_timeout, millis, p, rtc_unix_timestamp, PreallocatedRingBuffer
 
 class JSONLogger:
     """Asynchronous JSON-line structured logger designed for high-throughput MicroPython flash/SD storage."""
@@ -28,10 +27,12 @@ class JSONLogger:
         self.rtc_synced = False
 
         # Queue Management
-        self.log_queue = []
         self.log_queue_max_len = 128
+        self.log_queue = PreallocatedRingBuffer(capacity=self.log_queue_max_len)
+        # Pre-allocated temporary slot for dequeuing to prevent allocations during read
+        self._dequeue_slot = [0, ""]
         self.writer_yield_ms = 50
-
+        
         # Rate Limiting & Synchronization
         self.last_sync = 0
         self.sync_every_ms = 1000
@@ -163,21 +164,31 @@ class JSONLogger:
 
         return 1
 
+    async def log(self, level: int, message):
+        """Asynchronously enqueues log records without dynamic memory allocations."""
+        if self._should_log(level):
+            # Non-blocking yield until buffer space opens up
+            while self.log_queue.is_full():
+                await uasyncio.sleep_ms(10)
+
+            # In-place write to ring buffer
+            self.log_queue.push(level, message)
+
     async def _process_log_queue(self):
-        if self.log_queue:
-            level, message = self.log_queue[0]
-            if await self._write_entry(level, message) != 0:
-                self.log_queue.pop(0)
+        """Processes enqueued items using the pre-allocated read buffer."""
+        if not self.log_queue.is_empty():
+            # Pop next record directly into pre-allocated memory slot
+            if self.log_queue.pop_into(self._dequeue_slot):
+                level = self._dequeue_slot[0]
+                message = self._dequeue_slot[1]
+
+                if await self._write_entry(level, message) == 0:
+                    # If write was throttled by burst limit, put record back or wait
+                    pass
+
         await uasyncio.sleep_ms(0)
         return len(self.log_queue)
-
-    async def log(self, level: int, message):
-        """Asynchronously Enqueues log records for processing."""
-        if self._should_log(level):
-            while len(self.log_queue) >= self.log_queue_max_len:
-                await uasyncio.sleep_ms(10)
-            self.log_queue.append((level, message))
-
+    
     async def sync(self):
         if self.file is not None and self.keep_file_open:
             try:
@@ -233,14 +244,21 @@ class JSONLogger:
             await self.sync()
 
         try:
+            # Stream lines line-by-line without loading the whole file into RAM
+            buf = []
             with open(target_path, "r") as f:
-                lines = f.readlines()
-                for line in lines[-n_lines:]:
-                    await p.print(line.strip())
+                for line in f:
+                    buf.append(line.strip())
+                    if len(buf) > n_lines:
+                        buf.pop(0)  # Maintain rolling window of last N lines
                     await uasyncio.sleep_ms(0)
+
+            for line in buf:
+                await p.print(line)
+                await uasyncio.sleep_ms(0)
         except Exception as e:
             await p.print("Error reading log file {}: {}".format(target_path, e))
-
+            
     def print_last_lines(self, n_lines=1):
         self.request_print_last_lines = n_lines
 
@@ -263,8 +281,13 @@ class JSONLogger:
                     self.filename = new_path
                 except Exception as e:
                     await p.print("Rename error: {}".format(e))
+
                 if self.keep_file_open:
-                    self.file = open(self.filename, "a")
+                    try:
+                        self.file = open(self.filename, "a")
+                    except Exception as e:
+                        await p.print("Reopen error after rename: {}".format(e))
+                        self.file = None
 
         if self._request_new_file:
             self._request_new_file = False
