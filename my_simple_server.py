@@ -65,13 +65,6 @@ class AsyncWebServer:
         self.RESPONSE_SERVER_BUSY = b'{"status":"ERROR","info":"Server busy"}\r\n'
 
     def sort_log_files(self, file_list):
-        """
-        Sorts log files from latest to oldest.
-        Handles:
-        - Timestamped: log_YYYYMMDD_HHMMSS.json
-        - Unsynced indexed: log_1.json, log_2.json
-        - Unsynced base: log.json
-        """
         def file_sort_key(filename):
             if filename == "log.json":
                 return 1, 0
@@ -129,7 +122,6 @@ class AsyncWebServer:
         self.lan_connected = True
 
     async def _close_stream_or_socket(self, obj):
-        """Close either a raw socket or a uasyncio Stream."""
         if obj is None:
             return
         try:
@@ -144,7 +136,6 @@ class AsyncWebServer:
                 pass
 
     async def _send_http_error(self, writer, code, message):
-        """Send a small HTTP error through either raw socket or uasyncio writer."""
         try:
             body = ("<h1>%d %s</h1>" % (code, message)).encode("ascii")
             header = (
@@ -165,7 +156,6 @@ class AsyncWebServer:
             await self._close_stream_or_socket(writer)
 
     async def _recv_into_buffer(self, sock, buf, offset):
-        """Receive directly into an existing bytearray using MicroPython's socket.readinto()."""
         available = len(buf) - offset
         if available <= 0:
             return 0
@@ -178,13 +168,12 @@ class AsyncWebServer:
                 return 0
             return nread
         except OSError as e:
-            err = e.errno if hasattr(e, "errno") else e.args[0] if e.args else None
-            if err in (errno.EAGAIN, errno.EWOULDBLOCK, 11):
+            err = e.errno if hasattr(e, "errno") else (e.args[0] if e.args else None)
+            if err in (errno.EAGAIN, getattr(errno, "EWOULDBLOCK", errno.EAGAIN), 11):
                 return -1
             raise
 
     def _accept_client(self):
-        """Accept a client and register one fixed-size receive buffer."""
         try:
             client_sock, client_addr = self.server_sock.accept()
             if len(self.client_sockets) >= self.tcp_requests_max:
@@ -208,6 +197,7 @@ class AsyncWebServer:
                 "length": 0,
                 "start_time": utime.ticks_ms(),
                 "task": None,
+                "active": False,  # Flag to track active file processing
             }
             self.sock_map[sock_id] = client_sock
             self.poller.register(client_sock, uselect.POLLIN)
@@ -222,6 +212,7 @@ class AsyncWebServer:
 
     async def _process_client_read(self, client_sock, client_info):
         """Read and dispatch one HTTP or procedure request using only the raw socket."""
+        client_info["active"] = True  # Prevent timeout killer from closing active stream
         try:
             gc.collect()
             buf = client_info["buf"]
@@ -240,7 +231,7 @@ class AsyncWebServer:
                 if nread == 0:
                     return
                 if nread < 0:
-                    await asyncio.sleep_ms(5)
+                    await asyncio.sleep_ms(10)
                     continue
 
                 length += nread
@@ -292,7 +283,7 @@ class AsyncWebServer:
                 if nread == 0:
                     return
                 if nread < 0:
-                    await asyncio.sleep_ms(5)
+                    await asyncio.sleep_ms(10)
                     continue
 
                 length += nread
@@ -303,8 +294,6 @@ class AsyncWebServer:
             await p.print("@", method, "->", request_path)
             if method == "GET":
                 if request_path.startswith("/download_log"):
-                    # MUST use await here so the main loop waits for streaming to finish 
-                    # before reaching its sock.close() logic
                     await my_webpage.handle_log_download(self, request_path, client_sock)
                 elif request_path in ("/", "/index.html"):
                     await p.print("@@", "index.html", " ========= ")
@@ -359,6 +348,11 @@ class AsyncWebServer:
                 for sock_id, client_info in list(self.client_sockets.items()):
                     if not isinstance(client_info, dict):
                         continue
+                    
+                    # Ignore timeout for active file downloads
+                    if client_info.get("active", False):
+                        continue
+
                     sock = client_info.get("sock")
                     start_time = client_info.get("start_time", current_ms)
                     if sock is not None and utime.ticks_diff(current_ms, start_time) > timeout_ms:
@@ -417,7 +411,6 @@ class AsyncWebServer:
                 s.close()
 
     async def sync_ntp_loop(self):
-        """Periodically syncs RTC with NTP."""
         while True:
             is_synced = await self.sync_rtc_with_ntp()
             if is_synced:
@@ -426,7 +419,6 @@ class AsyncWebServer:
                 await asyncio.sleep(self.sync_ntp_loop_yield_wait_s)
 
     async def start(self):
-        """Main manager loop for socket server lifecycle and connection health."""
         while True:
             try:
                 wdt.feed()

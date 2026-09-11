@@ -356,10 +356,7 @@ async def handle_log_download(server_inst, request_path, sock):
                 break
 
     if not file_name or "/" in file_name or "\\" in file_name or ".." in file_name:
-        try:
-            await send_raw(sock, b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nInvalid file parameter")
-        except OSError:
-            pass
+        await send_raw(sock, b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nInvalid Parameter")
         return
 
     filepath = "/sd/logs/" + file_name
@@ -368,10 +365,7 @@ async def handle_log_download(server_inst, request_path, sock):
         file_stat = uos.stat(filepath)
         file_size = file_stat[6]
     except OSError:
-        try:
-            await send_raw(sock, b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nFile Not Found")
-        except OSError:
-            pass
+        await send_raw(sock, b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nFile Not Found")
         return
 
     try:
@@ -398,8 +392,5 @@ async def handle_log_download(server_inst, request_path, sock):
                 await asyncio.sleep_ms(2)
 
     except OSError as e:
-        # If client disconnects or socket closes mid-transfer, handle gracefully
-        if e.errno in (9, 104):  # EBADF (9) or ECONNRESET (104)
-            print("Client disconnected mid-download")
-        else:
-            print("Download error:", e)
+        # Prevent server crashes if the user cancels the download in browser
+        pass
