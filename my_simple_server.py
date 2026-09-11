@@ -63,6 +63,8 @@ class AsyncWebServer:
         self.poll_task = None
         self.ntp_task = None
         self.RESPONSE_SERVER_BUSY = b'{"status":"ERROR","info":"Server busy"}\r\n'
+        
+        self.log_download_sleep_ms = 50
 
     def sort_log_files(self, file_list):
         def file_sort_key(filename):

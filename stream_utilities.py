@@ -3,34 +3,65 @@ import gc
 import ujson as json
 import uasyncio as asyncio
 
-async def send_raw(sock_or_writer, raw_b: bytes):
+import errno
+try:
+    import uasyncio as asyncio
+except ImportError:
+    import asyncio
+
+
+async def send_raw(sock_or_writer, raw_b: bytes, timeout_ms: int = 5000):
     """
     Non-blocking socket/writer raw byte sender with retry on EAGAIN/EWOULDBLOCK.
     """
     if not raw_b:
         return
 
-    # Check if object is a raw socket or a Stream
+    # Check if object is a raw socket or a uasyncio Stream
     if hasattr(sock_or_writer, "send"):
         view = memoryview(raw_b)
         total_sent = 0
-        while total_sent < len(view):
+        total_len = len(view)
+        
+        # Cache module attributes locally for zero-allocation performance inside the loop
+        sleep = getattr(asyncio, "sleep_ms", None)
+        if sleep is None:
+            # Fallback for standard CPython asyncio
+            async def _sleep_ms(ms):
+                await asyncio.sleep(ms / 1000.0)
+            sleep = _sleep_ms
+
+        e_again = getattr(errno, "EAGAIN", 11)
+        e_wouldblock = getattr(errno, "EWOULDBLOCK", e_again)
+        
+        retries = 0
+        max_retries = timeout_ms // 10
+
+        while total_sent < total_len:
             try:
                 sent = sock_or_writer.send(view[total_sent:])
                 if sent is None or sent == 0:
-                    await asyncio.sleep_ms(10)
+                    retries += 1
+                    if retries > max_retries:
+                        raise OSError(e_again, "Socket send timed out / connection stall")
+                    await sleep(10)
                     continue
+                
+                # Progress made; reset retry counter
                 total_sent += sent
+                retries = 0
+
             except OSError as e:
                 err = e.errno if hasattr(e, "errno") else (e.args[0] if e.args else None)
-                # Safely fallback for missing errno constants in MicroPython
-                ewouldblock = getattr(errno, "EWOULDBLOCK", errno.EAGAIN)
-                if err in (errno.EAGAIN, ewouldblock, 11):
-                    await asyncio.sleep_ms(10)
+                if err in (e_again, e_wouldblock, 11):
+                    retries += 1
+                    if retries > max_retries:
+                        raise OSError(e_again, "Socket send retry limit reached")
+                    await sleep(10)
                 else:
                     raise e
     else:
-        # uasyncio Stream
+        # uasyncio Stream (StreamWriter or Stream)
         sock_or_writer.write(raw_b)
         await sock_or_writer.drain()
 

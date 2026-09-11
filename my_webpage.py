@@ -355,6 +355,7 @@ async def handle_log_download(server_inst, request_path, sock):
                 file_name = param.split("=", 1)[1]
                 break
 
+    # Security check for directory traversal
     if not file_name or "/" in file_name or "\\" in file_name or ".." in file_name:
         await send_raw(sock, b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nInvalid Parameter")
         return
@@ -369,28 +370,47 @@ async def handle_log_download(server_inst, request_path, sock):
         return
 
     try:
-        gc.collect()
-
+        # Pre-allocate header as bytes to prevent mid-stream encoding allocations
         header = (
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/octet-stream\r\n"
             'Content-Disposition: attachment; filename="%s"\r\n'
             "Content-Length: %d\r\n"
             "Connection: close\r\n\r\n" % (file_name, file_size)
-        )
-        await send_raw(sock, header.encode("ascii"))
+        ).encode("ascii")
+        
+        await send_raw(sock, header)
 
-        buf = bytearray(1024)
-        with open(filepath, "rb") as f:
+        # 1. Increased buffer size (4KB is generally optimal for SD card read alignment)
+        buf = bytearray(4096)
+        mv = memoryview(buf)
+        
+        # Cache local variables to speed up the loop execution inside MicroPython
+        readinto = open(filepath, "rb").__enter__().readinto
+        send_raw_func = send_raw
+        sleep_ms = server_inst.log_download_sleep_ms
+
+        try:
             while True:
-                nread = f.readinto(buf)
+                # 2. Read directly into the pre-allocated buffer
+                nread = readinto(buf)
                 if not nread:
                     break
 
-                chunk_view = memoryview(buf)[:nread]
-                await send_raw(sock, chunk_view)
-                await asyncio.sleep_ms(2)
+                # 3. Stream chunk using the pre-sliced view
+                await send_raw_func(sock, mv[:nread])
+                
+                # 4. Only yield to asyncio if a sleep value is explicitly configured
+                if sleep_ms > 0:
+                    await asyncio.sleep_ms(sleep_ms)
+        finally:
+            # Explicit cleanup since we extracted __enter__ manual binding
+            try:
+                # Accessing internal file reference via the readinto bound method self reference
+                readinto.__self__.close()
+            except:
+                pass
 
-    except OSError as e:
-        # Prevent server crashes if the user cancels the download in browser
+    except OSError:
+        # Network connection closed prematurely by the client browser
         pass
