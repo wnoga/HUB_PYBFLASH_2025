@@ -285,7 +285,7 @@ class SensorChannel:
         self.channel_id = channel_id
         self.config = {}
         self.name = e_ADC_CHANNEL.get(channel_id, "UNKNOWN")
-        self.last_received_data = {"last": {}, "average": {}}
+        self.last_recieved_data = {"last": {}, "average": {}}
 
 
 # --- Data Parsers & Utility Functions ---
