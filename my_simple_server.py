@@ -301,9 +301,10 @@ class AsyncWebServer:
                 await asyncio.sleep_ms(0)
 
             await p.print("@", method, "->", request_path)
-
             if method == "GET":
                 if request_path.startswith("/download_log"):
+                    # MUST use await here so the main loop waits for streaming to finish 
+                    # before reaching its sock.close() logic
                     await my_webpage.handle_log_download(self, request_path, client_sock)
                 elif request_path in ("/", "/index.html"):
                     await p.print("@@", "index.html", " ========= ")
@@ -312,7 +313,6 @@ class AsyncWebServer:
                     await self._send_http_error(client_sock, 404, "Not Found")
             else:
                 await self._send_http_error(client_sock, 405, "Method Not Allowed")
-
         except OSError:
             pass
         except Exception as e:

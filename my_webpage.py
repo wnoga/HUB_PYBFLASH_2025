@@ -3,6 +3,7 @@ import uos
 import utime
 import uasyncio as asyncio
 from stream_utilities import (
+    send_raw,
     send_chunk_raw,
     send_chunk_str,
     stream_json_key_by_key,
@@ -186,8 +187,6 @@ async def send_control_web_page_raw(server_inst, sock):
                     await send_chunk_str(sock, str(config), max_chunk=512)
 
                 await send_chunk_str(sock, "</pre></div></td></tr>", max_chunk=512)
-                await p.print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
-                await p.print(config)
                 # Stream Latest Data JSON Key-by-Key
                 raw_status = getattr(afe, "latest_status", {})
                 await send_chunk_str(
@@ -344,13 +343,9 @@ async def send_control_web_page_raw(server_inst, sock):
         pass
     finally:
         await server_inst._close_stream_or_socket(sock)
-
-
+        
+        
 async def handle_log_download(server_inst, request_path, sock):
-    """
-    Handles endpoint '/download_log?file=log_1.json'.
-    Streams requested file directly from SD card in 512-byte chunks.
-    """
     file_name = None
 
     if "?" in request_path:
@@ -361,15 +356,22 @@ async def handle_log_download(server_inst, request_path, sock):
                 break
 
     if not file_name or "/" in file_name or "\\" in file_name or ".." in file_name:
-        await server_inst._send_http_error(sock, 400, "Bad Request: Invalid file parameter")
+        try:
+            await send_raw(sock, b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nInvalid file parameter")
+        except OSError:
+            pass
         return
 
     filepath = "/sd/logs/" + file_name
 
     try:
         file_stat = uos.stat(filepath)
+        file_size = file_stat[6]
     except OSError:
-        await server_inst._send_http_error(sock, 404, "File Not Found")
+        try:
+            await send_raw(sock, b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nFile Not Found")
+        except OSError:
+            pass
         return
 
     try:
@@ -377,28 +379,27 @@ async def handle_log_download(server_inst, request_path, sock):
 
         header = (
             "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/json\r\n"
+            "Content-Type: application/octet-stream\r\n"
             'Content-Disposition: attachment; filename="%s"\r\n'
-            "Transfer-Encoding: chunked\r\n"
-            "Connection: close\r\n\r\n" % file_name
+            "Content-Length: %d\r\n"
+            "Connection: close\r\n\r\n" % (file_name, file_size)
         )
-        await send_chunk_raw(sock, header.encode("ascii"), max_chunk=512)
+        await send_raw(sock, header.encode("ascii"))
 
-        buf = bytearray(512)
+        buf = bytearray(1024)
         with open(filepath, "rb") as f:
             while True:
                 nread = f.readinto(buf)
-                if not nread or nread == 0:
+                if not nread:
                     break
 
                 chunk_view = memoryview(buf)[:nread]
-                await send_chunk_raw(sock, chunk_view, max_chunk=512)
-                gc.collect()
-                await asyncio.sleep_ms(0)
+                await send_raw(sock, chunk_view)
+                await asyncio.sleep_ms(2)
 
-        sock.send(b"0\r\n\r\n")
-
-    except OSError:
-        pass
-    finally:
-        await server_inst._close_stream_or_socket(sock)
+    except OSError as e:
+        # If client disconnects or socket closes mid-transfer, handle gracefully
+        if e.errno in (9, 104):  # EBADF (9) or ECONNRESET (104)
+            print("Client disconnected mid-download")
+        else:
+            print("Download error:", e)

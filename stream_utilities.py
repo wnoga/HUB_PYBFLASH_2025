@@ -3,7 +3,6 @@ import gc
 import ujson as json
 import uasyncio as asyncio
 
-
 async def send_raw(sock_or_writer, raw_b: bytes):
     """
     Non-blocking socket/writer raw byte sender with retry on EAGAIN/EWOULDBLOCK.
@@ -24,7 +23,9 @@ async def send_raw(sock_or_writer, raw_b: bytes):
                 total_sent += sent
             except OSError as e:
                 err = e.errno if hasattr(e, "errno") else (e.args[0] if e.args else None)
-                if err in (errno.EAGAIN, errno.EWOULDBLOCK, 11):
+                # Safely fallback for missing errno constants in MicroPython
+                ewouldblock = getattr(errno, "EWOULDBLOCK", errno.EAGAIN)
+                if err in (errno.EAGAIN, ewouldblock, 11):
                     await asyncio.sleep_ms(10)
                 else:
                     raise e
