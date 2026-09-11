@@ -159,7 +159,7 @@ class JSONLogger:
             return -1
 
         if level >= self.print_verbosity_level:
-            print("LOG:", str(message)[:60], "...")
+            print("LOG:", str(message))
 
         return 1
 

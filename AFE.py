@@ -1,47 +1,39 @@
-import json
-import time
 import struct
-import random
-
 try:
-    import pyb
-    # import machine # machine is not directly used here, pyb.millis is
-    import micropython
-    import uasyncio
-except:
+    import pyb, micropython, uasyncio
+except ImportError:
     import asyncio as uasyncio
 
 from my_logger import JSONLogger
-from my_utilities import AFECommand, AFECommandGPIO, AFECommandChannel, AFECommandSubdevice
-from my_utilities import millis, is_timeout, is_delay
-from my_utilities import e_ADC_CHANNEL, CommandStatus, ResetReason
-from my_utilities import p
-from my_utilities import VerbosityLevel
-from my_utilities import SensorChannel, AFECommandChannelMask, AFECommandAverage
-from my_utilities import extract_bracketed
-from my_utilities import rtc_unix_timestamp
-from my_utilities import convert_to_si
+from my_utilities import (
+    AFECommand, AFECommandGPIO, millis, is_timeout, is_delay, 
+    e_ADC_CHANNEL, CommandStatus, ResetReason, p, VerbosityLevel, 
+    SensorChannel, AFECommandChannelMask, AFECommandAverage, 
+    extract_bracketed, rtc_unix_timestamp, convert_to_si
+)
 from my_RxDeviceCAN import RxDeviceCAN
 
 
 class AFEDevice:
+    _STATUS_KEYS = (
+        'voltage', 'voltage_bytes', 'voltage_target', 'voltage_target_bytes',
+        'voltage_current', 'voltage_current_bytes', 'temperature_avg',
+        'temperature_last_bytes', 'temperature_old', 'V_offset'
+    )
+
     def __init__(self, can_interface: RxDeviceCAN, device_id, logger: JSONLogger, config_path=None):
         if not isinstance(can_interface, RxDeviceCAN):
-            raise RuntimeError(
-                "can_interface must be an instance of RxDeviceCAN")
+            raise RuntimeError('can_interface must be an instance of RxDeviceCAN')
+            
         self.can_interface = can_interface
-        self.device_id = device_id  # Channel number
-        self.unique_id = [0, 0, 0]  # 3*32-bit = 96-bit STM32 Unique ID
+        self.device_id = device_id
+        self.unique_id = [0, 0, 0]
         self.unique_id_str = None
-        self.logger: JSONLogger = logger
-        self.config_path = config_path  # Path to the config file
-
+        self.logger: JSONLogger = logger  # Fixed syntax error
+        self.config_path = config_path
         self.last_sync_afe_timestamp_ms = None
-
-        # Use this if communication is faster than the AFE
         self.use_tx_delay = True
         self.tx_timeout_ms = 50
-
         self.can_address = device_id << 2
         self.configuration = {}
         self.is_online = False
@@ -57,69 +49,56 @@ class AFEDevice:
         self.default_can_timeout_ms = 1000
         self.verbose = 2
         self.blink_status = 0
-
+        self.blink_is_enabled = False
         self.periodic_measurement_download_is_enabled = False
         self.temperatureLoop_master_is_enabled = False
         self.temperatureLoop_slave_is_enabled = False
-
         self.to_execute = []
         self.execute_timestamp = 0
         self.executing = None
-
         self.executed_max_len = 100
         self.save_periodic_data = True
         self.periodic_data = {}
-
         self.debug_machine_control_msg = [{}, {}]
-
-        self.AFEGPIO_EN_HV0 = AFECommandGPIO(port="PORTB", pin=10)
-        self.AFEGPIO_EN_HV1 = AFECommandGPIO(port="PORTB", pin=11)
-        self.AFEGPIO_EN_CAL_IN0 = AFECommandGPIO(port="PORTB", pin=15)
-        self.AFEGPIO_EN_CAL_IN1 = AFECommandGPIO(port="PORTB", pin=14)
-        self.AFEGPIO_blink = AFECommandGPIO(port="PORTA", pin=9)
-
+        self.debug_machine_control_msg_last = [{}, {}]
+        self.AFEGPIO_EN_HV0 = AFECommandGPIO(port='PORTB', pin=10)
+        self.AFEGPIO_EN_HV1 = AFECommandGPIO(port='PORTB', pin=11)
+        self.AFEGPIO_EN_CAL_IN0 = AFECommandGPIO(port='PORTB', pin=15)
+        self.AFEGPIO_EN_CAL_IN1 = AFECommandGPIO(port='PORTB', pin=14)
+        self.AFEGPIO_blink = AFECommandGPIO(port='PORTA', pin=9)
         self.afe_config = None
         self.afe_first_configured = None
-
         self.use_afe_can_watchdog = True
         self.afe_can_watchdog_timestamp_ms = 0
-        self.afe_can_watchdog_timeout_ms = 20*1000
-
+        self.afe_can_watchdog_timeout_ms = 20 * 1000
         self.init_timestamp_ms = 0
         self.init_wait_ms = 5000
-
-        self.current_status_last_data = [
-            {"timestamp_ms": None, "value": None} for x in range(self.total_channels)]
-        self.current_status_average_data = [
-            {"timestamp_ms": None, "value": None} for x in range(self.total_channels)]
-
+        self.current_status_last_data = [{'timestamp_ms': None, 'value': None} for _ in range(self.total_channels)]
+        self.current_status_average_data = [{'timestamp_ms': None, 'value': None} for _ in range(self.total_channels)]
         self.parsed_data = {}
         self.latest_status = {}
-        
         self.init_after_restart()
 
     def default_log_dict(self, extra_fields=None, timestamp_ms=None, unix_timestamp=None):
-        toReturn = {
-            "device_id": self.device_id,
-            "timestamp_ms": timestamp_ms or millis(),
-            "rtc_timestamp": unix_timestamp or rtc_unix_timestamp()
+        to_return = {
+            'device_id': self.device_id,
+            'timestamp_ms': timestamp_ms or millis(),
+            'rtc_timestamp': unix_timestamp or rtc_unix_timestamp()
         }
         if extra_fields:
-            for k, v in extra_fields.items():
-                toReturn[k] = v
-        return toReturn
+            to_return.update(extra_fields)
+        return to_return
 
     def trim_dict_for_logger(self, executing):
+        if not isinstance(executing, dict):
+            return executing
         trimmed = executing.copy()
-        keys_to_trim = ["frame", "callback", "callback_error"]
-        for key in keys_to_trim:
+        for key in ('frame', 'callback', 'callback_error'):
             trimmed.pop(key, None)
         return trimmed
 
     async def begin_configuration(self, timeout_ms=10000):
-        await self.logger.log(
-            VerbosityLevel["INFO"],
-            self.default_log_dict({"info": "begin_configuration"}))
+        await self.logger.log(VerbosityLevel['INFO'], self.default_log_dict({'info': 'begin_configuration'}))
         self.is_configuration_started = True
         self.configuration_timeout_ms = timeout_ms
         self.configuration_start_timestamp_ms = millis()
@@ -128,15 +107,13 @@ class AFEDevice:
     def end_configuration(self, success=True):
         self.is_configured = success
 
-    async def callback_is_configured(self, kwargs=None):  # Changed to async def
+    async def callback_is_configured(self, kwargs=None):
         self.afe_first_configured = {
-            "AFE_timestamp_ms": self.last_sync_afe_timestamp_ms,
-            "HUB_timestamp_ms": millis()
+            'AFE_timestamp_ms': self.last_sync_afe_timestamp_ms,
+            'HUB_timestamp_ms': millis()
         }
         self.end_configuration(success=True)
-        await self.logger.log(
-            VerbosityLevel["INFO"],
-            self.default_log_dict({"info": "configured"}))
+        await self.logger.log(VerbosityLevel['INFO'], self.default_log_dict({'info': 'configured'}))
 
     def init_after_restart(self):
         self.channels = [SensorChannel(x) for x in range(self.total_channels)]
@@ -156,200 +133,137 @@ class AFEDevice:
 
     def update_output(self, output, value_name, value, channel=None):
         if channel is None:
-            # Store the value outside if no channel is provided
             output[value_name] = value
         else:
-            # Find the correct channel and append the value
-            for entry in output.get("data", []):
-                if entry["channel"] == channel:
+            for entry in output.setdefault('data', []):
+                if entry.get('channel') == channel:
                     entry[value_name] = value
                     break
             else:
-                # If channel is not found, add a new entry
-                output.setdefault("data", []).append(
-                    {"channel": channel, value_name: value})
+                output['data'].append({'channel': channel, value_name: value})
         return output
 
-    async def restart_device(self):  # Changed to async def
-        self.current_command = None
-        self.last_command_time = 0
-        await self.can_interface.send(
-            bytearray([AFECommand.resetAll]), self.can_address, timeout_ms=1000)
+    async def restart_device(self):
+        self.executing = None
+        await self.can_interface.send(bytearray([AFECommand.resetAll]), self.can_address, timeout_ms=1000)
         self.init_after_restart()
 
-    async def print_all_channel_settings(self):  # Changed to async def
-        tmp = "AFE{}:\n".format(self.device_id)
-        for ch in self.channels:
-            tmp += "\t{}->{}\n".format(ch.name, ch.config)
-        # await p.print(tmp)
+    async def print_all_channel_settings(self):
+        pass
 
-    # Changed to async def
-    async def start_periodic_measurement_for_channels(self, report_every_ms, channels=0xFF):
-        await self.enqueue_u32_for_channel(
-            AFECommand.setSensorDataSi_periodic_average, channels, report_every_ms)
+    async def start_periodic_measurement_for_channels(self, report_every_ms, channels=255):
+        await self.enqueue_u32_for_channel(AFECommand.setSensorDataSi_periodic_average, channels, report_every_ms)
 
-    # Changed to async def
     async def start_periodic_measurement_by_config(self):
         report_every_ms = {}
-        for g in ["M", "S"]:
-            for k, v in self.configuration[g].items():
-                ks = k.split(" ")[0]
-                if not ks == "report_every":
+        for g in ('M', 'S'):
+            for (k, v) in self.configuration.get(g, {}).items():
+                ks = k.split(' ')[0]
+                if ks != 'report_every':
                     continue
                 unit = None
-                if len(k.split(" ")) > 1:
-                    unit = k.split(" ")[1]
-                    unit = extract_bracketed(unit)
-                    if len(unit):
-                        unit = unit[0]
-                    else:
-                        unit = None
-                time_sample_ms = v
-                if v:
-                    time_sample_ms = convert_to_si(v, unit)*1000  # to ms
-                else:
-                    time_sample_ms = 1000
-                time_sample_ms = int(round(time_sample_ms))
-                report_every_ms[g] = time_sample_ms
-        commandKwargs = {"timeout_ms": 10220,
-                         "preserve": True,
-                         "timeout_start_on_send_ms": 3000,
-                         "callback_error": self.start_periodic_measurement_by_config}
-        if report_every_ms.get("M") == report_every_ms.get("S"):
-            await self.enqueue_u32_for_channel(
-                AFECommand.setChannel_period_ms_byMask,
-                0xFF, report_every_ms.get("M"), **commandKwargs)
+                parts = k.split(' ')
+                if len(parts) > 1:
+                    unit_extracted = extract_bracketed(parts[1])
+                    unit = unit_extracted[0] if unit_extracted else None
+                time_sample_ms = convert_to_si(v, unit) * 1000 if v else 1000
+                report_every_ms[g] = int(round(time_sample_ms))
+        
+        command_kwargs = {
+            'timeout_ms': 10220,
+            'preserve': True,
+            'timeout_start_on_send_ms': 3000,
+            'callback_error': self.start_periodic_measurement_by_config
+        }
+        m_val = report_every_ms.get('M', 1000)
+        s_val = report_every_ms.get('S', 1000)
+        
+        if m_val == s_val:
+            await self.enqueue_u32_for_channel(AFECommand.setChannel_period_ms_byMask, 255, m_val, **command_kwargs)
         else:
-            await self.enqueue_u32_for_channel(
-                AFECommand.setChannel_period_ms_byMask,
-                AFECommandChannelMask.master, report_every_ms.get("M"),
-                **commandKwargs)
-            await self.enqueue_u32_for_channel(
-                AFECommand.setChannel_period_ms_byMask,
-                AFECommandChannelMask.slave, report_every_ms.get("S"),
-                **commandKwargs)
+            await self.enqueue_u32_for_channel(AFECommand.setChannel_period_ms_byMask, AFECommandChannelMask.master, m_val, **command_kwargs)
+            await self.enqueue_u32_for_channel(AFECommand.setChannel_period_ms_byMask, AFECommandChannelMask.slave, s_val, **command_kwargs)
 
-    def bytes_to_u16(self, data):
-        l = len(data)
-        if l == 2:
-            return struct.unpack('<H', bytes(data))[0]
-        elif l > 2:
-            return struct.unpack('<H', bytes(data[0:2]))[0]
-        else:
-            return None
+    @staticmethod
+    def bytes_to_u16(data):
+        return data[0] | (data[1] << 8) if len(data) >= 2 else None
 
-    # Convert byte list to 32-bit unsigned integer
-    def bytes_to_u32(self, data):
-        l = len(data)
-        if l == 4:
-            return struct.unpack('<I', bytes(data))[0]
-        elif l > 4:
-            return struct.unpack('<I', bytes(data[0:4]))[0]
-        else:
-            return None
+    @staticmethod
+    def bytes_to_u32(data):
+        return data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24) if len(data) >= 4 else None
 
-    # Convert byte list to float
-    def bytes_to_float(self, data):
-        l = len(data)
-        if l == 4:
-            return struct.unpack('<f', bytes(data))[0]
-        elif l > 4:
-            return struct.unpack('<f', bytes(data[0:4]))[0]
-        else:
-            return None
+    @staticmethod
+    def bytes_to_float(data):
+        return struct.unpack('<f', bytes(data[:4]))[0] if len(data) >= 4 else None
 
-    def unmask_channel(self, masked_channel):
-        masked_channel = int(masked_channel & 0xFF)
-        if masked_channel == 0:
+    @staticmethod
+    def unmask_channel(masked_channel):
+        if not isinstance(masked_channel, int):
             return []
-        else:
-            channels = []
-            for i in range(8):
-                if 0x01 & (masked_channel >> i):
-                    channels.append(i)
-            return channels
+        return [i for i in range(8) if (masked_channel & 0xFF & (1 << i))]
 
     def getChannelName(self, number: int) -> str:
-        return e_ADC_CHANNEL.get(number, "Unknown")
+        return e_ADC_CHANNEL.get(number, 'Unknown')
 
-    # Prepare frame payload for the AFE
-
-    def prepare_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms=None,
-                        preserve=False,
-                        # startKeepOutput=False, outputRestart=False,
-                        can_timeout_ms=None, callback=None, callback_error=None, **kwargs):
-        if data is None:
-            data = []
-        elif isinstance(data, int):
-            data = [data]
-        elif not (isinstance(data, list) and all(isinstance(i, int) for i in data)):
-            data = list(map(int, data))
-        timestamp_ms = millis()
-        chunk_info = (max_chunks << 4) | chunk
-        frame = bytearray([command, chunk_info] + data[:6])
+    def prepare_command(self, command, data=None, chunk=1, max_chunks=1, timeout_ms=None, preserve=False, can_timeout_ms=None, callback=None, callback_error=None, **kwargs):
+        payload = data[:6] if isinstance(data, (list, tuple)) else [data] if data is not None else []
+        frame = bytearray(2 + len(payload))
+        frame[0] = command
+        frame[1] = ((max_chunks & 0x0F) << 4) | (chunk & 0x0F)
+        for i, val in enumerate(payload):
+            frame[2 + i] = int(val) & 0xFF
+        now = millis()
         return {
-            "command": command,  # command
-            "frame": frame,  # payload
-            "device_id": self.device_id,  # AFE ID
-            "can_address": self.can_address,  # can address
-            "timeout_ms": self.default_command_timeout_ms if timeout_ms is None else timeout_ms,
-            "timestamp_ms": timestamp_ms,
-            "timestamp_ms_enqueued": timestamp_ms,
-            "can_timeout_ms": self.default_can_timeout_ms if can_timeout_ms is None else can_timeout_ms,
-            "status": CommandStatus.NONE,
-            "preserve": preserve,
-            "timeout_start_on_send_ms": None,  # if not None then timestamp_ms is restarted
-            "retval": None,
-            "callback": callback,
-            "callback_error": callback_error
+            'command': command,
+            'frame': frame,
+            'device_id': self.device_id,
+            'can_address': self.can_address,
+            'timeout_ms': timeout_ms or self.default_command_timeout_ms,
+            'timestamp_ms': now,
+            'timestamp_ms_enqueued': now,
+            'can_timeout_ms': can_timeout_ms or self.default_can_timeout_ms,
+            'status': CommandStatus.NONE,
+            'preserve': preserve,
+            'timeout_start_on_send_ms': kwargs.get('timeout_start_on_send_ms'),
+            'retval': None,
+            'callback': callback,
+            'callback_error': callback_error
         }
 
-    async def _enqueue_command(self, command, data=None, **kwargs):
-        while len(self.to_execute) > self.executed_max_len:
-            await uasyncio.sleep_ms(1)
-        self.to_execute.append(
-            self.prepare_command(command, data, **kwargs)
-        )
-        return None
-
     async def enqueue_command(self, command, data=None, **kwargs):
-        return await self._enqueue_command(command, data, **kwargs)
+        while len(self.to_execute) >= self.executed_max_len:
+            await uasyncio.sleep_ms(0)
+        self.to_execute.append(self.prepare_command(command, data, **kwargs))
 
     async def enqueue_gpio_set(self, gpio, state, **kwargs):
-        return await self.enqueue_command(AFECommand.writeGPIO,
-                                          [gpio.port, gpio.pin, state], **kwargs)
+        return await self.enqueue_command(AFECommand.writeGPIO, (gpio.port, gpio.pin, state), **kwargs)
 
     async def enqueue_float_for_channel(self, command, channel, value, **kwargs):
-        return await self.enqueue_command(
-            command, [channel] + list(struct.pack('<f', value)), **kwargs)
+        return await self.enqueue_command(command, [channel] + list(struct.pack('<f', value)), **kwargs)
 
     async def enqueue_u8_for_channel(self, command, channel, value, **kwargs):
-        return await self.enqueue_command(
-            command, [channel] + list(struct.pack('<B', value)), **kwargs)
+        return await self.enqueue_command(command, [channel, value & 0xFF], **kwargs)
 
     async def enqueue_u16_for_channel(self, command, channel, value, **kwargs):
-        return await self.enqueue_command(
-            command, [channel] + list(struct.pack('<H', value)), **kwargs)
+        return await self.enqueue_command(command, [channel, value & 0xFF, (value >> 8) & 0xFF], **kwargs)
 
     async def enqueue_u32_for_channel(self, command, channel, value, **kwargs):
-        return await self.enqueue_command(
-            command, [channel] + list(struct.pack('<I', value)), **kwargs)
+        return await self.enqueue_command(command, [channel, value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF, (value >> 24) & 0xFF], **kwargs)
 
     async def executing_error_handler(self):
-        self.executing["status"] = CommandStatus.ERROR
-        await self.logger.log(VerbosityLevel["ERROR"],
-                              self.default_log_dict(
-            {"error": "TIMEOUT", "executing": self.trim_dict_for_logger(self.executing)}))
-        if "callback_error" in self.executing:
+        executing = self.executing
+        if not executing:
+            return
+        executing['status'] = CommandStatus.ERROR
+        await self.logger.log(VerbosityLevel['ERROR'], self.default_log_dict({'error': 'TIMEOUT', 'executing': self.trim_dict_for_logger(executing)}))
+        callback_err = executing.get('callback_error')
+        if callable(callback_err):
             try:
-                if self.executing["callback_error"] is not None and callable(self.executing["callback_error"]):
-                    await p.print("Creating task for callback_error: {}".format(
-                        self.executing["callback_error"]))
-                    # If callback_error can be async, create a task for it
-                    uasyncio.create_task(self.executing["callback_error"](
-                        {"afe": self, "afe_id": self.device_id, "executing": self.executing}))
+                res = callback_err({'afe': self, 'afe_id': self.device_id, 'executing': executing})
+                if hasattr(res, '__await__'):
+                    await res
             except Exception as e:
-                await p.print("AFE executing_error_handler error invoking callback_error: {}".format(e))
+                await p.print('AFE callback_error exception: %s' % e)
         self.executing = None
 
     def request_new_file(self):
@@ -363,589 +277,409 @@ class AFEDevice:
             self.execute_timestamp = millis()
             cmd = self.to_execute.pop(0)
             self.executing = cmd
-            self.executing["status"] = CommandStatus.IDLE
-            if self.executing["timeout_start_on_send_ms"] is not None:
-                self.executing["timestamp_ms"] = millis()
-                self.executing["timeout_ms"] = self.executing["timeout_start_on_send_ms"]
+            cmd['status'] = CommandStatus.IDLE
+            timeout_start = cmd['timeout_start_on_send_ms']
+            if timeout_start is not None:
+                cmd['timestamp_ms'] = millis()
+                cmd['timeout_ms'] = timeout_start
             try:
-                if await self.can_interface.send(
-                        cmd.get("frame"), cmd.get("can_address"), cmd.get("can_timeout_ms", self.default_command_timeout_ms)):
+                frame = cmd['frame']
+                address = cmd['can_address']
+                timeout = cmd.get('can_timeout_ms', self.default_command_timeout_ms)
+                success = await self.can_interface.send(frame, address, timeout)
+                if not success:
                     await self.executing_error_handler()
+                else:
+                    await self.logger.log(VerbosityLevel['DEBUG'], self.default_log_dict({'debug': 'Sending %s' % cmd}))
             except Exception as e:
-                # Changed to await p.print
-                await p.print("Error executing command {} -> {} : {}".format(e, type(cmd), cmd))
-            else:
-                await self.logger.log(VerbosityLevel["DEBUG"],
-                                      self.default_log_dict(
-                    {"debug": "Sending {}".format(cmd)}))
+                await p.print('Error executing command %s -> %s : %s' % (e, type(cmd), cmd))
+                self.executing = None
 
     async def _handle_get_subdevice_status(self, target_status_list, chunk_id, chunk_payload):
-        """
-        Handles the processing of getSubdeviceStatus command responses.
-
-        This function parses the incoming CAN message payload for the
-        getSubdeviceStatus command and updates the provided target_status_list
-        (e.g., debug_machine_control_msg_last) with the relevant status information
-        for each subdevice (master/slave).
-
-        Args:
-            target_status_list (list): A list of dictionaries (typically of size 2,
-                                       for master and slave) to store the parsed status.
-            chunk_id (int): The chunk ID from the CAN message, used to determine
-                            which specific status field is being transmitted.
-            chunk_payload (list): The payload bytes from the CAN message.
-        """
+        channels = self.unmask_channel(chunk_payload[0])
+        if not channels:
+            return
         chunk_id_mod = chunk_id % 13
-        for uch in self.unmask_channel(chunk_payload[0]):
-            if chunk_id_mod == 0: # Voltage
-                target_status_list[uch] = {}  # Clear msg for this subdevice
-                target_status_list[uch]["channel"] = "master" if uch == 0 else "slave"
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["voltage"] = value
-            elif chunk_id_mod == 1: # Voltage in bytes
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["voltage_bytes"] = value
-            elif chunk_id_mod == 2: # Ramp Target voltage
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["voltage_target"] = value
-            elif chunk_id_mod == 3: # Ramp Target voltage in bytes
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["voltage_target_bytes"] = value
-            elif chunk_id_mod == 4: # Ramp current voltage
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["voltage_current"] = value
-            elif chunk_id_mod == 5: # Ramp current voltage in bytes
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["voltage_current_bytes"] = value
-            elif chunk_id_mod == 6: # Average temperature
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["temperature_avg"] = value
-            elif chunk_id_mod == 7: # Last temperature in bytes
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["temperature_last_bytes"] = value
-            elif chunk_id_mod == 8: # Old temperature
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["temperature_old"] = value
-            elif chunk_id_mod == 9: # V offset
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["V_offset"] = value
-            elif chunk_id_mod == 10: # Enabled?
-                target_status_list[uch]["temp_loop"] = "enabled" if chunk_payload[1] else "disabled"
-            elif chunk_id_mod == 11: # Ramp target reached
-                target_status_list[uch]["ramp_target_reached"] = "true" if chunk_payload[1] else "false"
-            elif chunk_id_mod == 12: # Timestamp
-                value = self.bytes_to_u32(chunk_payload[1:])
-                target_status_list[uch]["timestamp_ms"] = value
+        payload_data = chunk_payload[1:]
+        
+        if chunk_id_mod < 10:
+            value = self.bytes_to_float(payload_data)
+            key = self._STATUS_KEYS[chunk_id_mod]
+        elif chunk_id_mod == 10:
+            value = 'enabled' if payload_data[0] else 'disabled'
+            key = 'temp_loop'
+        elif chunk_id_mod == 11:
+            value = 'true' if payload_data[0] else 'false'
+            key = 'ramp_target_reached'
+        else:
+            value = self.bytes_to_u32(payload_data)
+            key = 'timestamp_ms'
+            
+        for uch in channels:
+            if chunk_id_mod == 0:
+                target_status_list[uch] = {'channel': 'master' if uch == 0 else 'slave'}
+            if uch < len(target_status_list) and isinstance(target_status_list[uch], dict):
+                target_status_list[uch][key] = value
 
-    async def process_received_data(self, received_data):  # Changed to async def
-        command = None
-        chunk_id = None
-        max_chunks = None
-        chunk_payload = []
+    async def process_received_data(self, received_data):
         parsed_data = self.parsed_data
-        if True:
-            data_bytes = list(bytes(received_data[3]))
-            device_id = (received_data[0] >> 2) & 0xFF
-            msg_from_slave = (received_data[0] >> 10) & 0x001
-            if msg_from_slave != 1:
-                await self.logger.log(VerbosityLevel["WARNING"],
-                                      self.default_log_dict({"debug": "Not from slave"}))
-                return
-            if device_id != self.device_id:
-                return
+        data_bytes = list(bytes(received_data[3]))
+        device_id = (received_data[0] >> 2) & 0xFF
+        msg_from_slave = (received_data[0] >> 10) & 0x01
+        
+        if msg_from_slave != 1:
+            await self.logger.log(VerbosityLevel['WARNING'], self.default_log_dict({'debug': 'Not from slave'}))
+            return
+        if device_id != self.device_id:
+            return
+        if len(data_bytes) < 2:
+            await self.logger.log(VerbosityLevel['ERROR'], self.default_log_dict({'error': 'Received CAN message with payload less than 2 bytes', 'payload': data_bytes}))
+            return
 
-            # Ensure the payload has at least 2 bytes for command and chunk_info
-            if len(data_bytes) < 2:
-                await self.logger.log(VerbosityLevel["ERROR"],
-                                      self.default_log_dict({"error": "Received CAN message with payload less than 2 bytes", "payload": data_bytes}))
-                return  # Skip processing this invalid message
+        command = int(data_bytes[0])
+        chunk_id = int(data_bytes[1] & 0x0F)
+        max_chunks = int((data_bytes[1] >> 4) & 0x0F)
+        chunk_payload = data_bytes[2:]
 
-            command = int(data_bytes[0])
-            chunk_id = int(data_bytes[1] & 0x0F)
-            max_chunks = int((data_bytes[1] >> 4) & 0x0F)
-            chunk_payload = data_bytes[2:]
-            await self.logger.log(VerbosityLevel["DEBUG"],
-                                  self.default_log_dict({"debug": "R: ID:{}; Command: 0x{:02X}: {}".format(
-                                      device_id, command, data_bytes)}))
+        await self.logger.log(VerbosityLevel['DEBUG'], self.default_log_dict({'debug': 'R: ID:{}; Command: 0x{:02X}: {}'.format(device_id, command, data_bytes)}))
 
-            if command == AFECommand.getSerialNumber:
-                await self.logger.log(VerbosityLevel["WARNING"],
-                                      self.default_log_dict({"debug": "R: ID:{}; Command: 0x{:02X}: {}".format(
-                                          device_id, command, data_bytes)}))
-                chunk_data = self.bytes_to_u32(chunk_payload)
-                if chunk_id == 0:
-                    self.unique_id_str = None
-                    self.unique_id = [0,0,0]
-                    self.output = {}
+        if command == AFECommand.getSerialNumber:
+            await self.logger.log(VerbosityLevel['WARNING'], self.default_log_dict({'debug': 'R: ID:{}; Command: 0x{:02X}: {}'.format(device_id, command, data_bytes)}))
+            chunk_data = self.bytes_to_u32(chunk_payload)
+            if chunk_id == 0:
+                self.unique_id_str = None
+                self.unique_id = [0, 0, 0]
+                self.output = {}
+            if chunk_id < len(self.unique_id):
                 self.unique_id[chunk_id] = chunk_data
-                if chunk_id == max_chunks:
-                    self.is_online = True
-                    self.current_command = None
-                    uid0 = 0x001E0028
-                    uid1 = 0x46415716
-                    uid2 = 0x20353634
-                    self.unique_id_str = "".join(
-                        "{:08X}".format(b) for b in self.unique_id)
-                    await self.logger.log(VerbosityLevel["INFO"],
-                                          self.default_log_dict(
-                        {"info": {"UID": self.unique_id_str}}))
-                    parsed_data["unique_id_str"] = self.unique_id_str
-                    self.configuration["UID"] = self.unique_id_str
+            if chunk_id == max_chunks:
+                self.is_online = True
+                self.current_command = None
+                self.unique_id_str = ''.join('{:08X}'.format(b) for b in self.unique_id)
+                await self.logger.log(VerbosityLevel['INFO'], self.default_log_dict({'info': {'UID': self.unique_id_str}}))
+                parsed_data['unique_id_str'] = self.unique_id_str
+                self.configuration['UID'] = self.unique_id_str
 
-            elif command == AFECommand.getVersion:
-                self.firmware_version = int("".join(map(str, chunk_payload)))
-                self.version_checked = True
-                parsed_data["version"] = self.firmware_version
+        elif command == AFECommand.getVersion:
+            self.firmware_version = int(''.join(map(str, chunk_payload)))
+            self.version_checked = True
+            parsed_data['version'] = self.firmware_version
 
-            elif command == AFECommand.resetAll:
-                self.init_after_restart()
-                await self.logger.log(VerbosityLevel["ERROR"],
-                                      self.default_log_dict(
-                    {"error": "AFE {} was restared! Reason {}".format(device_id, ResetReason[chunk_payload[0]])}))
-                await self.logger.sync()
+        elif command == AFECommand.resetAll:
+            self.init_after_restart()
+            reason_str = ResetReason.get(chunk_payload[0], 'Unknown') if chunk_payload else 'Unknown'
+            await self.logger.log(VerbosityLevel['ERROR'], self.default_log_dict({'error': 'AFE {} was restarted! Reason {}'.format(device_id, reason_str)}))
+            await self.logger.sync()
 
-            elif command == AFECommand.startADC:
-                pass
+        elif command == AFECommand.startADC:
+            pass
 
-            elif command == AFECommand.getTimestamp:
+        elif command == AFECommand.getTimestamp:
+            HUB_timestamp_ms = millis()
+            AFE_timestamp_ms = self.bytes_to_u32(chunk_payload[1:])
+            self.last_sync_afe_timestamp_ms = AFE_timestamp_ms
+            parsed_data['AFE_timestamp_ms'] = AFE_timestamp_ms
+            parsed_data['HUB_timestamp_ms'] = HUB_timestamp_ms
+
+        elif command == AFECommand.getSyncTimestamp:
+            if chunk_id == 0:
                 HUB_timestamp_ms = millis()
-                AFE_timestamp_ms = self.bytes_to_u32(
-                    chunk_payload[1:])
+                AFE_timestamp_ms = self.bytes_to_u32(chunk_payload[1:])
                 self.last_sync_afe_timestamp_ms = AFE_timestamp_ms
-                parsed_data["AFE_timestamp_ms"] = AFE_timestamp_ms
-                parsed_data["HUB_timestamp_ms"] = HUB_timestamp_ms
+                parsed_data['AFE_timestamp_ms'] = AFE_timestamp_ms
+                parsed_data['HUB_timestamp_ms'] = HUB_timestamp_ms
+            elif chunk_id == 1:
+                parsed_data['msg_recieved_by_AFE_timestamp_ms'] = self.bytes_to_u32(chunk_payload[1:])
 
-            elif command == AFECommand.getSyncTimestamp:
-                if chunk_id == 0:
-                    HUB_timestamp_ms = millis()
-                    AFE_timestamp_ms = self.bytes_to_u32(
-                        chunk_payload[1:])
-                    self.last_sync_afe_timestamp_ms = AFE_timestamp_ms
-                    parsed_data["AFE_timestamp_ms"] = AFE_timestamp_ms
-                    parsed_data["HUB_timestamp_ms"] = HUB_timestamp_ms
-                elif chunk_id == 1:
-                    parsed_data["msg_recieved_by_AFE_timestamp_ms"] = self.bytes_to_u32(
-                        chunk_payload[1:])
+        elif command == AFECommand.resetCAN:
+            reason = 'unknown'
+            AFE_timestamp_ms = None
+            if len(data_bytes) == 3:
+                reason = ResetReason.get(data_bytes[2], 'unknown')
+                self.init_after_restart()
+            elif len(data_bytes) == 7:
+                AFE_timestamp_ms = self.bytes_to_u32(data_bytes[2:6])
+                reason = 'runtime'
+            retval = {'reason': 'AFE CAN Error {}'.format(reason), 'timestamp_ms': millis()}
+            if AFE_timestamp_ms is not None:
+                retval['timestamp_ms'] = AFE_timestamp_ms
+            await self.logger.log(VerbosityLevel['ERROR'], self.default_log_dict({'error': 'AFE {} CAN bus reset'.format(device_id), 'retval': self.trim_dict_for_logger(retval)}))
 
-            elif command == AFECommand.resetCAN:
-                reason = "unknown"
-                AFE_timestamp_ms = None
-                if len(data_bytes) == 3: # AFE was restarted probably by hardware
-                    reason = ResetReason[data_bytes[2]]
-                    AFE_timestamp_ms = None
-                    self.init_after_restart()
-                elif len(data_bytes) == 7: # AFE was restarted during runtime
-                    AFE_timestamp_ms = self.bytes_to_u32(data_bytes[2:6])
-                    reason = "runtime"
-                retval = {"reason": "AFE CAN Error {}".format(reason), "timestamp_ms": millis()}
-                if AFE_timestamp_ms is not None:
-                    retval["timestamp_ms"] = AFE_timestamp_ms
-                await self.logger.log(VerbosityLevel["ERROR"],
-                                      self.default_log_dict({
-                                          "error": "AFE {} CAN bus reset".format(device_id),
-                                          "retval": self.trim_dict_for_logger(retval)
-                                      }))
-            elif command == AFECommand.getSubdeviceStatus:
-                await self._handle_get_subdevice_status(self.debug_machine_control_msg_last, chunk_id, chunk_payload)
-                if chunk_id == max_chunks:
-                    await p.print("XXXX", self.debug_machine_control_msg_last)
+        elif command == AFECommand.getSubdeviceStatus:
+            await self._handle_get_subdevice_status(self.debug_machine_control_msg_last, chunk_id, chunk_payload)
+            if chunk_id == max_chunks:
+                await p.print('XXXX', self.debug_machine_control_msg_last)
 
-            elif command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
-                pass
+        elif command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
+            pass
 
-            elif command == AFECommand.getSensorDataSi_last_byMask:
-                unmasked_channels = self.unmask_channel(chunk_payload[0])
-                if not "last_data" in parsed_data:
-                    parsed_data["last_data"] = {}
-                if chunk_id == max_chunks:
-                    parsed_data["last_data"].update(
-                        {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
-                else:
-                    for uch in unmasked_channels:
-                        parsed_data["last_data"].update(
-                            {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
-
-            elif command == AFECommand.getSensorDataSi_average_byMask:
-                unmasked_channels = self.unmask_channel(chunk_payload[0])
-                if not "average_data" in parsed_data:
-                    parsed_data["average_data"] = {}
-                if chunk_id == max_chunks:
-                    parsed_data["average_data"].update(
-                        {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
-                else:
-                    for uch in unmasked_channels:
-                        parsed_data["average_data"].update(
-                            {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
-
-            elif command == AFECommand.setAD8402Value_byte_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.configuration["M" if uch == 0 else "S"]["offset [bit]"] = self.bytes_to_u16(
-                        chunk_payload[1:])
-                    if 0x01 & (chunk_payload[2] >> uch):
-                        await self.logger.log(VerbosityLevel["ERROR"],
-                                              self.default_log_dict({"error": "AFE {}: ERROR setAD8402Value_byte_byMask for CH{}".format(
-                                                  device_id, uch
-                                              )}))
-                        # Error
-                        self.configuration["M" if uch ==
-                                           0 else "S"]["offset [bit]"] = None
-
-            elif command == AFECommand.setAveragingMode_byMask:
-                unmasked_channels = self.unmask_channel(chunk_payload[0])
-                for uch in unmasked_channels:
-                    averaging_mode = ''
-                    for a, v in AFECommandAverage.items():
-                        if v == chunk_payload[1]:
-                            averaging_mode = a
-                            break
-                    self.channels[uch].config["averaging_mode"] = averaging_mode
-
-            elif command == AFECommand.setAveragingAlpha_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.channels[uch].config["alpha"] = self.bytes_to_float(
-                        chunk_payload[1:])
-
-            elif command == AFECommand.setChannel_dt_ms_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.channels[uch].config["time_interval_ms"] = self.bytes_to_u32(
-                        chunk_payload[1:])
-
-            elif command == AFECommand.setChannel_a_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.channels[uch].config["a"] = self.bytes_to_float(
-                        chunk_payload[1:])
-
-            elif command == AFECommand.setChannel_b_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.channels[uch].config["b"] = self.bytes_to_float(
-                        chunk_payload[1:])
-                    
-            elif command == AFECommand.setRegulator_T_opt_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.channels[uch].config["T_opt"] = self.bytes_to_float(
-                        chunk_payload[1:])
-                    
-            elif command == AFECommand.setRegulator_dT_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.channels[uch].config["dT"] = self.bytes_to_float(
-                        chunk_payload[1:])
-
-            elif command == AFECommand.setRegulator_a_dac_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.channels[uch].config["a"] = self.bytes_to_float(
-                        chunk_payload[1:])
-
-            elif command == AFECommand.setRegulator_b_dac_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.channels[uch].config["b"] = self.bytes_to_float(
-                        chunk_payload[1:])
-
-            elif command == AFECommand.setRegulator_dV_dT_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.channels[uch].config["dV_dT"] = self.bytes_to_float(
-                        chunk_payload[1:])
-
-            elif command == AFECommand.setRegulator_V_opt_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.channels[uch].config["V_opt"] = self.bytes_to_float(
-                        chunk_payload[1:])
-
-            elif command == AFECommand.setRegulator_V_offset_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.channels[uch].config["V_offset"] = self.bytes_to_float(
-                        chunk_payload[1:])
-
-            elif command == AFECommand.setChannel_period_ms_byMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    self.channels[uch].config["period_ms"] = self.bytes_to_u32(
-                        chunk_payload[1:])
-
-            elif command == AFECommand.getSensorDataSi_periodic:
-                try:
-                    unmasked_channels = self.unmask_channel(chunk_payload[0])
-                    if not "last_data" in self.periodic_data:
-                        self.periodic_data["last_data"] = {}
-                    if not "average_data" in self.periodic_data:
-                        self.periodic_data["average_data"] = {}
-
-                    if chunk_id == 0:  # Last data: data bytes
-                        self.periodic_data = {}  # Clear periodic data if new chunk set arrived
-                        self.periodic_data["last_data"] = {}
-                        self.periodic_data["average_data"] = {}
-                        self.periodic_data["timestamp_ms"] = millis()
-                        for uch in unmasked_channels:
-                            self.periodic_data["last_data"].update(
-                                {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
-                    elif chunk_id == 1: # Last data as bytes
-                        for uch in unmasked_channels:
-                            self.periodic_data["last_data"].update(
-                                {"{}_bytes".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
-                    elif chunk_id == 2:  # Last data: data timestamp
-                        self.periodic_data["last_data"].update(
-                            {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
-                    elif chunk_id == 3:  # Average data: data
-                        for uch in unmasked_channels:
-                            self.periodic_data["average_data"].update(
-                                {"{}".format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
-                    elif chunk_id == 4:  # Average data: calculation timestamp
-                        self.periodic_data["average_data"].update(
-                            {"timestamp_ms": self.bytes_to_u32(chunk_payload[1:])})
-                    if chunk_id == max_chunks: # Data are parsed
-                        parsed_data = self.periodic_data
-
-                except Exception as e:
-                    await p.print("Error getSensorDataSi_periodic: {}: ".format(e))
-
-            # elif command == AFECommand.getSensorDataSiAndTimestamp_average_byMask:
-            #     channel = chunk_payload[0]
-            #     if chunk_id == 0:
-            #         value = self.bytes_to_float(chunk_payload[1:])  # value
-            #     elif chunk_id == 1:
-            #         value = self.bytes_to_u32(chunk_payload[1:])  # timestamp
-
-            elif command == AFECommand.writeGPIO:
-                pass
-            elif command == AFECommand.setCanMsgBurstDelay_ms:
-                await self.logger.log(VerbosityLevel["INFO"],
-                                      self.default_log_dict({
-                                          "info": "Changed CanMsgBurstDelay_ms on AFE to {}".format(
-                                              self.bytes_to_u32(chunk_payload[1:]))
-                                      }))
-                pass
-            elif command == AFECommand.setAfe_can_watchdog_timeout_ms:
-                self.afe_can_watchdog_timeout_ms = self.bytes_to_u32(
-                    chunk_payload[1:])
-                
-            elif command == AFECommand.setTemperatureLoop_loop_every_ms:
-                pass
-
-            elif command == AFECommand.setAveraging_max_dt_ms_byMask:
-                pass
-
-            elif command == AFECommand.setDACValueRaw_bySubdeviceMask:
-                pass
-            elif command == AFECommand.setDACValueSi_bySubdeviceMask:
-                pass
-
-            elif command == AFECommand.setDAC_bySubdeviceMask:
-                for uch in self.unmask_channel(chunk_payload[0]):
-                    if chunk_payload[2] & (1 << uch):
-                        pass
-                    else:
-                        pass
-            elif command == AFECommand.setDACTargetSi_bySubdeviceMask:
-                pass
-                    
-            elif command == AFECommand.debug_machine_control:
-                await self._handle_get_subdevice_status(self.debug_machine_control_msg, chunk_id, chunk_payload)
+        elif command == AFECommand.getSensorDataSi_last_byMask:
+            unmasked_channels = self.unmask_channel(chunk_payload[0])
+            if 'last_data' not in parsed_data:
+                parsed_data['last_data'] = {}
+            if chunk_id == max_chunks:
+                parsed_data['last_data'].update({'timestamp_ms': self.bytes_to_u32(chunk_payload[1:])})
             else:
-                await p.print("Unknow command: 0x{:02X}: {}".format(
-                    command, data_bytes))
-                return
+                for uch in unmasked_channels:
+                    parsed_data['last_data'].update({'{}'.format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
 
-            if self.executing is not None:
-                if command == self.executing["command"]:
-                    if self.executing["preserve"] == True:
-                        if self.executing.get("retval") is None:
-                            self.executing["retval"] = {}
-                        for key, value in parsed_data.items():
-                            if key not in self.executing["retval"]:
-                                self.executing["retval"][key] = value
-                            elif isinstance(self.executing["retval"][key], dict) and isinstance(value, dict):
-                                self.executing["retval"][key].update(value)
-                            else:
-                                self.executing["retval"][key] = value
-            if chunk_id == max_chunks and received_data:
+        elif command == AFECommand.getSensorDataSi_average_byMask:
+            unmasked_channels = self.unmask_channel(chunk_payload[0])
+            if 'average_data' not in parsed_data:
+                parsed_data['average_data'] = {}
+            if chunk_id == max_chunks:
+                parsed_data['average_data'].update({'timestamp_ms': self.bytes_to_u32(chunk_payload[1:])})
+            else:
+                for uch in unmasked_channels:
+                    parsed_data['average_data'].update({'{}'.format(e_ADC_CHANNEL.get(uch)): self.bytes_to_float(chunk_payload[1:])})
+
+        elif command == AFECommand.setAD8402Value_byte_byMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                subdev = 'M' if uch == 0 else 'S'
+                subdev_cfg = self.configuration.setdefault(subdev, {})
+                subdev_cfg['offset [bit]'] = self.bytes_to_u16(chunk_payload[1:])
+                if (chunk_payload[2] >> uch) & 1:
+                    await self.logger.log(VerbosityLevel['ERROR'], self.default_log_dict({'error': 'AFE {}: ERROR setAD8402Value_byte_byMask for CH{}'.format(device_id, uch)}))
+                    subdev_cfg['offset [bit]'] = None
+
+        elif command == AFECommand.setAveragingMode_byMask:
+            unmasked_channels = self.unmask_channel(chunk_payload[0])
+            for uch in unmasked_channels:
+                averaging_mode = ''
+                for (a, v) in AFECommandAverage.items():
+                    if v == chunk_payload[1]:
+                        averaging_mode = a
+                        break
+                self.channels[uch].config['averaging_mode'] = averaging_mode
+
+        elif command == AFECommand.setAveragingAlpha_byMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                self.channels[uch].config['alpha'] = self.bytes_to_float(chunk_payload[1:])
+
+        elif command == AFECommand.setChannel_dt_ms_byMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                self.channels[uch].config['time_interval_ms'] = self.bytes_to_u32(chunk_payload[1:])
+
+        elif command == AFECommand.setChannel_a_byMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                self.channels[uch].config['a'] = self.bytes_to_float(chunk_payload[1:])
+
+        elif command == AFECommand.setChannel_b_byMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                self.channels[uch].config['b'] = self.bytes_to_float(chunk_payload[1:])
+
+        elif command == AFECommand.setRegulator_T_opt_byMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                self.channels[uch].config['T_opt'] = self.bytes_to_float(chunk_payload[1:])
+
+        elif command == AFECommand.setRegulator_dT_byMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                self.channels[uch].config['dT'] = self.bytes_to_float(chunk_payload[1:])
+
+        elif command == AFECommand.setRegulator_a_dac_byMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                self.channels[uch].config['a'] = self.bytes_to_float(chunk_payload[1:])
+
+        elif command == AFECommand.setRegulator_b_dac_byMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                self.channels[uch].config['b'] = self.bytes_to_float(chunk_payload[1:])
+
+        elif command == AFECommand.setRegulator_dV_dT_byMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                self.channels[uch].config['dV_dT'] = self.bytes_to_float(chunk_payload[1:])
+
+        elif command == AFECommand.setRegulator_V_opt_byMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                self.channels[uch].config['V_opt'] = self.bytes_to_float(chunk_payload[1:])
+
+        elif command == AFECommand.setRegulator_V_offset_byMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                self.channels[uch].config['V_offset'] = self.bytes_to_float(chunk_payload[1:])
+
+        elif command == AFECommand.setChannel_period_ms_byMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                self.channels[uch].config['period_ms'] = self.bytes_to_u32(chunk_payload[1:])
+
+        elif command == AFECommand.getSensorDataSi_periodic:
+            try:
+                unmasked_channels = self.unmask_channel(chunk_payload[0])
+                if chunk_id == 0:
+                    self.periodic_data = {
+                        'last_data': {},
+                        'average_data': {},
+                        'timestamp_ms': millis()
+                    }
+                    for uch in unmasked_channels:
+                        self.periodic_data['last_data']['{}'.format(e_ADC_CHANNEL.get(uch))] = self.bytes_to_float(chunk_payload[1:])
+                elif chunk_id == 1:
+                    for uch in unmasked_channels:
+                        self.periodic_data.setdefault('last_data', {})['{}_bytes'.format(e_ADC_CHANNEL.get(uch))] = self.bytes_to_float(chunk_payload[1:])
+                elif chunk_id == 2:
+                    self.periodic_data.setdefault('last_data', {})['timestamp_ms'] = self.bytes_to_u32(chunk_payload[1:])
+                elif chunk_id == 3:
+                    for uch in unmasked_channels:
+                        self.periodic_data.setdefault('average_data', {})['{}'.format(e_ADC_CHANNEL.get(uch))] = self.bytes_to_float(chunk_payload[1:])
+                elif chunk_id == 4:
+                    self.periodic_data.setdefault('average_data', {})['timestamp_ms'] = self.bytes_to_u32(chunk_payload[1:])
+                
+                if chunk_id == max_chunks:
+                    parsed_data = self.periodic_data
+            except Exception as e:
+                await p.print('Error getSensorDataSi_periodic: {}: '.format(e))
+
+        elif command == AFECommand.writeGPIO:
+            pass
+
+        elif command == AFECommand.setCanMsgBurstDelay_ms:
+            await self.logger.log(VerbosityLevel['INFO'], self.default_log_dict({'info': 'Changed CanMsgBurstDelay_ms on AFE to {}'.format(self.bytes_to_u32(chunk_payload[1:]))}))
+
+        elif command == AFECommand.setAfe_can_watchdog_timeout_ms:
+            self.afe_can_watchdog_timeout_ms = self.bytes_to_u32(chunk_payload[1:])
+
+        elif command == AFECommand.setTemperatureLoop_loop_every_ms:
+            pass
+        elif command == AFECommand.setAveraging_max_dt_ms_byMask:
+            pass
+        elif command == AFECommand.setDACValueRaw_bySubdeviceMask:
+            pass
+        elif command == AFECommand.setDACValueSi_bySubdeviceMask:
+            pass
+        elif command == AFECommand.setDAC_bySubdeviceMask:
+            for uch in self.unmask_channel(chunk_payload[0]):
+                if chunk_payload[2] & (1 << uch):
+                    pass
+                else:
+                    pass
+        elif command == AFECommand.setDACTargetSi_bySubdeviceMask:
+            pass
+        elif command == AFECommand.debug_machine_control:
+            await self._handle_get_subdevice_status(self.debug_machine_control_msg, chunk_id, chunk_payload)
+        else:
+            await p.print('Unknown command: 0x{:02X}: {}'.format(command, data_bytes))
+            return
+
+        # State updates upon complete command chunk sequences
+        if self.executing is not None and command == self.executing['command']:
+            if self.executing.get('preserve') is True:
+                if self.executing.get('retval') is None:
+                    self.executing['retval'] = {}
                 for key, value in parsed_data.items():
+                    if key not in self.executing['retval']:
+                        self.executing['retval'][key] = value
+                    elif isinstance(self.executing['retval'][key], dict) and isinstance(value, dict):
+                        self.executing['retval'][key].update(value)
+                    else:
+                        self.executing['retval'][key] = value
 
-                    if isinstance(value, dict):
-                        # Nested data, e.g. last_data / average_data
-                        if key == "last_data":
-                            timestamp_ms = value.get("timestamp_ms")
-                        else:
-                            timestamp_ms = parsed_data.get("timestamp_ms")
-
-                        if timestamp_ms is None:
+        if chunk_id == max_chunks and received_data:
+            for key, value in parsed_data.items():
+                if isinstance(value, dict):
+                    timestamp_ms = value.get('timestamp_ms') if key == 'last_data' else parsed_data.get('timestamp_ms')
+                    if timestamp_ms is None:
+                        continue
+                    if key not in self.latest_status:
+                        self.latest_status[key] = {}
+                    for k, v in value.items():
+                        if k == 'timestamp_ms':
                             continue
+                        self.latest_status[key][k] = {'timestamp_ms': timestamp_ms, 'value': v}
+                else:
+                    timestamp_ms = parsed_data.get('timestamp_ms', millis())
+                    self.latest_status[key] = {'timestamp_ms': timestamp_ms, 'value': value}
 
-                        if key not in self.latest_status:
-                            self.latest_status[key] = {}
+            if self.executing is not None and command == self.executing['command']:
+                self.executing['status'] = CommandStatus.RECIEVED
+                await self.logger.log(VerbosityLevel['DEBUG'], self.default_log_dict({'debug': 'END 0x{:02X}'.format(command)}))
+                
+                try:
+                    if 'callback' in self.executing and callable(self.executing['callback']):
+                        uasyncio.create_task(self.executing['callback'](self.executing))
+                except Exception as e_cb:
+                    await self.logger.log(VerbosityLevel['ERROR'], self.default_log_dict({'info': self.trim_dict_for_logger(self.executing), 'error': 'callback error: {}'.format(e_cb)}))
 
-                        for k, v in value.items():
-                            if k == "timestamp_ms":
-                                continue
+                if self.executing.get('preserve') is True:
+                    toLog = self.default_log_dict({
+                        'request_timestamp_ms': self.executing.get('timestamp_ms'),
+                        'command': command,
+                        'retval': self.trim_dict_for_logger(self.executing.get('retval'))
+                    })
+                    await self.logger.log(VerbosityLevel['MEASUREMENT'], toLog)
+                self.executing = None
 
-                            self.latest_status[key][k] = {
-                                "timestamp_ms": timestamp_ms,
-                                "value": v
+            if self.save_periodic_data is True and command == AFECommand.getSensorDataSi_periodic:
+                toLog = None
+                try:
+                    toLog = self.default_log_dict({'command': AFECommand.getSensorDataSi_periodic, 'retval': self.trim_dict_for_logger(self.periodic_data)})
+                    channel_timestamp = self.periodic_data.get('timestamp_ms')
+                    last_data = self.periodic_data.get('last_data')
+                    average_data = self.periodic_data.get('average_data')
+
+                    for ch in self.channels:
+                        if last_data and ch.name in last_data:
+                            ch.last_recieved_data['last'] = {
+                                'value': last_data[ch.name],
+                                'bytes': last_data.get(ch.name + '_bytes'),
+                                'timestamp_ms': channel_timestamp
                             }
+                        if average_data and ch.name in average_data:
+                            ch.last_recieved_data['average'] = {
+                                'value': average_data[ch.name],
+                                'timestamp_ms': channel_timestamp
+                            }
+                    await self.logger.log(VerbosityLevel['MEASUREMENT'], toLog)
+                except Exception as e:
+                    await p.print('ERROR during save_periodic_data:', e, toLog)
+                finally:
+                    self.periodic_data = {}
 
-                    else:
-                        # Simple value, e.g. version, AFE_timestamp_ms, etc.
-                        timestamp_ms = parsed_data.get("timestamp_ms")
-
-                        if timestamp_ms is None:
-                            timestamp_ms = millis()
-
-                        self.latest_status[key] = {
-                            "timestamp_ms": timestamp_ms,
-                            "value": value
-                        }
-                # await p.print("%", str(self.latest_status).replace("'",'"'))
-                    # s = "$ " + str(key) + " -> " + str(value)
-                    # await p.print(s)
-                #     self.latest_status["key"]
-                # await p.print("$", parsed_data)
-                if self.executing is not None:
-                    if command == self.executing["command"]:
-                        self.executing["status"] = CommandStatus.RECIEVED
-                        await self.logger.log(
-                            VerbosityLevel["DEBUG"], self.default_log_dict({
-                                "debug": "END 0x{:02X}".format(command)}))
-                        try:
-                            if "callback" in self.executing and callable(self.executing["callback"]):
-                                # If callback can be async, create a task for it
-                                # Assuming callback_is_configured is now async
-                                uasyncio.create_task(
-                                    self.executing["callback"](self.executing))
-                        except Exception as e_cb:
-                            await self.logger.log(
-                                VerbosityLevel["ERROR"],
-                                self.default_log_dict({
-                                    "info": self.trim_dict_for_logger(self.executing),
-                                    "error": "callback error: {}".format(e_cb)}))
-                        toLog = None
-
-                        if self.executing.get("preserve") == True:
-                            toLog = self.default_log_dict({
-                                "request_timestamp_ms": self.executing.get("timestamp_ms"),
-                                "command": command,
-                                "retval": self.trim_dict_for_logger(self.executing.get("retval")),
-                            })
-                            await self.logger.log(
-                                VerbosityLevel["MEASUREMENT"], toLog)
-                        self.executing = None
-                    else:
-                        pass
-                if self.save_periodic_data is True:
-                    # if "timestamp_ms" in self.periodic_data:
+            if command == AFECommand.debug_machine_control:
+                for subdev in (0, 1):
+                    toLog = None
                     try:
-                        toLog = self.default_log_dict({
-                            "command": AFECommand.getSensorDataSi_periodic,
-                            "retval": self.trim_dict_for_logger(self.periodic_data),
-                        })
-                        channel_timestamp = self.periodic_data.get(
-                            "timestamp_ms", None)
-                        last_data = self.periodic_data.get("last_data", None)
-                        average_data = self.periodic_data.get(
-                            "average_data", None)
-                        for ch in self.channels:
-                            if last_data:
-                                if ch.name in last_data:
-                                    ch.last_recieved_data["last"] = {
-                                        "value": last_data[ch.name],
-                                        "bytes": last_data[ch.name+"_bytes"],
-                                        "timestamp_ms": channel_timestamp}
-                            if average_data:
-                                if ch.name in average_data:
-                                    ch.last_recieved_data["average"] = {
-                                        "value": average_data[ch.name], "timestamp_ms": channel_timestamp}
-                        await self.logger.log(
-                            VerbosityLevel["MEASUREMENT"], toLog)
+                        if self.debug_machine_control_msg[subdev].get('timestamp_ms'):
+                            self.debug_machine_control_msg_last[subdev] = self.debug_machine_control_msg[subdev].copy()
+                            toLog = self.default_log_dict({'command': AFECommand.debug_machine_control, 'retval': self.trim_dict_for_logger(self.debug_machine_control_msg_last[subdev])})
+                            await self.logger.log(VerbosityLevel['CRITICAL'], toLog)
                     except Exception as e:
-                        await p.print("ERROR during save_periodic_data:", e, toLog)
+                        await p.print('ERROR during debug_machine_control_msg:', e, toLog)
                     finally:
-                        self.periodic_data = {}
-                if command == AFECommand.debug_machine_control:
-                    for subdev in [0, 1]:
-                        try:
-                            if self.debug_machine_control_msg[subdev].get("timestamp_ms"):
-                                self.debug_machine_control_msg_last[subdev] = self.debug_machine_control_msg[subdev].copy()
-                                toLog = self.default_log_dict({
-                                    "command": AFECommand.debug_machine_control,
-                                    "retval": self.trim_dict_for_logger(self.debug_machine_control_msg_last[subdev]),
-                                })
-                                # print("xxx", toLog)
-                                await self.logger.log(VerbosityLevel["CRITICAL"], toLog)
-                        except Exception as e:
-                            await p.print(
-                                "ERROR during debug_machine_control_msg:", e, toLog)
-                        finally:
-                            self.debug_machine_control_msg[subdev] = {}
+                        self.debug_machine_control_msg[subdev] = {}
 
-            received_data = None
-
-    # Changed to async def
     async def start_periodic_measurement_download(self, interval_ms=2500):
-        await self.enqueue_command(
-            AFECommand.setSensorDataSi_all_periodic_average,
-            list(struct.pack('<I', interval_ms)))
+        await self.enqueue_u32_for_channel(AFECommand.setSensorDataSi_all_periodic_average, 0, interval_ms)
         self.periodic_measurement_download_is_enabled = True
 
-    async def stop_periodic_measurement_download(self):  # Changed to async def
-        await p.print("STOP")
-        await self.enqueue_command(  # Changed to await, and send_command to enqueue_command
-            AFECommand.setSensorDataSi_all_periodic_average,
-            list(struct.pack('<I', 0)))
+    async def stop_periodic_measurement_download(self):
+        await p.print('STOP')
+        await self.enqueue_u32_for_channel(AFECommand.setSensorDataSi_all_periodic_average, 0, 0)
         self.periodic_measurement_download_is_enabled = False
 
     async def start_periodic_measurement_download_from_config(self, interval_ms=None):
-        for subdev in ["M", "S"]:
-            await self.start_periodic_measurement_download(interval_ms or self.configuration[subdev].get("report_every_ms", 0))
+        for subdev in ('M', 'S'):
+            ms = interval_ms or self.configuration.get(subdev, {}).get('report_every_ms', 0)
+            await self.start_periodic_measurement_download(ms)
 
-    async def set_offset(self, offset_master=200, offset_slave=200):  # Changed to async def
-        r = await self.enqueue_command(AFECommand.setOffset, [1, offset_master])
+    async def set_offset(self, offset_master=200, offset_slave=200):
+        r = await self.enqueue_command(AFECommand.setOffset, (1, offset_master))
         if r is not None:
             return r
-        return await self.enqueue_command(AFECommand.setOffset, [2, offset_slave])
+        return await self.enqueue_command(AFECommand.setOffset, (2, offset_slave))
 
     async def manage_state(self):
+        now = millis()
         if self.use_afe_can_watchdog:
-            if is_timeout(self.afe_can_watchdog_timestamp_ms, int(round(self.afe_can_watchdog_timeout_ms/10.0))):
-                self.afe_can_watchdog_timestamp_ms = millis()
-                commandKwargs = {"timeout_ms": 10220,
-                                 "preserve": True,
-                                 "timeout_start_on_send_ms": 2000,
-                                 "error_callback": None,
-                                 "callback": None}
-                await self.enqueue_command(
-                    # This is already async due to enqueue_command
-                    AFECommand.getTimestamp, None, **commandKwargs)
+            if is_timeout(self.afe_can_watchdog_timestamp_ms, self.afe_can_watchdog_timeout_ms // 10):
+                self.afe_can_watchdog_timestamp_ms = now
+                await self.enqueue_command(AFECommand.getTimestamp, timeout_ms=10220, preserve=True, timeout_start_on_send_ms=2000)
 
-        if not self.is_configured:
-            if self.is_configuration_started is True:
-                timestamp_ms = millis()
-                if is_timeout(self.configuration_start_timestamp_ms, self.configuration_timeout_ms):
-                    await self.logger.log(VerbosityLevel["ERROR"],
-                                          self.default_log_dict({"error": "configuration timeout", "timestamp_ms": millis()}))
-                    await self.restart_device()
+        if not self.is_configured and self.is_configuration_started:
+            if is_timeout(self.configuration_start_timestamp_ms, self.configuration_timeout_ms):
+                await self.logger.log(VerbosityLevel['ERROR'], self.default_log_dict({'error': 'configuration timeout', 'timestamp_ms': now}))
+                await self.restart_device()
 
-        if self.executing is not None:
-            if is_timeout(self.executing["timestamp_ms"], self.executing["timeout_ms"]):
-                self.executing["status"] = CommandStatus.ERROR
-                await self.logger.log(VerbosityLevel["ERROR"],
-                                      self.default_log_dict(
-                    {
-                        "error": "TIMEOUT",
-                        "executing": self.trim_dict_for_logger(self.executing)
-                    }))
-                if "callback_error" in self.executing:
-                    try:
-                        if self.executing["callback_error"] is not None and callable(self.executing["callback_error"]):
-                            await p.print("Creating task for callback_error in manage_state: {}".format(
-                                self.executing["callback_error"]))
-                            # If callback_error can be async, create a task for it
-                            uasyncio.create_task(self.executing["callback_error"](
-                                {"afe": self, "afe_id": self.device_id, "executing": self.executing}))
-                    except Exception as e:
-                        await p.print("AFE manage_state error invoking callback_error: {}".format(e))
-                self.executing = None
+        executing = self.executing
+        if executing and is_timeout(executing['timestamp_ms'], executing['timeout_ms']):
+            await self.executing_error_handler()
 
-        # Try send commands
-        if self.use_tx_delay:
-            if is_delay(self.execute_timestamp, self.tx_timeout_ms):
-                pass
-            else:
-                await self.execute(0)  # Changed to await
-        else:
-            await self.execute(0)  # Changed to await
+        if not self.use_tx_delay or not is_delay(self.execute_timestamp, self.tx_timeout_ms):
+            await self.execute(0)
