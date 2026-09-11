@@ -25,6 +25,12 @@ from my_RxDeviceCAN import RxDeviceCAN
 
 
 class AFEDevice:
+    # Map chunk_id % 13 directly to dict target keys
+    _STATUS_KEYS = (
+        "voltage", "voltage_bytes", "voltage_target", "voltage_target_bytes",
+        "voltage_current", "voltage_current_bytes", "temperature_avg",
+        "temperature_last_bytes", "temperature_old", "V_offset"
+    )
     def __init__(self, can_interface: RxDeviceCAN, device_id, logger: JSONLogger, config_path=None):
         if not isinstance(can_interface, RxDeviceCAN):
             raise RuntimeError(
@@ -313,28 +319,25 @@ class AFEDevice:
         return None
 
     async def enqueue_command(self, command, data=None, **kwargs):
-        return await self._enqueue_command(command, data, **kwargs)
+        while len(self.to_execute) >= self.executed_max_len:
+            await uasyncio.sleep_ms(0)
+        self.to_execute.append(self.prepare_command(command, data, **kwargs))
 
     async def enqueue_gpio_set(self, gpio, state, **kwargs):
-        return await self.enqueue_command(AFECommand.writeGPIO,
-                                          [gpio.port, gpio.pin, state], **kwargs)
+        return await self.enqueue_command(AFECommand.writeGPIO, (gpio.port, gpio.pin, state), **kwargs)
 
     async def enqueue_float_for_channel(self, command, channel, value, **kwargs):
-        return await self.enqueue_command(
-            command, [channel] + list(struct.pack('<f', value)), **kwargs)
+        return await self.enqueue_command(command, [channel] + list(struct.pack('<f', value)), **kwargs)
 
     async def enqueue_u8_for_channel(self, command, channel, value, **kwargs):
-        return await self.enqueue_command(
-            command, [channel] + list(struct.pack('<B', value)), **kwargs)
+        return await self.enqueue_command(command, [channel, value & 0xFF], **kwargs)
 
     async def enqueue_u16_for_channel(self, command, channel, value, **kwargs):
-        return await self.enqueue_command(
-            command, [channel] + list(struct.pack('<H', value)), **kwargs)
+        return await self.enqueue_command(command, [channel, value & 0xFF, (value >> 8) & 0xFF], **kwargs)
 
     async def enqueue_u32_for_channel(self, command, channel, value, **kwargs):
-        return await self.enqueue_command(
-            command, [channel] + list(struct.pack('<I', value)), **kwargs)
-
+        return await self.enqueue_command(command, [channel, value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF, (value >> 24) & 0xFF], **kwargs)
+    
     async def executing_error_handler(self):
         self.executing["status"] = CommandStatus.ERROR
         await self.logger.log(VerbosityLevel["ERROR"],
@@ -380,62 +383,33 @@ class AFEDevice:
                     {"debug": "Sending {}".format(cmd)}))
 
     async def _handle_get_subdevice_status(self, target_status_list, chunk_id, chunk_payload):
-        """
-        Handles the processing of getSubdeviceStatus command responses.
+        channels = self.unmask_channel(chunk_payload[0])
+        if not channels:
+            return
 
-        This function parses the incoming CAN message payload for the
-        getSubdeviceStatus command and updates the provided target_status_list
-        (e.g., debug_machine_control_msg_last) with the relevant status information
-        for each subdevice (master/slave).
-
-        Args:
-            target_status_list (list): A list of dictionaries (typically of size 2,
-                                       for master and slave) to store the parsed status.
-            chunk_id (int): The chunk ID from the CAN message, used to determine
-                            which specific status field is being transmitted.
-            chunk_payload (list): The payload bytes from the CAN message.
-        """
         chunk_id_mod = chunk_id % 13
-        for uch in self.unmask_channel(chunk_payload[0]):
-            if chunk_id_mod == 0: # Voltage
-                target_status_list[uch] = {}  # Clear msg for this subdevice
-                target_status_list[uch]["channel"] = "master" if uch == 0 else "slave"
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["voltage"] = value
-            elif chunk_id_mod == 1: # Voltage in bytes
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["voltage_bytes"] = value
-            elif chunk_id_mod == 2: # Ramp Target voltage
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["voltage_target"] = value
-            elif chunk_id_mod == 3: # Ramp Target voltage in bytes
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["voltage_target_bytes"] = value
-            elif chunk_id_mod == 4: # Ramp current voltage
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["voltage_current"] = value
-            elif chunk_id_mod == 5: # Ramp current voltage in bytes
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["voltage_current_bytes"] = value
-            elif chunk_id_mod == 6: # Average temperature
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["temperature_avg"] = value
-            elif chunk_id_mod == 7: # Last temperature in bytes
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["temperature_last_bytes"] = value
-            elif chunk_id_mod == 8: # Old temperature
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["temperature_old"] = value
-            elif chunk_id_mod == 9: # V offset
-                value = self.bytes_to_float(chunk_payload[1:])
-                target_status_list[uch]["V_offset"] = value
-            elif chunk_id_mod == 10: # Enabled?
-                target_status_list[uch]["temp_loop"] = "enabled" if chunk_payload[1] else "disabled"
-            elif chunk_id_mod == 11: # Ramp target reached
-                target_status_list[uch]["ramp_target_reached"] = "true" if chunk_payload[1] else "false"
-            elif chunk_id_mod == 12: # Timestamp
-                value = self.bytes_to_u32(chunk_payload[1:])
-                target_status_list[uch]["timestamp_ms"] = value
+        payload_data = chunk_payload[1:]
+
+        # Extract value based on payload type
+        if chunk_id_mod < 10:
+            value = self.bytes_to_float(payload_data)
+            key = self._STATUS_KEYS[chunk_id_mod]
+        elif chunk_id_mod == 10:
+            value = "enabled" if payload_data[0] else "disabled"
+            key = "temp_loop"
+        elif chunk_id_mod == 11:
+            value = "true" if payload_data[0] else "false"
+            key = "ramp_target_reached"
+        else:  # 12
+            value = self.bytes_to_u32(payload_data)
+            key = "timestamp_ms"
+
+        # Assign extracted values to unmasked channels
+        for uch in channels:
+            if chunk_id_mod == 0:  # Reset subdevice dictionary on chunk 0
+                target_status_list[uch] = {"channel": "master" if uch == 0 else "slave"}
+            
+            target_status_list[uch][key] = value
 
     async def process_received_data(self, received_data):  # Changed to async def
         command = None
@@ -903,52 +877,35 @@ class AFEDevice:
         return await self.enqueue_command(AFECommand.setOffset, [2, offset_slave])
 
     async def manage_state(self):
+        now = millis()
+
+        # 1. Watchdog Management
         if self.use_afe_can_watchdog:
-            if is_timeout(self.afe_can_watchdog_timestamp_ms, int(round(self.afe_can_watchdog_timeout_ms/10.0))):
-                self.afe_can_watchdog_timestamp_ms = millis()
-                commandKwargs = {"timeout_ms": 10220,
-                                 "preserve": True,
-                                 "timeout_start_on_send_ms": 2000,
-                                 "error_callback": None,
-                                 "callback": None}
+            # Integer division (// 10) instead of float division and int(round())
+            if is_timeout(self.afe_can_watchdog_timestamp_ms, self.afe_can_watchdog_timeout_ms // 10):
+                self.afe_can_watchdog_timestamp_ms = now
                 await self.enqueue_command(
-                    # This is already async due to enqueue_command
-                    AFECommand.getTimestamp, None, **commandKwargs)
+                    AFECommand.getTimestamp,
+                    timeout_ms=10220,
+                    preserve=True,
+                    timeout_start_on_send_ms=2000
+                )
 
-        if not self.is_configured:
-            if self.is_configuration_started is True:
-                timestamp_ms = millis()
-                if is_timeout(self.configuration_start_timestamp_ms, self.configuration_timeout_ms):
-                    await self.logger.log(VerbosityLevel["ERROR"],
-                                          self.default_log_dict({"error": "configuration timeout", "timestamp_ms": millis()}))
-                    await self.restart_device()
+        # 2. Configuration Timeout Check
+        if not self.is_configured and self.is_configuration_started:
+            if is_timeout(self.configuration_start_timestamp_ms, self.configuration_timeout_ms):
+                await self.logger.log(
+                    VerbosityLevel["ERROR"],
+                    self.default_log_dict({"error": "configuration timeout", "timestamp_ms": now})
+                )
+                await self.restart_device()
 
-        if self.executing is not None:
-            if is_timeout(self.executing["timestamp_ms"], self.executing["timeout_ms"]):
-                self.executing["status"] = CommandStatus.ERROR
-                await self.logger.log(VerbosityLevel["ERROR"],
-                                      self.default_log_dict(
-                    {
-                        "error": "TIMEOUT",
-                        "executing": self.trim_dict_for_logger(self.executing)
-                    }))
-                if "callback_error" in self.executing:
-                    try:
-                        if self.executing["callback_error"] is not None and callable(self.executing["callback_error"]):
-                            await p.print("Creating task for callback_error in manage_state: {}".format(
-                                self.executing["callback_error"]))
-                            # If callback_error can be async, create a task for it
-                            uasyncio.create_task(self.executing["callback_error"](
-                                {"afe": self, "afe_id": self.device_id, "executing": self.executing}))
-                    except Exception as e:
-                        await p.print("AFE manage_state error invoking callback_error: {}".format(e))
-                self.executing = None
+        # 3. Executing Command Timeout Check
+        executing = self.executing
+        if executing and is_timeout(executing["timestamp_ms"], executing["timeout_ms"]):
+            # Delegate directly to existing handler to avoid duplicate callback code
+            await self.executing_error_handler()
 
-        # Try send commands
-        if self.use_tx_delay:
-            if is_delay(self.execute_timestamp, self.tx_timeout_ms):
-                pass
-            else:
-                await self.execute(0)  # Changed to await
-        else:
-            await self.execute(0)  # Changed to await
+        # 4. Command Dispatch Logic
+        if not self.use_tx_delay or not is_delay(self.execute_timestamp, self.tx_timeout_ms):
+            await self.execute(0)
