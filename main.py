@@ -4,6 +4,7 @@ import uasyncio
 import micropython
 import sys
 import select
+import gc
 
 from my_utilities import p, wdt
 from HUB import initialize_can_hub
@@ -27,12 +28,19 @@ class HardwareConfig:
 
 
 async def periodic_tasks_loop(logger):
-    """Background loop to feed hardware watchdog and service asynchronous logging queues."""
+    """Background loop to feed hardware watchdog, perform GC, and service logging queues."""
     await p.print("Periodic background task started.")
+    gc_counter = 0
     while True:
         wdt.feed()
         await logger.machine()  # Service buffered file system writes
         await p.machine()       # Service print buffer
+        
+        gc_counter += 1
+        if gc_counter >= 100:  # Perform garbage collection ~every 5 seconds
+            gc.collect()
+            gc_counter = 0
+
         await uasyncio.sleep_ms(HardwareConfig.POLL_INTERVAL_MS)
 
 
@@ -122,8 +130,11 @@ async def main():
 
     await p.print("All runtime tasks scheduled.")
 
-    # Block indefinitely while tasks execute concurrently
-    await uasyncio.gather(*tasks)
+    # Prevent a crash in one task from killing all other tasks
+    results = await uasyncio.gather(*tasks, return_exceptions=True)
+    for res in results:
+        if isinstance(res, Exception):
+            await p.print("Critical task exception caught:", res)
 
 
 if __name__ == "__main__":

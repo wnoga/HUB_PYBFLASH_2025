@@ -58,7 +58,7 @@ class AsyncWebServer:
         self.client_sockets = {}
         self.sock_map = {}
         self.tcp_requests_max = 10
-        self.CLIENT_TIMEOUT_S = 5
+        self.CLIENT_TIMEOUT_S = 10  # Increased slightly for stability
 
         self.poll_task = None
         self.ntp_task = None
@@ -82,10 +82,20 @@ class AsyncWebServer:
     def _close_client(self, client_sock):
         """Unregisters socket from poller and safely cleans up references."""
         sock_id = id(client_sock)
-        if sock_id in self.client_sockets:
-            del self.client_sockets[sock_id]
-        if sock_id in self.sock_map:
-            del self.sock_map[sock_id]
+        client_info = self.client_sockets.pop(sock_id, None)
+        self.sock_map.pop(sock_id, None)
+
+        if client_info:
+            task = client_info.get("task")
+            # Check if the task is NOT the currently executing task before cancelling
+            try:
+                current_task = asyncio.current_task()
+            except AttributeError:
+                # Fallback for older uasyncio versions
+                current_task = getattr(asyncio, "_current_task", None)
+
+            if task and not task.done() and task is not current_task:
+                task.cancel()
 
         try:
             self.poller.unregister(client_sock)
@@ -197,9 +207,9 @@ class AsyncWebServer:
                 "addr": client_addr,
                 "buf": buf,
                 "length": 0,
-                "start_time": utime.ticks_ms(),
+                "last_activity_ms": utime.ticks_ms(),
                 "task": None,
-                "active": False,  # Flag to track active file processing
+                "active": False,
             }
             self.sock_map[sock_id] = client_sock
             self.poller.register(client_sock, uselect.POLLIN)
@@ -214,7 +224,6 @@ class AsyncWebServer:
 
     async def _process_client_read(self, client_sock, client_info):
         """Read and dispatch one HTTP or procedure request using only the raw socket."""
-        client_info["active"] = True  # Prevent timeout killer from closing active stream
         try:
             gc.collect()
             buf = client_info["buf"]
@@ -230,6 +239,7 @@ class AsyncWebServer:
                     return
 
                 nread = await self._recv_into_buffer(client_sock, buf, length)
+                client_info["last_activity_ms"] = utime.ticks_ms()
                 if nread == 0:
                     return
                 if nread < 0:
@@ -239,6 +249,18 @@ class AsyncWebServer:
                 length += nread
                 client_info["length"] = length
                 await asyncio.sleep_ms(0)
+
+            # Check if payload is JSON RPC before treating as HTTP
+            valid_view = memoryview(buf)[:length]
+            first_char = buf[0]
+            if first_char in (123, 91):  # '{' or '['
+                try:
+                    procedure_json = json.loads(valid_view)
+                    await p.print(procedure_json)
+                    await self.afe_handler.handle_procedure_raw(buf, client_sock)
+                    return
+                except Exception:
+                    pass
 
             request_line_end = request_line_len
             while request_line_end > 0 and buf[request_line_end - 1] in (10, 13):
@@ -254,14 +276,6 @@ class AsyncWebServer:
                         second_space = i
                         break
 
-            try:
-                procedure_json = json.loads(buf)
-                await p.print(procedure_json)
-                await self.afe_handler.handle_procedure_raw(buf, client_sock)
-                return
-            except Exception:
-                pass
-
             if first_space <= 0 or second_space <= first_space + 1:
                 await self._send_http_error(client_sock, 400, "Bad Request")
                 return
@@ -276,12 +290,15 @@ class AsyncWebServer:
                 await self._send_http_error(client_sock, 400, "Invalid Request")
                 return
 
-            header_end = bytes(buf).find(b"\r\n\r\n", request_line_len)
+            # Match header end on actual received bytes only
+            raw_bytes = bytes(valid_view)
+            header_end = raw_bytes.find(b"\r\n\r\n", request_line_len)
             while header_end < 0:
                 if length >= len(buf):
                     await self._send_http_error(client_sock, 400, "Headers Too Large")
                     return
                 nread = await self._recv_into_buffer(client_sock, buf, length)
+                client_info["last_activity_ms"] = utime.ticks_ms()
                 if nread == 0:
                     return
                 if nread < 0:
@@ -290,12 +307,14 @@ class AsyncWebServer:
 
                 length += nread
                 client_info["length"] = length
-                header_end = bytes(buf).find(b"\r\n\r\n", request_line_len)
+                raw_bytes = bytes(memoryview(buf)[:length])
+                header_end = raw_bytes.find(b"\r\n\r\n", request_line_len)
                 await asyncio.sleep_ms(0)
 
             await p.print("@", method, "->", request_path)
             if method == "GET":
                 if request_path.startswith("/download_log"):
+                    client_info["active"] = True
                     await my_webpage.handle_log_download(self, request_path, client_sock)
                 elif request_path in ("/", "/index.html"):
                     await p.print("@@", "index.html", " ========= ")
@@ -346,18 +365,16 @@ class AsyncWebServer:
                             client_info["task"] = task
 
                 current_ms = utime.ticks_ms()
-                timeout_ms = getattr(self, "CLIENT_TIMEOUT_S", 5) * 1000
+                # Use standard timeout, extending window for active streaming downloads
                 for sock_id, client_info in list(self.client_sockets.items()):
                     if not isinstance(client_info, dict):
                         continue
-                    
-                    # Ignore timeout for active file downloads
-                    if client_info.get("active", False):
-                        continue
 
+                    timeout_ms = (self.CLIENT_TIMEOUT_S * 5 * 1000) if client_info.get("active") else (self.CLIENT_TIMEOUT_S * 1000)
                     sock = client_info.get("sock")
-                    start_time = client_info.get("start_time", current_ms)
-                    if sock is not None and utime.ticks_diff(current_ms, start_time) > timeout_ms:
+                    last_act = client_info.get("last_activity_ms", current_ms)
+                    
+                    if sock is not None and utime.ticks_diff(current_ms, last_act) > timeout_ms:
                         self._close_client(sock)
 
             except Exception as e:
@@ -376,11 +393,16 @@ class AsyncWebServer:
         s = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.settimeout(3)
+            s.setblocking(False)  # Non-blocking socket to prevent freezing asyncio loop
             addr = socket.getaddrinfo(NTP_HOST, 123)[0][-1]
             msg = bytearray(48)
             msg[0] = 27
-            s.sendto(msg, addr)
+            
+            try:
+                s.sendto(msg, addr)
+            except OSError:
+                pass
+
             start_t = time.ticks_ms()
             data = None
 
@@ -442,7 +464,7 @@ class AsyncWebServer:
                         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                         sock.setblocking(False)
-                        sock.bind(("0.0.0.0", getattr(self, "port", 80)))
+                        sock.bind(("0.0.0.0", self.port))
                         sock.listen(5)
                         self.server_sock = sock
                         self.poller.register(self.server_sock, uselect.POLLIN)
