@@ -19,6 +19,77 @@ from my_utilities import convert_to_si
 from my_RxDeviceCAN import RxDeviceCAN
 from my_utilities import get_configuration_from_files
 
+def calc_adc_resistor_divider(adc_val: int, r1: float, r2: float) -> float:
+    """Calculates voltage from a 12-bit ADC value using a resistor divider ratio."""
+    return (3.3 * adc_val / 4095.0) * ((r1 + r2) / r1)
+
+
+def set_power_pins(state: bool):
+    """Controls the power state via GPIO pins E12 and E10."""
+    pin_e12 = pyb.Pin(pyb.Pin.cpu.E12, pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
+    pin_e10 = pyb.Pin(pyb.Pin.cpu.E10, pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
+    if state:
+        pin_e12.value(1)
+        pin_e10.value(0)
+    else:
+        pin_e12.value(0)
+        pin_e10.value(1)
+
+
+def get_subdevice_ch_id(group: str) -> int:
+    return (
+        AFECommandSubdevice.AFECommandSubdevice_master
+        if group == 'M'
+        else AFECommandSubdevice.AFECommandSubdevice_slave
+    )
+
+
+def get_T_measured_ch_id(group: str) -> int:
+    return (
+        AFECommandChannel.AFECommandChannel_7
+        if group == 'M'
+        else AFECommandChannel.AFECommandChannel_6
+    )
+
+
+def get_U_measured_ch_id(group: str) -> int:
+    return (
+        AFECommandChannel.AFECommandChannel_2
+        if group == 'M'
+        else AFECommandChannel.AFECommandChannel_3
+    )
+
+
+def get_I_measured_ch_id(group: str) -> int:
+    return (
+        AFECommandChannel.AFECommandChannel_4
+        if group == 'M'
+        else AFECommandChannel.AFECommandChannel_5
+    )
+
+
+def get_general_ch_id_mask(group: str) -> int:
+    return AFECommandChannelMask.master if group == 'M' else AFECommandChannelMask.slave
+
+def get_float_cmd_map(g):
+    subdev_ch = get_subdevice_ch_id(g)
+    gen_mask = get_general_ch_id_mask(g)
+    float_cmd_map = {
+        "T_measured_a": (AFECommand.setChannel_a_byMask, get_T_measured_ch_id(g)),
+        "T_measured_b": (AFECommand.setChannel_b_byMask, get_T_measured_ch_id(g)),
+        "U_measured_a": (AFECommand.setChannel_a_byMask, get_U_measured_ch_id(g)),
+        "U_measured_b": (AFECommand.setChannel_b_byMask, get_U_measured_ch_id(g)),
+        "I_measured_a": (AFECommand.setChannel_a_byMask, get_I_measured_ch_id(g)),
+        "I_measured_b": (AFECommand.setChannel_b_byMask, get_I_measured_ch_id(g)),
+        "U_set_a": (AFECommand.setRegulator_a_dac_byMask, subdev_ch),
+        "U_set_b": (AFECommand.setRegulator_b_dac_byMask, subdev_ch),
+        "V_opt": (AFECommand.setRegulator_V_opt_byMask, subdev_ch),
+        "dV/dT": (AFECommand.setRegulator_dV_dT_byMask, subdev_ch),
+        "T_opt": (AFECommand.setRegulator_T_opt_byMask, subdev_ch),
+        "dT": (AFECommand.setRegulator_dT_byMask, subdev_ch),
+        "V_offset": (AFECommand.setRegulator_V_offset_byMask, subdev_ch),
+    }
+    return subdev_ch, gen_mask, float_cmd_map
 
 class HUBDevice:
     """
@@ -87,17 +158,10 @@ class HUBDevice:
 
         self.logger_sync_active = True
     
-    def _adc_val_rr(self, adc, R1, R2):
-        return (3.3*adc/(4095))*((R1+R2)/R1)
-    
     def hub_adc_read(self):     
-        # Read ADC value from PA3
-        # adc_value = self.adc_pa3.read()
-        # await self.logger.log(VerbosityLevel["INFO"], {"info": "ADC PA3 value: {}".format(adc_value)}) 
-        # print("ADC PA3 value: {}\nADC PA3 value: {}".format(adc_value))
         retavls = {"I_SIPM_MEAS": self.adc_I_SIPM_MEAS.read(),
-                   "U_SIPM_MEAS": self._adc_val_rr(self.adc_U_SIPM_MEAS.read(), 1, 33),
-                   "VSUP_MEAS": self._adc_val_rr(self.adc_VSUP_MEAS.read(), 10, 43)}
+                   "U_SIPM_MEAS": calc_adc_resistor_divider(self.adc_U_SIPM_MEAS.read(), 1, 33),
+                   "VSUP_MEAS": calc_adc_resistor_divider(self.adc_VSUP_MEAS.read(), 10, 43)}
         print(retavls)
         
     def hub_update_afe_status(self):
@@ -105,31 +169,25 @@ class HUBDevice:
             self.get_subdevice_status(afe.device_id, AFECommandSubdevice.AFECommandSubdevice_both,addToCmd={"callback":p.print})
 
     async def powerOn(self):
+        set_power_pins(True)
         await self.logger.log(VerbosityLevel["INFO"],
                               {
             "device_id": 0,
             "timestamp_ms": millis(),
             "info": "powerOn"
         })
-        pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
-        pyb.Pin.cpu.E12.value(1)
-        pyb.Pin.cpu.E10.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
-        pyb.Pin.cpu.E10.value(0)
         
 
-    async def powerOff(self):  # Changed to async def
+    async def powerOff(self):
+        set_power_pins(False)
         await self.logger.log(VerbosityLevel["INFO"],
                               {
             "device_id": 0,
             "timestamp_ms": millis(),
             "info": "powerOff"
         })
-        pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
-        pyb.Pin.cpu.E12.value(0)
-        pyb.Pin.cpu.E10.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
-        pyb.Pin.cpu.E10.value(1)
-
-    async def reset_all(self):  # Changed to async def
+        
+    async def reset_all(self):
         await self.stop_discovery()
         self.afe_devices = []
         self.message_queue = []
@@ -334,29 +392,6 @@ class HUBDevice:
                 return afe
         return None
 
-    # # Changed to async def
-    # async def get_configuration_from_files(self, afe_id, callibration_data_file_csv="dane_kalibracyjne.csv", TempLoop_file_csv="TempLoop.csv", UID=None):
-    #     return await get_configuration_from_files(afe_id, callibration_data_file_csv, TempLoop_file_csv, UID)
-
-    def _get_subdevice_ch_id(self, g):
-        return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
-
-    @staticmethod
-    def _get_T_measured_ch_id(g):
-        return AFECommandChannel.AFECommandChannel_7 if g == 'M' else AFECommandChannel.AFECommandChannel_6
-
-    @staticmethod
-    def _get_U_measured_ch_id(g):
-        return AFECommandChannel.AFECommandChannel_2 if g == 'M' else AFECommandChannel.AFECommandChannel_3
-
-    @staticmethod
-    def _get_I_measured_ch_id(g):
-        return AFECommandChannel.AFECommandChannel_4 if g == 'M' else AFECommandChannel.AFECommandChannel_5
-
-    @staticmethod
-    def _get_general_ch_id_mask(g):
-        return AFECommandChannelMask.master if g == 'M' else AFECommandChannelMask.slave
-
     async def default_get_measurement(self, afe_id=35, callback=None):
         afe = self.get_afe_by_id(afe_id)
         if afe is None:
@@ -440,7 +475,7 @@ class HUBDevice:
         }
 
         for g in ("M", "S"):
-            subdev = self._get_subdevice_ch_id(g)
+            subdev = get_subdevice_ch_id(g)
             dac_val = dac_master if g == "M" else dac_slave
             hv_gpio = afe.AFEGPIO_EN_HV0 if g == "M" else afe.AFEGPIO_EN_HV1
 
@@ -908,45 +943,7 @@ class HUBDevice:
         for g in ("M", "S"):
             avg_number = 256
             time_sample_ms = 1000
-
-            subdev_ch = self._get_subdevice_ch_id(g)
-            gen_mask = self._get_general_ch_id_mask(g)
-
-            # Dispatch table for standard float commands targetting subdevice or channel
-            float_cmd_map = {
-                "T_measured_a": (
-                    AFECommand.setChannel_a_byMask,
-                    self._get_T_measured_ch_id(g),
-                ),
-                "T_measured_b": (
-                    AFECommand.setChannel_b_byMask,
-                    self._get_T_measured_ch_id(g),
-                ),
-                "U_measured_a": (
-                    AFECommand.setChannel_a_byMask,
-                    self._get_U_measured_ch_id(g),
-                ),
-                "U_measured_b": (
-                    AFECommand.setChannel_b_byMask,
-                    self._get_U_measured_ch_id(g),
-                ),
-                "I_measured_a": (
-                    AFECommand.setChannel_a_byMask,
-                    self._get_I_measured_ch_id(g),
-                ),
-                "I_measured_b": (
-                    AFECommand.setChannel_b_byMask,
-                    self._get_I_measured_ch_id(g),
-                ),
-                "U_set_a": (AFECommand.setRegulator_a_dac_byMask, subdev_ch),
-                "U_set_b": (AFECommand.setRegulator_b_dac_byMask, subdev_ch),
-                "V_opt": (AFECommand.setRegulator_V_opt_byMask, subdev_ch),
-                "dV/dT": (AFECommand.setRegulator_dV_dT_byMask, subdev_ch),
-                "T_opt": (AFECommand.setRegulator_T_opt_byMask, subdev_ch),
-                "dT": (AFECommand.setRegulator_dT_byMask, subdev_ch),
-                "V_offset": (AFECommand.setRegulator_V_offset_byMask, subdev_ch),
-            }
-
+            subdev_ch, gen_mask, float_cmd_map = get_float_cmd_map(g)
             group_cfg = afe.configuration.get(g, {})
 
             for k, v in group_cfg.items():
@@ -1003,12 +1000,14 @@ class HUBDevice:
                     )
 
             max_dt_ms = int(round(time_sample_ms * avg_number))
+            
             await afe.enqueue_u32_for_channel(
                 AFECommand.setAveraging_max_dt_ms_byMask,
                 gen_mask,
                 max_dt_ms,
                 **command_kwargs,
             )
+            
             await afe.enqueue_u32_for_channel(
                 AFECommand.setTemperatureLoop_loop_every_ms,
                 gen_mask,
@@ -1082,8 +1081,8 @@ class HUBDevice:
 
         while self.run:
             await main_process()
-            wdt_feed()
             await sleep_ms(yield_ms)
+            wdt_feed()
 
 
 # Changed to async def
