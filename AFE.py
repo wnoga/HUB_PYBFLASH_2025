@@ -23,6 +23,32 @@ from my_utilities import rtc_unix_timestamp
 from my_utilities import convert_to_si
 from my_RxDeviceCAN import RxDeviceCAN
 
+def parse_can_frame(received_data, expected_device_id):
+    """
+    Validates and extracts header metadata and payload from raw received data.
+    Returns (device_id, command, chunk_id, max_chunks, data_bytes, chunk_payload) 
+    or None if invalid or not directed to this device.
+    """
+    if not received_data or len(received_data) < 4:
+        return None
+
+    msg_header = received_data[0]
+    device_id = (msg_header >> 2) & 0xFF
+    msg_from_slave = (msg_header >> 10) & 0x001
+
+    if msg_from_slave != 1 or device_id != expected_device_id:
+        return None
+
+    data_bytes = list(bytes(received_data[3]))
+    if len(data_bytes) < 2:
+        return None  # Frame too short to parse command and chunk info
+
+    command = int(data_bytes[0])
+    chunk_id = int(data_bytes[1] & 0x0F)
+    max_chunks = int((data_bytes[1] >> 4) & 0x0F)
+    chunk_payload = data_bytes[2:]
+
+    return device_id, command, chunk_id, max_chunks, data_bytes, chunk_payload
 
 class AFEDevice:
     # Map chunk_id % 13 directly to dict target keys
@@ -465,26 +491,8 @@ class AFEDevice:
         chunk_payload = []
         parsed_data = self.parsed_data
         if True:
-            data_bytes = list(bytes(received_data[3]))
-            device_id = (received_data[0] >> 2) & 0xFF
-            msg_from_slave = (received_data[0] >> 10) & 0x001
-            if msg_from_slave != 1:
-                await self.logger.log(VerbosityLevel["WARNING"],
-                                      self.default_log_dict({"debug": "Not from slave"}))
-                return
-            if device_id != self.device_id:
-                return
-
-            # Ensure the payload has at least 2 bytes for command and chunk_info
-            if len(data_bytes) < 2:
-                await self.logger.log(VerbosityLevel["ERROR"],
-                                      self.default_log_dict({"error": "Received CAN message with payload less than 2 bytes", "payload": data_bytes}))
-                return  # Skip processing this invalid message
-
-            command = int(data_bytes[0])
-            chunk_id = int(data_bytes[1] & 0x0F)
-            max_chunks = int((data_bytes[1] >> 4) & 0x0F)
-            chunk_payload = data_bytes[2:]
+            device_id, command, chunk_id, max_chunks, data_bytes, chunk_payload = parse_can_frame(received_data, self.device_id)
+            
             await self.logger.log(VerbosityLevel["DEBUG"],
                                   self.default_log_dict({"debug": "R: ID:{}; Command: 0x{:02X}: {}".format(
                                       device_id, command, data_bytes)}))

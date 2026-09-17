@@ -104,27 +104,14 @@ class JSONLogger:
 
         await p.print("New logger file target set to:", self.filename)
 
-    async def _write_entry(self, level: int, message):
-        """Internal worker executing actual hardware disk file writes."""
+    async def _write_entry(self, level: int, message, chunk_size: int = 64):
+        """Internal worker executing hardware file writes by streaming JSON keys directly."""
         if self.burst_delay_ms and is_delay(self.burst_timestamp_ms, self.burst_delay_ms):
             return 0
         self.burst_timestamp_ms = millis()
 
         if not self.filename:
             return 0
-
-        log_entry = {
-            "timestamp": millis(),
-            "rtc_timestamp": rtc_unix_timestamp(),
-            "level": level,
-            "message": message,
-        }
-
-        try:
-            payload = json.dumps(log_entry) + "\n"
-        except Exception as e:
-            await p.print("ERROR JSON formatting failed: {}".format(e))
-            return -1
 
         opened_in_scope = False
         target_file = self.file
@@ -138,10 +125,37 @@ class JSONLogger:
                 await p.print("ERROR opening file for append {}: {}".format(self.filename, e))
                 return -1
 
+        def _json_stream():
+            yield '{"timestamp":'
+            yield str(millis())
+            yield ',"rtc_timestamp":'
+            yield str(rtc_unix_timestamp())
+            yield ',"level":'
+            yield str(level)
+            yield ',"message":'
+            yield json.dumps(message)
+            yield '}\n'
+
         try:
             self.cursor_position_last = target_file.tell()
-            target_file.write(payload)
-            await uasyncio.sleep_ms(0)
+            
+            buffer = bytearray()
+            for part in _json_stream():
+                buffer.extend(part.encode())
+                
+                # Drain in fixed chunk_size slices without del
+                while len(buffer) >= chunk_size:
+                    mv = memoryview(buffer)
+                    target_file.write(mv[:chunk_size])
+                    # Reassign buffer to the remaining byte range
+                    buffer = bytearray(mv[chunk_size:])
+                    await uasyncio.sleep_ms(0)
+
+            # Flush remaining buffer remnant
+            if buffer:
+                target_file.write(buffer)
+                await uasyncio.sleep_ms(0)
+
             self.file_rows += 1
 
             if opened_in_scope:
