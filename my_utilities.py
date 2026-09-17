@@ -72,6 +72,7 @@ except ImportError:
 
 
 # --- Timing Helpers ---
+@micropython.native
 def millis():
     return time.ticks_ms()
 
@@ -93,12 +94,13 @@ def extract_bracketed(text):
 
     return results
 
+@micropython.native
 def is_timeout(timestamp_ms, timeout_ms):
     if timeout_ms == 0:
         return False
     return time.ticks_diff(time.ticks_ms(), timestamp_ms) > timeout_ms
 
-
+@micropython.native
 def is_delay(timestamp_ms, delay_ms):
     if delay_ms == 0:
         return False

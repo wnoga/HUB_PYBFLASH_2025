@@ -46,6 +46,7 @@ class RxDeviceCAN:
     _ERR_SCHED_RX_FMT = "RxDeviceCAN._poll_and_schedule_rx: Error scheduling handle_can_rx: %s"
     _MSG_STOPPED = "RxDeviceCAN.main_loop: CAN BUS STOPPED"
 
+    @micropython.native
     def _log(self, msg):
         """Helper to safely execute async p.print from non-async contexts."""
         try:
@@ -54,6 +55,7 @@ class RxDeviceCAN:
         except Exception:
             pass
 
+    @micropython.native
     def _send(self, args_tuple):
         toSend, can_address, bus_timeout_ms = args_tuple
         try:
@@ -62,25 +64,21 @@ class RxDeviceCAN:
             self._log(self._ERR_FMT % (can_address, e))
 
     async def send(self, toSend: bytearray, can_address, timeout_ms):
-        sched = micropython.schedule
-        send_ref = self._send_ref
         sleep = uasyncio.sleep_ms
-        get_millis = millis
-        check_timeout = is_timeout
-        
+
         args = (toSend, can_address, timeout_ms)
-        timestamp_ms = get_millis()
+        timestamp_ms = millis()
 
         while True:
             try:
-                sched(send_ref, args)
+                micropython.schedule(self._send_ref, args)
                 return None
             except RuntimeError:
                 pass
             except Exception as e:
                 self._log(self._ERR_SCHED_FMT % e)
 
-            if check_timeout(timestamp_ms, timeout_ms):
+            if is_timeout(timestamp_ms, timeout_ms):
                 self._log(self._ERR_TIMEOUT_FMT % (can_address, timeout_ms))
                 return -1
 
@@ -105,6 +103,7 @@ class RxDeviceCAN:
 
         return [src_slot[0], src_slot[1], src_slot[2], bytearray(src_slot[3])]
 
+    @micropython.native
     def handle_can_rx(self, _=None):
         try:
             can_bus = self.can_bus
@@ -143,7 +142,7 @@ class RxDeviceCAN:
                 pass
             except Exception as e_sched:
                 self._log(self._ERR_SCHED_RX_FMT % e_sched)
-
+    
     async def main_loop(self, reason=None):
         can_bus = self.can_bus
         poll_rx = self._poll_and_schedule_rx
@@ -168,8 +167,10 @@ class RxDeviceCAN:
 
             await sleep(yield_ms)
 
+    @micropython.native
     def state(self):
         return self.can_bus.state()
 
+    @micropython.native
     def restart(self):
         self.can_bus.restart()

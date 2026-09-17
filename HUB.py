@@ -19,11 +19,12 @@ from my_utilities import convert_to_si
 from my_RxDeviceCAN import RxDeviceCAN
 from my_utilities import get_configuration_from_files
 
+@micropython.native
 def calc_adc_resistor_divider(adc_val: int, r1: float, r2: float) -> float:
     """Calculates voltage from a 12-bit ADC value using a resistor divider ratio."""
     return (3.3 * adc_val / 4095.0) * ((r1 + r2) / r1)
 
-
+@micropython.native
 def set_power_pins(state: bool):
     """Controls the power state via GPIO pins E12 and E10."""
     pin_e12 = pyb.Pin(pyb.Pin.cpu.E12, pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
@@ -35,7 +36,7 @@ def set_power_pins(state: bool):
         pin_e12.value(0)
         pin_e10.value(1)
 
-
+@micropython.native
 def get_subdevice_ch_id(group: str) -> int:
     return (
         AFECommandSubdevice.AFECommandSubdevice_master
@@ -43,7 +44,7 @@ def get_subdevice_ch_id(group: str) -> int:
         else AFECommandSubdevice.AFECommandSubdevice_slave
     )
 
-
+@micropython.native
 def get_T_measured_ch_id(group: str) -> int:
     return (
         AFECommandChannel.AFECommandChannel_7
@@ -51,7 +52,7 @@ def get_T_measured_ch_id(group: str) -> int:
         else AFECommandChannel.AFECommandChannel_6
     )
 
-
+@micropython.native
 def get_U_measured_ch_id(group: str) -> int:
     return (
         AFECommandChannel.AFECommandChannel_2
@@ -59,7 +60,7 @@ def get_U_measured_ch_id(group: str) -> int:
         else AFECommandChannel.AFECommandChannel_3
     )
 
-
+@micropython.native
 def get_I_measured_ch_id(group: str) -> int:
     return (
         AFECommandChannel.AFECommandChannel_4
@@ -67,10 +68,11 @@ def get_I_measured_ch_id(group: str) -> int:
         else AFECommandChannel.AFECommandChannel_5
     )
 
-
+@micropython.native
 def get_general_ch_id_mask(group: str) -> int:
     return AFECommandChannelMask.master if group == 'M' else AFECommandChannelMask.slave
 
+@micropython.native
 def get_float_cmd_map(g):
     subdev_ch = get_subdevice_ch_id(g)
     gen_mask = get_general_ch_id_mask(g)
@@ -163,7 +165,7 @@ class HUBDevice:
                    "U_SIPM_MEAS": calc_adc_resistor_divider(self.adc_U_SIPM_MEAS.read(), 1, 33),
                    "VSUP_MEAS": calc_adc_resistor_divider(self.adc_VSUP_MEAS.read(), 10, 43)}
         print(retavls)
-        
+    
     def hub_update_afe_status(self):
         for afe in self.afe_devices:
             self.get_subdevice_status(afe.device_id, AFECommandSubdevice.AFECommandSubdevice_both,addToCmd={"callback":p.print})

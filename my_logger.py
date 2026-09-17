@@ -48,6 +48,7 @@ class JSONLogger:
         self.file_rows = 0
         self.cursor_position_last = 0
 
+    @micropython.native
     def _ensure_directory(self):
         try:
             if not self._path_exists(self.parent_dir):
@@ -55,6 +56,7 @@ class JSONLogger:
         except OSError as e:
             print("CRITICAL: Failed to create log directory {}: {}".format(self.parent_dir, e))
 
+    @micropython.native
     def _path_exists(self, path):
         try:
             os.stat(path)
@@ -62,6 +64,7 @@ class JSONLogger:
         except OSError:
             return False
 
+    @micropython.native
     def _get_unique_filename(self, filename):
         base, ext = filename.rsplit(".", 1) if "." in filename else (filename, "")
         counter = 1
@@ -72,6 +75,7 @@ class JSONLogger:
             counter += 1
         return current_target
 
+    @micropython.native
     def _should_log(self, level):
         return level <= self.verbosity_level
 
@@ -124,7 +128,8 @@ class JSONLogger:
             except Exception as e:
                 await p.print("ERROR opening file for append {}: {}".format(self.filename, e))
                 return -1
-
+            
+        @micropython.native
         def _json_stream():
             yield '{"timestamp":'
             yield str(millis())
@@ -293,14 +298,15 @@ class JSONLogger:
                 try:
                     os.rename(self.filename, new_path)
                     self.filename = new_path
+                    await p.print("Logger renamed to", self.filename)
                 except Exception as e:
-                    await p.print("Rename error: {}".format(e))
+                    await p.print("Rename error:",e)
 
                 if self.keep_file_open:
                     try:
                         self.file = open(self.filename, "a")
                     except Exception as e:
-                        await p.print("Reopen error after rename: {}".format(e))
+                        await p.print("Reopen error after rename:", e)
                         self.file = None
 
         if self._request_new_file:

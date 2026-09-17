@@ -23,6 +23,7 @@ from my_utilities import rtc_unix_timestamp
 from my_utilities import convert_to_si
 from my_RxDeviceCAN import RxDeviceCAN
 
+@micropython.native
 def parse_can_frame(received_data, expected_device_id):
     """
     Validates and extracts header metadata and payload from raw received data.
