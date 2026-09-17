@@ -166,10 +166,6 @@ class HUBDevice:
                    "VSUP_MEAS": calc_adc_resistor_divider(self.adc_VSUP_MEAS.read(), 10, 43)}
         print(retavls)
     
-    def hub_update_afe_status(self):
-        for afe in self.afe_devices:
-            self.get_subdevice_status(afe.device_id, AFECommandSubdevice.AFECommandSubdevice_both,addToCmd={"callback":p.print})
-
     async def powerOn(self):
         set_power_pins(True)
         await self.logger.log(VerbosityLevel["INFO"],
@@ -211,9 +207,7 @@ class HUBDevice:
             for filename in os.listdir("/sd/logs"):
                 os.remove("/sd/logs/" + filename)
         except Exception as e:
-            # This function is not async, p.print() is async.
-            # Using standard print for non-async context
-            print("Error clearing logs: {}".format(e))
+            print("Error clearing logs:",e)
 
     async def get_subdevice_status(self, afe_id, subdevice_mask, addToCmd=None, callback=None):
         """
@@ -250,8 +244,9 @@ class HUBDevice:
             # Fallback or error logging if logger doesn't have the method
             await p.print("Logger not available or does not support clearing old logs.")
 
-    async def _dequeue_message_copy(self, _):
-        self.msg_to_process = await self.can_interface.get()
+    @micropython.native
+    def _dequeue_message_copy(self, _):
+        self.msg_to_process = self.can_interface.get()
         return self.msg_to_process
 
     def _message_queue_len(self):
@@ -277,7 +272,7 @@ class HUBDevice:
             return
 
         # Pop message and reset buffer state atomically
-        message = self.msg_to_process
+        message = self.msg_to_process.copy()
         self.msg_to_process = None
 
         afe_id = (message[0] >> 2) & 0xFF  # extract AFE ID
@@ -1047,7 +1042,7 @@ class HUBDevice:
 
     async def main_process(self, timer=None):
         # Ensure message is dequeued before processing
-        await self._dequeue_message_copy(0)
+        self._dequeue_message_copy(0)
         await self.discover_devices_async()
         await self.process_received_messages(0)
         

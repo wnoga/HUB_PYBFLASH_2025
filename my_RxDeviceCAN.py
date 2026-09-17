@@ -84,7 +84,8 @@ class RxDeviceCAN:
 
             await sleep(1)
 
-    async def get(self, out_msg=None):
+    @micropython.native
+    def get(self, out_msg=None):
         tail = self.rx_message_buffer_tail
         if self.rx_message_buffer_head == tail:
             return None
@@ -134,7 +135,8 @@ class RxDeviceCAN:
         except RuntimeError:
             pass
 
-    async def _poll_and_schedule_rx(self):
+    @micropython.native
+    def _poll_and_schedule_rx(self):
         if self.can_bus.any(0):
             try:
                 micropython.schedule(self.handle_can_rx_ref, 0)
@@ -144,28 +146,20 @@ class RxDeviceCAN:
                 self._log(self._ERR_SCHED_RX_FMT % e_sched)
     
     async def main_loop(self, reason=None):
-        can_bus = self.can_bus
-        poll_rx = self._poll_and_schedule_rx
-        sleep = uasyncio.sleep_ms
-        yield_ms = self.yielld_ms
-        
-        can_stopped = pyb.CAN.STOPPED
-        can_warning = pyb.CAN.ERROR_WARNING
-
         while self.running:
-            state = can_bus.state()
-            if state == can_stopped:
+            state = self.can_bus.state()
+            if state == pyb.CAN.STOPPED:
                 self._log(self._MSG_STOPPED)
             # Fix: state > 0 triggers on normal state 1 (ERROR_ACTIVE). Only alert on actual warning/bus-off state >= 2.
-            elif state >= can_warning:
+            elif state >= pyb.CAN.ERROR_WARNING:
                 self._log("RxDeviceCAN.main_loop: CAN BUS ERROR state: %d" % state)
-                await sleep(self.error_yielld_ms)
+                await uasyncio.sleep_ms(self.error_yielld_ms)
 
             # Polling mechanism
             if not self.use_rxcallback:
-                await poll_rx()
+                self._poll_and_schedule_rx()
 
-            await sleep(yield_ms)
+            await uasyncio.sleep_ms(self.yielld_ms)
 
     @micropython.native
     def state(self):
