@@ -2,7 +2,7 @@ try:
     import pyb
     import micropython
     import uasyncio
-except Import:
+except:
     import asyncio as uasyncio
 
 from my_utilities import p
@@ -10,17 +10,18 @@ from my_utilities import millis
 from my_utilities import is_timeout
 from my_utilities import is_delay
 
-
 class RxDeviceCAN:
-    def __init__(self, can_bus, use_rxcallback=True, buffer_max_len=int(32*4), payload_max_len=int(8*4)):
+    def __init__(self, can_bus, use_rxcallback=True):
+        self._send_ref = self._send
+        self.handle_can_rx_ref = self.handle_can_rx
         self.can_bus: pyb.CAN = can_bus
         self.use_rxcallback = use_rxcallback
         self.rx_timeout_ms = 5000
-        self.rx_message_buffer_max_len = buffer_max_len
+        self.rx_message_buffer_max_len = 32
         self.rx_message_buffer_head = 0
         self.rx_message_buffer_tail = 0
         self.rx_message_buffer = [
-            [0, 0, 0, memoryview(bytearray(payload_max_len))]
+            [0, 0, 0, memoryview(bytearray(8))]
             for _ in range(self.rx_message_buffer_max_len)
         ]
 
@@ -28,143 +29,123 @@ class RxDeviceCAN:
         self.yielld_ms = 10
         self.error_yielld_ms = 100
         self.irq_flag = False
-
-        # PRE-BIND references during __init__ to prevent heap allocation inside IRQs
-        self._send_ref = self._send
-        self.handle_can_rx_ref = self.handle_can_rx
-        self.handle_can_rx_irq_ref = self.handle_can_rx_irq
-
+ 
         if self.use_rxcallback:
-            # Pass the pre-bound method reference directly
-            self.can_bus.rxcallback(0, self.handle_can_rx_irq_ref)
-
-    # Pre-allocated log formatting templates
-    _ERR_FMT = "Error in RxDeviceCAN._send (scheduled for %d): %s"
-    _ERR_SCHED_FMT = "Error during micropython.schedule in RxDeviceCAN.send: %s"
-    _ERR_TIMEOUT_FMT = "Timeout: RxDeviceCAN failed to schedule send to %d within %dms"
-    _ERR_RX_FMT = "handle_can_rx: %s"
-    _ERR_SCHED_RX_FMT = "RxDeviceCAN._poll_and_schedule_rx: Error scheduling handle_can_rx: %s"
-    _MSG_STOPPED = "RxDeviceCAN.main_loop: CAN BUS STOPPED"
-
-    @micropython.native
-    def _log(self, msg):
-        """Helper to safely execute async p.print from non-async contexts."""
-        try:
-            # uasyncio.create_task(p.print(msg))
-            print(msg) # use standard print
-        except Exception:
-            pass
-
-    @micropython.native
+            # Register CAN RX interrupt, call safe ISR wrapper
+            self.can_bus.rxcallback(0, self.handle_can_rx_irq)
     def _send(self, args_tuple):
+        """
+        Internal method to perform the CAN send operation.
+        This is called by micropython.schedule.
+        args_tuple is expected to be (toSend, can_address, bus_timeout_ms).
+        """
         toSend, can_address, bus_timeout_ms = args_tuple
         try:
             self.can_bus.send(toSend, can_address, timeout=bus_timeout_ms)
         except Exception as e:
-            self._log(self._ERR_FMT % (can_address, e))
+            p.print("Error in RxDeviceCAN._send (scheduled for {}): {}".format(can_address, e))
 
     async def send(self, toSend: bytearray, can_address, timeout_ms):
-        sleep = uasyncio.sleep_ms
-
-        args = (toSend, can_address, timeout_ms)
+        """
+        Asynchronously schedules a CAN message send.
+        timeout_ms is used for both the scheduling attempt loop and the CAN bus operation itself.
+        Returns None on successful scheduling, -1 on scheduling timeout.
+        """
         timestamp_ms = millis()
-
         while True:
             try:
-                micropython.schedule(self._send_ref, args)
-                return None
-            except RuntimeError:
-                pass
-            except Exception as e:
-                self._log(self._ERR_SCHED_FMT % e)
-
+                micropython.schedule(self._send_ref, (toSend, can_address, timeout_ms))
+                return None  # Successful scheduling
+            except RuntimeError:  # micropython.schedule queue is full
+                pass  # Will retry after a short sleep
+            except Exception as e: # Other unexpected error during scheduling
+                p.print("Error during micropython.schedule in RxDeviceCAN.send: {}".format(e))
+                pass # Will retry
             if is_timeout(timestamp_ms, timeout_ms):
-                self._log(self._ERR_TIMEOUT_FMT % (can_address, timeout_ms))
-                return -1
+                p.print("Timeout: RxDeviceCAN failed to schedule send to {} within {}ms".format(can_address, timeout_ms))
+                return -1  # Scheduling failed due to timeout
+            await uasyncio.sleep_ms(1) # Yield before retrying schedule
 
-            await sleep(1)
 
-    @micropython.native
-    def get(self, out_msg=None):
-        tail = self.rx_message_buffer_tail
-        if self.rx_message_buffer_head == tail:
+    async def get(self):
+        if self.rx_message_buffer_head == self.rx_message_buffer_tail:
             return None
+        tmp = [self.rx_message_buffer[self.rx_message_buffer_tail][0],
+            self.rx_message_buffer[self.rx_message_buffer_tail][1],
+            self.rx_message_buffer[self.rx_message_buffer_tail][2],
+            bytearray(self.rx_message_buffer[self.rx_message_buffer_tail][3])]
+        self.rx_message_buffer_tail += 1
+        if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
+            self.rx_message_buffer_tail = 0
+        return tmp
+    
 
-        src_slot = self.rx_message_buffer[tail]
-
-        self.rx_message_buffer_tail = (tail + 1) % self.rx_message_buffer_max_len
-
-        if out_msg is not None:
-            out_msg[0] = src_slot[0]
-            out_msg[1] = src_slot[1]
-            out_msg[2] = src_slot[2]
-            payload_len = len(src_slot[3])
-            out_msg[3][:payload_len] = src_slot[3]
-            return out_msg
-
-        return [src_slot[0], src_slot[1], src_slot[2], bytearray(src_slot[3])]
-
-    @micropython.native
-    def handle_can_rx(self, _=None):
+    def handle_can_rx(self,_=None):
         try:
-            can_bus = self.can_bus
-            buffer = self.rx_message_buffer
-            max_len = self.rx_message_buffer_max_len
-            head = self.rx_message_buffer_head
-            tail = self.rx_message_buffer_tail
-            timeout = self.rx_timeout_ms
-
-            while can_bus.any(0):
-                can_bus.recv(0, buffer[head], timeout=timeout)
-                head = (head + 1) % max_len
-
-                if head == tail:
-                    tail = (tail + 1) % max_len
-
-            self.rx_message_buffer_head = head
-            self.rx_message_buffer_tail = tail
-
+            while self.can_bus.any(0):
+                self.can_bus.recv(0, self.rx_message_buffer[self.rx_message_buffer_head], timeout=self.rx_timeout_ms)
+                self.rx_message_buffer_head += 1
+                if self.rx_message_buffer_head >= self.rx_message_buffer_max_len:
+                    self.rx_message_buffer_head = 0
+                if self.rx_message_buffer_head == self.rx_message_buffer_tail:
+                    self.rx_message_buffer_tail += 1
+                    if self.rx_message_buffer_tail >= self.rx_message_buffer_max_len:
+                        self.rx_message_buffer_tail = 0
         except Exception as e:
-            self._log(self._ERR_RX_FMT % e)
-
-    @micropython.native
-    def handle_can_rx_irq(self, bus, reason=None):
-        try:
-            # Use pre-bound reference to prevent allocation in IRQ
-            micropython.schedule(self.handle_can_rx_ref, 0)
-        except RuntimeError:
+            p.print("handle_can_rx: {}",e)
             pass
 
-    @micropython.native
-    def _poll_and_schedule_rx(self):
-        if self.can_bus.any(0):
+    # ISR → only schedules processing
+    def handle_can_rx_irq(self, bus, reason=None):
+        try:
+            micropython.schedule(self.handle_can_rx_ref, 0)
+        except RuntimeError:
+            # This can happen if the schedule queue is full.
+            # Depending on the application, you might want to log this or take other action.
+            pass # Silently ignore if queue is full, as the task will be picked up by polling or next IRQ.
+
+    async def _poll_and_schedule_rx(self):
+        """Helper async method to poll for CAN messages and schedule handler."""
+        # This method is called repeatedly by main_loop.
+        # It should check once if messages are available and schedule if so.
+        # The handle_can_rx method itself has a loop to drain the FIFO.
+        if self.can_bus.any(0): # Check if any message is pending
             try:
                 micropython.schedule(self.handle_can_rx_ref, 0)
             except RuntimeError:
-                pass
+                # Schedule queue is full. Message will hopefully be picked up
+                # by a subsequent IRQ or this poll's next attempt.
+                pass # pragma: no cover
             except Exception as e_sched:
-                self._log(self._ERR_SCHED_RX_FMT % e_sched)
-    
+                p.print("RxDeviceCAN._poll_and_schedule_rx: Error scheduling handle_can_rx: {}".format(e_sched)) # pragma: no cover
+
     async def main_loop(self, reason=None):
         while self.running:
+            # try:
             state = self.can_bus.state()
             if state == pyb.CAN.STOPPED:
-                self._log(self._MSG_STOPPED)
-            # Fix: state > 0 triggers on normal state 1 (ERROR_ACTIVE). Only alert on actual warning/bus-off state >= 2.
-            elif state >= pyb.CAN.ERROR_WARNING:
-                self._log("RxDeviceCAN.main_loop: CAN BUS ERROR state: %d" % state)
-                await uasyncio.sleep_ms(self.error_yielld_ms)
+                p.print("RxDeviceCAN.main_loop: CAN BUS STOPPED")
+            elif state > 0: # CAN bus error (e.g., WARNING, ERROR_PASSIVE, BUS_OFF) # pragma: no cover
+                p.print("RxDeviceCAN.main_loop: CAN BUS ERROR state: {}".format(state))
+                # Loop continues to monitor and allow for potential auto-restart or external restart.
+                # Higher-level logic (e.g., in HUB.py) might attempt can_bus.restart().
+                await uasyncio.sleep_ms(100) # Wait 100 ms for recovery
 
-            # Polling mechanism
-            if not self.use_rxcallback:
-                self._poll_and_schedule_rx()
+            # Perform polling for CAN messages.
+            # This acts as a primary mechanism if use_rxcallback is False,
+            # or as a backup/general check if use_rxcallback is True.
+            await self._poll_and_schedule_rx() # Call the simplified polling method
 
-            await uasyncio.sleep_ms(self.yielld_ms)
+            # except Exception as e:
+            #     p.print("RxDeviceCAN.main_loop: Exception: {}".format(e)) # pragma: no cover
+            await uasyncio.sleep_ms(self.yielld_ms) # This controls the polling frequency
 
-    @micropython.native
     def state(self):
+        """Returns the current state of the CAN bus."""
         return self.can_bus.state()
 
-    @micropython.native
     def restart(self):
+        """Restarts the CAN bus.
+        This can be used to recover from error states like BUS_OFF.
+        """
         self.can_bus.restart()
