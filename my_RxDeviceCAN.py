@@ -12,7 +12,7 @@ from my_utilities import is_delay
 
 
 class RxDeviceCAN:
-    def __init__(self, can_bus, use_rxcallback=True, buffer_max_len=32, payload_max_len=8):
+    def __init__(self, can_bus, use_rxcallback=True, buffer_max_len=int(32*4), payload_max_len=int(8*4)):
         self.can_bus: pyb.CAN = can_bus
         self.use_rxcallback = use_rxcallback
         self.rx_timeout_ms = 5000
