@@ -167,7 +167,7 @@ class JSONLogger:
                 target_file.flush()
                 target_file.close()
         except Exception as e:
-            await p.print("ERROR writing to {}: {}".format(self.filename, e))
+            await p.print("ERROR writing to",self.filename, ":", e)
             if opened_in_scope and target_file:
                 try:
                     target_file.close()
