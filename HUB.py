@@ -93,29 +93,30 @@ def get_float_cmd_map(g):
     }
     return subdev_ch, gen_mask, float_cmd_map
 
+import _thread
+import micropython
+import uasyncio
+import utime
+
+
 class HUBDevice:
-    """
-    HUBDevice class manages communication with multiple AFE devices over CAN bus.
+    """HUBDevice class manages communication with multiple AFE devices over CAN bus."""
 
-    This class handles device discovery, message processing, and command execution
-    for a network of Analog Front-End (AFE) devices. It uses a CAN bus for
-    communication and supports both polling and callback-based message handling.
-
-    Attributes:
-        can_bus (pyb.CAN): The CAN bus object used for communication.
-        lock (_thread.allocate_lock): A lock for thread synchronization.
-        logger (EmptyLogger): Logger for logging events and errors.
-        use_rxcallback (bool): Flag to enable or disable CAN RX callback.
-    """
-
-    def __init__(self, can_bus: pyb.CAN, logger: JSONLogger, rxDeviceCAN: RxDeviceCAN, use_rxcallback=True, use_automatic_restart=False):
+    def __init__(
+        self,
+        can_bus: pyb.CAN,
+        logger: JSONLogger,
+        rxDeviceCAN: RxDeviceCAN,
+        use_rxcallback=True,
+        use_automatic_restart=False,
+    ):
         self.can_bus = can_bus
         self.afe_devices: list[AFEDevice] = []
+        self.afe_map: dict[int, AFEDevice] = {}  # O(1) lookup table
         self.afe_devices_max = 8
         self.use_automatic_restart = use_automatic_restart
 
         self.main_loop_yield_ms = 1
-
         self.rx_timeout_ms = 1000
         self.run = True
 
@@ -123,14 +124,11 @@ class HUBDevice:
         self.use_rxcallback = use_rxcallback
         self.can_interface = rxDeviceCAN
 
-        self.message_queue = []
-        self.message_queue_max = 128
-
-        self.discovery_active = False  # enable discovery subprocess
-        self.afe_manage_active = False  # enable management of the AFEs
+        self.discovery_active = False
+        self.afe_manage_active = False
         self.rx_process_active = False
-        
-        self.discovery_start_time = millis()
+
+        self.discovery_start_time = utime.ticks_ms()
         self.discovery_timeout_ms = 300000
 
         self.afe_id_min = 1
@@ -151,180 +149,117 @@ class HUBDevice:
 
         self.afecmd = AFECommand()
 
-        self.afe0: AFEDevice = None
         self.adc_U_SIPM_MEAS = pyb.ADC(pyb.Pin.cpu.A3)
         self.adc_I_SIPM_MEAS = pyb.ADC(pyb.Pin.cpu.C2)
         self.adc_VSUP_MEAS = pyb.ADC(pyb.Pin.cpu.C3)
 
         self.msg_to_process = None
-
         self.logger_sync_active = True
-    
-    def hub_adc_read(self):     
-        retavls = {"I_SIPM_MEAS": self.adc_I_SIPM_MEAS.read(),
-                   "U_SIPM_MEAS": calc_adc_resistor_divider(self.adc_U_SIPM_MEAS.read(), 1, 33),
-                   "VSUP_MEAS": calc_adc_resistor_divider(self.adc_VSUP_MEAS.read(), 10, 43)}
-        print(retavls)
-    
-    async def powerOn(self):
-        set_power_pins(True)
-        await self.logger.log(VerbosityLevel["INFO"],
-                              {
-            "device_id": 0,
-            "timestamp_ms": millis(),
-            "info": "powerOn"
-        })
-        
 
-    async def powerOff(self):
-        set_power_pins(False)
-        await self.logger.log(VerbosityLevel["INFO"],
-                              {
-            "device_id": 0,
-            "timestamp_ms": millis(),
-            "info": "powerOff"
-        })
-        
-    async def reset_all(self):
-        await self.stop_discovery()
-        self.afe_devices = []
-        self.message_queue = []
-        self.current_discovery_id = 1
+        # Pre-allocate static byte payloads for CAN frame dispatch
+        self._discovery_payload = b"\x00\x11"
 
-    async def close_all(self):  # Changed to async def
-        await self.logger.log(VerbosityLevel["INFO"], {
-            "device_id": 0,
-            "info": "CLOSE ALL", "timestamp_ms": millis()})
-        self.logger.request_new_file()
-        self.use_automatic_restart = False
-        for afe in self.afe_devices:
-            await afe.restart_device()
-        await self.powerOff()
-
-    def clear_all_logs(self):
-        try:
-            import os
-            for filename in os.listdir("/sd/logs"):
-                os.remove("/sd/logs/" + filename)
-        except Exception as e:
-            print("Error clearing logs:",e)
-
-    async def get_subdevice_status(self, afe_id, subdevice_mask, addToCmd=None, callback=None):
-        """
-        Requests the status of a specific subdevice (master/slave) on an AFE.
-
-        Args:
-            afe_id (int): The ID of the AFE device.
-            subdevice_mask (int): The mask for the subdevice (e.g., AFECommandSubdevice.AFECommandSubdevice_master).
-            callback (callable, optional): A callback function to be executed when the response is received.
-        Returns:
-            int: 0 on success, -1 if AFE not found.
-        """
-        afe = self.get_afe_by_id(afe_id)
-        if afe is None:
-            await p.print("AFE {} not found for get_subdevice_status.".format(afe_id))
-            return -1
-
-        commandKwargs = {"timeout_ms": 10220, "preserve": True, "timeout_start_on_send_ms": 2000, "callback_error": self.callback_afe_error}
-        if addToCmd:
-            commandKwargs.update(addToCmd)
-        if callback:
-            commandKwargs["callback"] = callback
-        
-        await afe.enqueue_command(AFECommand.getSubdeviceStatus, [subdevice_mask], **commandKwargs)
-        return 0
-
-    async def clear_old_logs(self):
-        """
-        Triggers the logger to delete all log files except the current one.
-        """
-        if self.logger and hasattr(self.logger, 'clear_old_logs'):
-            await self.logger.clear_old_logs()
-        else:
-            # Fallback or error logging if logger doesn't have the method
-            await p.print("Logger not available or does not support clearing old logs.")
+    def get_afe_by_id(self, afe_id: int) -> AFEDevice:
+        """Find an AFE by its short ID in O(1) time complexity."""
+        return self.afe_map.get(afe_id, None)
 
     @micropython.native
-    def _dequeue_message_copy(self, _):
+    def _dequeue_message_copy(self, _=None):
         self.msg_to_process = self.can_interface.get()
         return self.msg_to_process
 
-    def _message_queue_len(self):
-        return len(self.message_queue)
+    async def main_process(self, timer=None):
+        self._dequeue_message_copy()
 
-    def get_afe_by_id(self, afe_id) -> AFEDevice:
-        """
-        Find an AFE by its short ID.
+        if self.discovery_active:
+            await self.discover_devices_async()
 
-        Args:
-            afe_id: The short ID of the AFE to find.
-        Returns:
-            The AFEDevice object if found, otherwise None.
-        """
-        for afe in self.afe_devices:
-            if afe.device_id == afe_id:
-                return afe
-        return None
+        if self.rx_process_active and self.msg_to_process is not None:
+            await self.process_received_messages()
 
-    async def process_received_messages(self, timer=None):
-        """Process messages received from the CAN bus."""
-        if not self.rx_process_active or self.msg_to_process is None:
-            return
+        if self.afe_manage_active:
+            use_auto_restart = self.use_automatic_restart
+            default_full = self.default_full
 
-        # Pop message and reset buffer state atomically
-        message = self.msg_to_process.copy()
+            for afe in self.afe_devices:
+                await afe.manage_state()
+
+                if use_auto_restart:
+                    if not afe.is_configuration_started:
+                        await default_full(afe_id=afe.device_id)
+
+                    # Direct key access instead of repeated .get() lookups
+                    m_cfg = afe.configuration.get("M")
+                    if m_cfg and m_cfg.get("automatic_restart"):
+                        if (
+                            afe.is_configured
+                            and not afe.periodic_measurement_download_is_enabled
+                        ):
+                            afe.periodic_measurement_download_is_enabled = True
+                            await afe.start_periodic_measurement_by_config()
+
+        # Handle active function timeout logic
+        if self.curent_function is not None:
+            if utime.ticks_diff(
+                utime.ticks_ms(), self.curent_function_timestamp_ms
+            ) >= self.curent_function_timeout_ms:
+                self.curent_function = None
+                self.curent_function_retval = "timeout"
+
+    async def main_loop(self):
+        main_process = self.main_process
+        sleep_ms = uasyncio.sleep_ms
+        yield_ms = self.main_loop_yield_ms
+        wdt_feed = wdt.feed
+
+        while self.run:
+            await main_process()
+            await sleep_ms(yield_ms)
+            wdt_feed()
+
+    async def process_received_messages(self):
+        """Process pending message pulled from CAN rx queue without intermediate copies."""
+        message = self.msg_to_process
         self.msg_to_process = None
 
-        afe_id = (message[0] >> 2) & 0xFF  # extract AFE ID
-        afe = self.get_afe_by_id(afe_id)
+        afe_id = (message[0] >> 2) & 0xFF
+        afe = self.afe_map.get(afe_id)
 
         if afe is None:
-            # Create and register newly discovered AFE device instance
+            if len(self.afe_devices) >= self.afe_devices_max:
+                return  # Prevent dynamic allocation beyond max capacity
+
             afe = AFEDevice(self.can_interface, afe_id, logger=self.logger)
             self.afe_devices.append(afe)
+            self.afe_map[afe_id] = afe
 
-            if not self.afe0:
-                self.afe0 = afe
-
-            log_payload = {
-                "device_id": 0,
-                "timestamp_ms": millis(),
-                "info": "found new AFE %d" % afe_id,
-            }
-            await self.logger.log(VerbosityLevel["INFO"], log_payload)
-
-        # Process the received data using the AFE device's handler
-        await afe.process_received_data(message)
-        
-    async def discover_devices_async(self):
-        """Periodically discover AFEs on the CAN bus with a timeout."""
-        if not self.discovery_active:
-            return
-
-        now = millis()
-
-        # Check timeout using MicroPython ticks
-        if utime.ticks_diff(now, self.discovery_start_time) >= self.discovery_timeout_ms:
             await self.logger.log(
                 VerbosityLevel["INFO"],
                 {
                     "device_id": 0,
-                    "timestamp_ms": now,
-                    "message": "Discovery timeout reached (5 minutes). Stopping.",
+                    "timestamp_ms": utime.ticks_ms(),
+                    "info": "found new AFE %d" % afe_id,
                 },
             )
+
+        await afe.process_received_data(message)
+
+    async def discover_devices_async(self):
+        """Periodically discover AFEs on the CAN bus with a timeout."""
+        now = utime.ticks_ms()
+
+        # Enforce discovery period limits
+        if (
+            utime.ticks_diff(now, self.discovery_start_time)
+            >= self.discovery_timeout_ms
+            or len(self.afe_devices) >= self.afe_devices_max
+        ):
             await self.stop_discovery()
             return
 
-        # Stop if maximum device count reached
-        if len(self.afe_devices) >= self.afe_devices_max:
-            await self.stop_discovery()
+        if self.use_tx_delay and utime.ticks_diff(now, self.last_tx_time) < self.tx_delay_ms:
             return
 
-        if self.use_tx_delay and is_delay(self.last_tx_time, self.tx_delay_ms):
-            return
-
-        # Handle CAN interface state issues
         can_state = self.can_interface.state()
         if can_state > 1:
             if can_state > 2:
@@ -337,29 +272,19 @@ class HUBDevice:
 
             await self.logger.log(
                 log_level,
-                {
-                    "device_id": 0,
-                    "timestamp_ms": now,
-                    "error": msg,
-                },
+                {"device_id": 0, "timestamp_ms": now, "error": msg},
             )
             return
 
-        # Wrap discovery ID around range limits
         curr_id = self.current_discovery_id
         if curr_id > self.afe_id_max:
             curr_id = self.afe_id_min
 
-        # Check if device ID is already online without generator allocation
-        is_online = False
-        for afe in self.afe_devices:
-            if afe.device_id == curr_id and afe.is_online:
-                is_online = True
-                break
-
-        if not is_online:
+        # Fast O(1) active check using dictionary mapping
+        target_afe = self.afe_map.get(curr_id)
+        if target_afe is None or not target_afe.is_online:
             send_result = await self.can_interface.send(
-                toSend=b"\x00\x11",
+                toSend=self._discovery_payload,
                 can_address=curr_id << 2,
                 timeout_ms=self.tx_timeout_ms,
             )
@@ -372,22 +297,12 @@ class HUBDevice:
 
         self.current_discovery_id = curr_id + 1
 
-    async def start_discovery(self):  # Changed to async def
-        """ Start the device discovery process. """
+    async def start_discovery(self):
+        self.discovery_start_time = utime.ticks_ms()
         self.discovery_active = True
 
-    async def stop_discovery(self):  # Changed to async def
-        """ Stop the device discovery process. """
+    async def stop_discovery(self):
         self.discovery_active = False
-        await p.print("STOP DISCOVERY")
-
-    def get_afe_by_id(self, afe_id) -> AFEDevice:
-        if len(self.afe_devices) == 0:
-            return None
-        for afe in self.afe_devices:
-            if afe.device_id == afe_id:
-                return afe
-        return None
 
     async def default_get_measurement(self, afe_id=35, callback=None):
         afe = self.get_afe_by_id(afe_id)
@@ -1039,47 +954,90 @@ class HUBDevice:
     #     if afe is None:
     #         return -1
     #     await afe.start_periodic_measurement_by_config()
-
-    async def main_process(self, timer=None):
-        # Ensure message is dequeued before processing
-        self._dequeue_message_copy(0)
-        await self.discover_devices_async()
-        await self.process_received_messages(0)
+    
+    def hub_adc_read(self):     
+        retavls = {"I_SIPM_MEAS": self.adc_I_SIPM_MEAS.read(),
+                   "U_SIPM_MEAS": calc_adc_resistor_divider(self.adc_U_SIPM_MEAS.read(), 1, 33),
+                   "VSUP_MEAS": calc_adc_resistor_divider(self.adc_VSUP_MEAS.read(), 10, 43)}
+        print(retavls)
+    
+    async def powerOn(self):
+        set_power_pins(True)
+        await self.logger.log(VerbosityLevel["INFO"],
+                              {
+            "device_id": 0,
+            "timestamp_ms": millis(),
+            "info": "powerOn"
+        })
         
-        if self.afe_manage_active:
-            # Cache method and attribute lookups locally to avoid micro-allocations in the loop
-            use_auto_restart = self.use_automatic_restart
-            default_full = self.default_full
-            
-            for afe in self.afe_devices:
-                await afe.manage_state()
-                if use_auto_restart:
-                    if not afe.is_configuration_started:
-                        await default_full(afe_id=afe.device_id)
-                    # Eliminate chained .get() lookups by caching configuration dictionary
-                    if afe.configuration["M"].get("automatic_restart"):
-                        if afe.is_configured and not afe.periodic_measurement_download_is_enabled:
-                            afe.periodic_measurement_download_is_enabled = True
-                            await afe.start_periodic_measurement_by_config()
 
-        # Localize current function attributes to avoid repeated self-lookups
-        curr_func = self.curent_function
-        if curr_func is not None:
-            if is_timeout(self.curent_function_timestamp_ms, self.curent_function_timeout_ms):
-                self.curent_function = None
-                self.curent_function_retval = "timeout"
+    async def powerOff(self):
+        set_power_pins(False)
+        await self.logger.log(VerbosityLevel["INFO"],
+                              {
+            "device_id": 0,
+            "timestamp_ms": millis(),
+            "info": "powerOff"
+        })
+        
+    async def reset_all(self):
+        await self.stop_discovery()
+        self.afe_devices = []
+        self.message_queue = []
+        self.current_discovery_id = 1
 
-    async def main_loop(self):
-        # Pre-cache methods and variables for the infinite loop
-        main_process = self.main_process
-        sleep_ms = uasyncio.sleep_ms
-        yield_ms = self.main_loop_yield_ms
-        wdt_feed = wdt.feed
+    async def close_all(self):  # Changed to async def
+        await self.logger.log(VerbosityLevel["INFO"], {
+            "device_id": 0,
+            "info": "CLOSE ALL", "timestamp_ms": millis()})
+        self.logger.request_new_file()
+        self.use_automatic_restart = False
+        for afe in self.afe_devices:
+            await afe.restart_device()
+        await self.powerOff()
 
-        while self.run:
-            await main_process()
-            await sleep_ms(yield_ms)
-            wdt_feed()
+    def clear_all_logs(self):
+        try:
+            import os
+            for filename in os.listdir("/sd/logs"):
+                os.remove("/sd/logs/" + filename)
+        except Exception as e:
+            print("Error clearing logs:",e)
+
+    async def get_subdevice_status(self, afe_id, subdevice_mask, addToCmd=None, callback=None):
+        """
+        Requests the status of a specific subdevice (master/slave) on an AFE.
+
+        Args:
+            afe_id (int): The ID of the AFE device.
+            subdevice_mask (int): The mask for the subdevice (e.g., AFECommandSubdevice.AFECommandSubdevice_master).
+            callback (callable, optional): A callback function to be executed when the response is received.
+        Returns:
+            int: 0 on success, -1 if AFE not found.
+        """
+        afe = self.get_afe_by_id(afe_id)
+        if afe is None:
+            await p.print("AFE {} not found for get_subdevice_status.".format(afe_id))
+            return -1
+
+        commandKwargs = {"timeout_ms": 10220, "preserve": True, "timeout_start_on_send_ms": 2000, "callback_error": self.callback_afe_error}
+        if addToCmd:
+            commandKwargs.update(addToCmd)
+        if callback:
+            commandKwargs["callback"] = callback
+        
+        await afe.enqueue_command(AFECommand.getSubdeviceStatus, [subdevice_mask], **commandKwargs)
+        return 0
+
+    async def clear_old_logs(self):
+        """
+        Triggers the logger to delete all log files except the current one.
+        """
+        if self.logger and hasattr(self.logger, 'clear_old_logs'):
+            await self.logger.clear_old_logs()
+        else:
+            # Fallback or error logging if logger doesn't have the method
+            await p.print("Logger not available or does not support clearing old logs.")
 
 
 # Changed to async def
