@@ -112,7 +112,7 @@ async def send_control_web_page_raw(server_inst, sock):
 
         await send_chunk_raw(
             sock,
-            b'</style><meta http-equiv="refresh" content="5"></head><body>',
+            b'</style></head><body>',
             max_chunk=512,
         )
 
