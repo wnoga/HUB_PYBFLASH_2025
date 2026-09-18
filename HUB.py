@@ -901,7 +901,7 @@ class HUBDevice:
         await afe.enqueue_command(cmd, data, preserve=True)
 
     async def callback_afe_error(self, kwargs=None):  # Changed to async def
-        await p.print("callback_afe_error: {}".format(kwargs))
+        await p.print("callback_afe_error:",kwargs)
         afe: AFEDevice = kwargs["afe"]
         await afe.restart_device()
 
