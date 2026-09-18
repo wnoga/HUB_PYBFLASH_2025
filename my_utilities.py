@@ -123,26 +123,89 @@ def rtc_datetime_pretty():
 
 
 # --- Non-blocking Async Logger ---
-class PrintButLouder:
-    """Non-blocking queue-backed logger to prevent serialization I/O from stalling async tasks."""
-    def __init__(self, max_queue_size=50):
-        self.queue = []
-        self.max_queue_size = max_queue_size
+try:
+    import uasyncio
+except ImportError:
+    import asyncio as uasyncio
 
-    async def print(self, *args, **kwargs):
-        self.queue.append((args, kwargs))
-        if len(self.queue) > self.max_queue_size:
-            self.queue.pop(0)
+class PrintButLouder:
+    """
+    Non-blocking, queue-backed logger optimized for MicroPython.
+    Uses a pre-allocated ring buffer to prevent heap allocations during logging.
+    """
+
+    def __init__(self, max_queue_size=32, max_args_per_msg=4):
+        self.max_queue_size = max_queue_size
+        self.max_args = max_args_per_msg
+
+        # Pointers for circular buffer
+        self.head = 0
+        self.tail = 0
+
+        # Pre-allocate fixed slot arrays: [arg0, arg1, arg2, arg3, num_args]
+        # Avoids creating tuple objects on the heap during logging
+        self.buffer = [
+            [None] * (self.max_args + 1) for _ in range(self.max_queue_size)
+        ]
+
+    def _push_sync(self, *args):
+        """Internal helper to populate the next buffer slot without heap allocations."""
+        next_head = (self.head + 1) % self.max_queue_size
+
+        # Overflow handling: if full, advance tail to drop oldest message
+        if next_head == self.tail:
+            self.tail = (self.tail + 1) % self.max_queue_size
+
+        slot = self.buffer[self.head]
+        count = min(len(args), self.max_args)
+
+        # Populate slot contents
+        for i in range(count):
+            slot[i] = args[i]
+
+        # Store count in final index
+        slot[self.max_args] = count
+        self.head = next_head
+
+    async def print(self, *args):
+        """Async entry point for normal task context."""
+        self._push_sync(*args)
+
+    def print_sync(self, *args):
+        """Synchronous entry point safe for IRQs, callbacks, or micropython.schedule context."""
+        self._push_sync(*args)
 
     async def machine(self):
-        """Flushes buffered messages to console during idle event-loop ticks."""
-        if not self.queue:
-            return
-        
-        args, kwargs = self.queue.pop(0)
-        print(*args, **kwargs)
-        await uasyncio.sleep_ms(0)
+        """
+        Flushes one log message per tick to stdout.
+        Runs inside HUBDevice.main_process().
+        """
+        if self.head == self.tail:
+            return  # Buffer empty
 
+        slot = self.buffer[self.tail]
+        count = slot[self.max_args]
+
+        # Unpack pre-allocated slots to print without creating a temporary tuple
+        if count == 1:
+            print(slot[0])
+        elif count == 2:
+            print(slot[0], slot[1])
+        elif count == 3:
+            print(slot[0], slot[1], slot[2])
+        elif count == 4:
+            print(slot[0], slot[1], slot[2], slot[3])
+        else:
+            # Fallback unpack for large argument counts
+            print(*slot[:count])
+
+        # Clean up references so GC can reclaim transient string objects
+        for i in range(count):
+            slot[i] = None
+
+        # Advance tail
+        self.tail = (self.tail + 1) % self.max_queue_size
+        await uasyncio.sleep_ms(0)
 
 p = PrintButLouder()
 

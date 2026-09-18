@@ -24,7 +24,7 @@ class HardwareConfig:
     POLL_INTERVAL_MS = 50
     AFE_ID_MIN = 1
     AFE_ID_MAX = 99
-    TX_DELAY_MS = 1
+    TX_DELAY_MS = 50  # Increased from 1ms to prevent CAN bus flooding (State 1 warnings)
 
 
 async def periodic_tasks_loop(logger):
@@ -33,11 +33,12 @@ async def periodic_tasks_loop(logger):
     gc_counter = 0
     while True:
         wdt.feed()
-        await logger.machine()  # Service buffered file system writes
-        await p.machine()       # Service print buffer
+        if logger:
+            await logger.machine()  # Service buffered file system writes
+        await p.machine()           # Service print buffer
         
         gc_counter += 1
-        if gc_counter >= 100:  # Perform garbage collection ~every 5 seconds
+        if gc_counter >= 100:  # Perform garbage collection (~every 5 seconds)
             gc.collect()
             gc_counter = 0
 
@@ -48,12 +49,15 @@ async def async_repl(user_globals):
     """Non-blocking interactive REPL task over stdin/stdout."""
     print("Async REPL initialized. Type 'exit()' or 'quit()' to detach.")
     line = ""
+    print(">>> ", end="")
     
     while True:
-        if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
+        # Non-blocking poll on stdin
+        if select.select([sys.stdin], [], [], 0)[0]:
             char = sys.stdin.read(1)
             
             if char in ("\n", "\r"):
+                print()  # Newline echo
                 cmd = line.strip()
                 if cmd in ("exit()", "quit()"):
                     print("Exiting REPL session.")
@@ -61,6 +65,7 @@ async def async_repl(user_globals):
                 
                 if cmd:
                     try:
+                        # Try evaluation first
                         result = eval(cmd, user_globals)
                         if result is not None:
                             print(repr(result))
@@ -74,13 +79,17 @@ async def async_repl(user_globals):
                 
                 line = ""
                 print(">>> ", end="")
-            elif char == "\x7f":  # Backspace handling
+
+            elif char in ("\x08", "\x7f"):  # Backspace handling
                 if line:
                     line = line[:-1]
                     print("\b \b", end="")
-            elif char == "\x1b":  # Drop escape sequences (arrow keys)
-                if sys.stdin.read(1) == "[":
+
+            elif char == "\x1b":  # Safely drain escape sequences without blocking loop
+                await uasyncio.sleep_ms(10)
+                while select.select([sys.stdin], [], [], 0)[0]:
                     sys.stdin.read(1)
+
             else:
                 line += char
                 print(char, end="")
@@ -88,8 +97,18 @@ async def async_repl(user_globals):
         await uasyncio.sleep_ms(50)
 
 
+def handle_exception(loop, context):
+    """Global uasyncio exception handler to prevent silent task crashes."""
+    exception = context.get('exception')
+    print("Unhandled uasyncio exception:", exception)
+
+
 async def main():
     await p.print("Initializing system components...")
+
+    # Set exception handler for uasyncio loop
+    loop = uasyncio.get_event_loop()
+    loop.set_exception_handler(handle_exception)
 
     # Hardware & Subsystem Initialization
     can_bus = pyb.CAN(HardwareConfig.CAN_BUS_ID)
@@ -103,7 +122,6 @@ async def main():
     )
 
     # Hub Configuration
-    hub.discovery_active = True
     hub.rx_process_active = True
     hub.use_tx_delay = True
     hub.afe_manage_active = True
@@ -112,29 +130,26 @@ async def main():
     hub.afe_id_max = HardwareConfig.AFE_ID_MAX
     await p.print("HUB initialized and configured.")
 
-    # Task Registration
-    tasks = [
-        uasyncio.create_task(hub.main_loop()),
-        uasyncio.create_task(rx_device_can.main_loop()),
-        uasyncio.create_task(periodic_tasks_loop(logger)),
-    ]
+    # Schedule Core Tasks
+    uasyncio.create_task(rx_device_can.main_loop())
+    uasyncio.create_task(periodic_tasks_loop(logger))
+    uasyncio.create_task(hub.main_loop())
 
     if USE_ASYNC_SERVER:
         server = AsyncWebServer(hub)
-        tasks.append(uasyncio.create_task(server.start()))
+        uasyncio.create_task(server.start())
         await p.print("Async Web Server task detached.")
 
-    # Optional REPL attach setup:
+    # Optional REPL attach setup (Uncomment to enable):
     # repl_globals = {"hub": hub, "p": p, "logger": logger}
-    # tasks.append(uasyncio.create_task(async_repl(repl_globals)))
+    # uasyncio.create_task(async_repl(repl_globals))
 
     await p.print("All runtime tasks scheduled.")
+    await hub.start_discovery()
 
-    # Prevent a crash in one task from killing all other tasks
-    results = await uasyncio.gather(*tasks, return_exceptions=True)
-    for res in results:
-        if isinstance(res, Exception):
-            await p.print("Critical task exception caught:", res)
+    # Keep main task alive indefinitely
+    while True:
+        await uasyncio.sleep(3600)
 
 
 if __name__ == "__main__":
