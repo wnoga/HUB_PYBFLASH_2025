@@ -5,33 +5,63 @@ import os
 import network
 import socket
 import struct
-
+from my_utilities import AFECommand
 # ============================================================================
 # 0. LIGHTWEIGHT ASYNC QUEUE FOR UASYNCIO
 # ============================================================================
+import uasyncio as asyncio
+
 class Queue:
-    """A simple event-driven queue compatible with MicroPython's uasyncio."""
-    def __init__(self):
-        self._queue = []
-        self._ev = asyncio.Event()
+    """A high-performance, memory-safe FIFO queue using a circular ring buffer."""
+    def __init__(self, maxsize=32):
+        self.maxsize = maxsize
+        # Pre-allocate the list slots to avoid dynamic memory allocation at runtime
+        self._queue = [None] * maxsize
+        self._head = 0
+        self._tail = 0
+        self._count = 0
+        self._ev_put = asyncio.Event()   # Notifies consumers that data is available
+        self._ev_get = asyncio.Event()   # Notifies producers that space is available
 
     async def put(self, val):
-        self._queue.append(val)
-        self._ev.set()
+        """Puts an item into the queue. Blocks if the queue is full."""
+        while self._count >= self.maxsize:
+            self._ev_get.clear()
+            await self._ev_get.wait()
+            
+        self._queue[self._tail] = val
+        self._tail = (self._tail + 1) % self.maxsize
+        self._count += 1
+        self._ev_put.set()
 
     async def get(self):
-        while not self._queue:
-            self._ev.clear()
-            await self._ev.wait()
-        return self._queue.pop(0)
+        """Gets an item from the queue. Blocks if the queue is empty."""
+        while self._count == 0:
+            self._ev_put.clear()
+            await self._ev_put.wait()
+            
+        val = self._queue[self._head]
+        self._queue[self._head] = None  # Free reference for the Garbage Collector
+        self._head = (self._head + 1) % self.maxsize
+        self._count -= 1
+        self._ev_get.set()
+        return val
 
     def empty(self):
-        return len(self._queue) == 0
+        return self._count == 0
+
+    def full(self):
+        return self._count >= self.maxsize
 
     def get_nowait(self):
-        if not self._queue:
+        if self._count == 0:
             raise IndexError("queue is empty")
-        return self._queue.pop(0)
+        val = self._queue[self._head]
+        self._queue[self._head] = None
+        self._head = (self._head + 1) % self.maxsize
+        self._count -= 1
+        self._ev_get.set()
+        return val
 
 # ============================================================================
 # 1. CAN CONTROLLER INTERFACE
@@ -51,7 +81,6 @@ class CANController:
         self.rx_listeners.append(queue)
 
     async def send_frame(self, msg_id: int, data: bytes):
-        print("CANController: send_frame:", msg_id, data)
         await self.tx_queue.put((msg_id, data))
 
     async def tx_loop(self):
@@ -80,111 +109,300 @@ class CANController:
 # 2. SUBDEVICE (AFEDevice)
 # ============================================================================
 class CommandRequest:
-    def __init__(self, cmd_id: int, payload: bytes, timeout_ms: int):
+    __slots__ = ("cmd_id", "payload", "timeout_ms", "event", "result", "exception")
+    
+    def __init__(self, cmd_id: int, payload: bytes = b'', timeout_ms: int = 2000):
         self.cmd_id = cmd_id
         self.payload = payload
         self.timeout_ms = timeout_ms
         self.event = asyncio.Event()
         self.result = None
-        self.created_at = time.ticks_ms()
+        self.exception = None  # NEW: Holds errors to bubble up to the caller
+
+
+@micropython.native
+def parse_can_frame(received_data, expected_device_id):
+    """
+    Validates and extracts header metadata and payload from raw received data.
+    Returns (device_id, command, chunk_id, max_chunks, data_bytes, chunk_payload) 
+    or None if invalid or not directed to this device.
+    """
+    if not received_data or len(received_data) < 4:
+        return None
+
+    msg_header = received_data[0]
+    device_id = (msg_header >> 2) & 0xFF
+    msg_from_slave = (msg_header >> 10) & 0x001
+
+    if msg_from_slave != 1 or device_id != expected_device_id:
+        return None
+
+    data_bytes = list(bytes(received_data[3]))
+    if len(data_bytes) < 2:
+        return None  # Frame too short to parse command and chunk info
+
+    command = int(data_bytes[0])
+    chunk_id = int(data_bytes[1] & 0x0F)
+    max_chunks = int((data_bytes[1] >> 4) & 0x0F)
+    chunk_payload = data_bytes[2:]
+
+    return device_id, command, chunk_id, max_chunks, data_bytes, chunk_payload
+
+
+import uasyncio as asyncio
+import struct
+import time
+from time import ticks_ms as millis
+
+# Ensure these classes/functions are imported or declared globally:
+# from your_module import Queue, parse_can_frame, CommandStatus, AFECommandPayload, CommandRequest
 
 class AFEDevice:
-    def __init__(self, afe_id: int, can_controller, hub, stale_buffer_ttl_ms: int = 3000):
+    def __init__(self, afe_id: int, can_controller, hub, stale_buffer_ttl_ms: int = 3000, max_queue_size: int = 32):
         self.afe_id = afe_id
         self.can = can_controller
         self.hub = hub
         self.stale_buffer_ttl_ms = stale_buffer_ttl_ms
         
-        self.rx_queue = Queue()
-        self.cmd_queue = Queue()
+        # Address matching your low-level logic (e.g., if needed for specific framing)
+        self.can_address = afe_id << 2
+        self.default_command_timeout_ms = 1000
+        self.default_can_timeout_ms = 500
         
-        self._pending_requests = {}
+        # Queues
+        self.rx_queue = Queue()  # Ingress raw frames
+        self.to_execute = Queue(maxsize=max_queue_size)  # High-performance Ring Buffer for TX
+        
+        self._pending_requests = {}  # For blocking execute_command requests
+        self._active_payloads = {}   # NEW: Track active AFECommandPayloads for callbacks
         self._assembly_buffers = {}
+        
+        self.request_configuration = True
+        self.is_configured = False
+        self.configuration = None
 
-    async def execute_command(self, cmd_id: int, payload: bytes = b'', timeout_ms: int = 2000):
-        req = CommandRequest(cmd_id, payload, timeout_ms)
+    def prepare_command(
+        self,
+        command: int,
+        data=None,
+        chunk: int = 1,
+        max_chunks: int = 1,
+        timeout_ms: int = None,
+        preserve: bool = False,
+        can_timeout_ms: int = None,
+        callback=None,
+        callback_error=None,
+        **kwargs,
+    ):
+        """Builds a highly efficient AFECommandPayload object using zero-slicing logic."""
+        if data is None:
+            data = ()
+        elif isinstance(data, int):
+            data = (data,)
+
+        data_len = len(data)
+        if data_len > 6:
+            data_len = 6
+
+        # Construct frame buffer directly
+        chunk_info = (max_chunks << 4) | chunk
+        frame = bytearray(2 + data_len)
+        frame[0] = command
+        frame[1] = chunk_info
+        
+        for i in range(data_len):
+            frame[2 + i] = int(data[i])
+
+        now = millis()
+
+        return AFECommandPayload(
+            command=command,
+            frame=frame,
+            device_id=self.afe_id,
+            can_address=self.can_address,
+            timeout_ms=self.default_command_timeout_ms if timeout_ms is None else timeout_ms,
+            timestamp_ms=now,
+            can_timeout_ms=self.default_can_timeout_ms if can_timeout_ms is None else can_timeout_ms,
+            preserve=preserve,
+            callback=callback,
+            callback_error=callback_error
+        )
+
+    async def enqueue_command(self, command: int, data=None, **kwargs):
+        """Prepares a command payload and asynchronously pushes it to the TX Ring Buffer."""
+        payload = self.prepare_command(command, data, **kwargs)
+        await self.to_execute.put(payload)
+        return payload
+
+    async def execute_command(self, cmd_id: int, data=None, timeout_ms: int = 2000, **kwargs):
+        """Prepares, enqueues, and waits for a response. Raises exceptions gracefully if failed."""
+        req = CommandRequest(cmd_id, b'', timeout_ms)
         self._pending_requests[cmd_id] = req
-        await self.cmd_queue.put(req)
+
+        # Queue the command payload
+        try:
+            await self.enqueue_command(cmd_id, data, timeout_ms=timeout_ms, **kwargs)
+        except Exception as queue_err:
+            self._pending_requests.pop(cmd_id, None)
+            raise RuntimeError("Failed to enqueue command 0x{cmd_id:X}".format(cmd_id)) from queue_err
 
         try:
-            # FIX: Convert milliseconds to floating point seconds for modern uasyncio
+            # Wait for either completion, timeout, or an error assignment
             await asyncio.wait_for(req.event.wait(), timeout_ms / 1000.0)
+            
+            # NEW: If an exception was attached during processing, raise it here
+            if req.exception is not None:
+                raise req.exception
+                
             return req.result
+
         except asyncio.TimeoutError:
             msg = "AFE-{} cmd 0x{:X} timed out".format(self.afe_id, cmd_id)
             await self.hub.logger.log("WARN", msg)
-            return None
+            raise TimeoutError(msg) # Raise an explicit, catching-friendly error
+            
         finally:
+            # Always clean up our reference tracking table
             if self._pending_requests.get(cmd_id) is req:
                 self._pending_requests.pop(cmd_id, None)
 
     async def command_queue_worker(self):
+        """Processes the optimized ring buffer and tracks active payloads for callbacks."""
         while True:
-            req = await self.cmd_queue.get()
-            await self.send_command(req.cmd_id, req.payload)
-            # FIX: Do not double-wait the event here; let execute_command handle the suspension.
+            payload = await self.to_execute.get()
+            
+            full_can_id = (self.afe_id << 4) | (payload.command & 0x0F)
+            payload.timeout_start_on_send_ms = millis()
+            
+            # Save the payload so the ingress processor can find its callbacks later
+            self._active_payloads[payload.command] = payload
+            
+            await self.can.send_frame(full_can_id, payload.frame)
+
+    # --- Downstream Specialized Serialization Wrapper Methods ---
+
+    async def enqueue_gpio_set(self, gpio, state, **kwargs):
+        return await self.enqueue_command(AFECommand.writeGPIO, (gpio.port, gpio.pin, state), **kwargs)
+
+    async def enqueue_float_for_channel(self, command, channel, value, **kwargs):
+        return await self.enqueue_command(command, (channel,) + struct.unpack('4B', struct.pack('<f', value)), **kwargs)
+
+    async def enqueue_u8_for_channel(self, command, channel, value, **kwargs):
+        return await self.enqueue_command(command, (channel, value & 0xFF), **kwargs)
+
+    async def enqueue_u16_for_channel(self, command, channel, value, **kwargs):
+        return await self.enqueue_command(command, (channel, value & 0xFF, (value >> 8) & 0xFF), **kwargs)
+
+    async def enqueue_u32_for_channel(self, command, channel, value, **kwargs):
+        return await self.enqueue_command(command, (channel, value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF, (value >> 24) & 0xFF), **kwargs)
+
+    # --- Ingress Loops & Housekeeping Loops ---
+
+    async def configure(self):
+        from my_utilities import get_configuration_from_files
+        self.configuration = get_configuration_from_files(self.afe_id)
+        self.request_configuration = False
+        print(self.configuration)
 
     async def buffer_cleanup_loop(self):
         while True:
             await asyncio.sleep_ms(1000)
-            now = time.ticks_ms()
-            stale_keys = []
-
-            for cmd_id, buf in self._assembly_buffers.items():
-                if time.ticks_diff(now, buf['last_updated']) > self.stale_buffer_ttl_ms:
-                    stale_keys.append(cmd_id)
-
-            for cmd_id in stale_keys:
+            now = millis()
+            
+            # Clean stale frame assembly buffers
+            stale_buffers = [cmd_id for cmd_id, buf in self._assembly_buffers.items() 
+                             if time.ticks_diff(now, buf['last_updated']) > self.stale_buffer_ttl_ms]
+            for cmd_id in stale_buffers:
                 del self._assembly_buffers[cmd_id]
-                msg = "AFE-{} purged stale buffer for cmd 0x{:X}".format(self.afe_id, cmd_id)
-                await self.hub.logger.log("WARN", msg)
+                await self.hub.logger.log("WARN", "AFE-{afe_id} purged stale buffer for cmd 0x{cmd_id:X}".format(afe_id=afe_id,cmd_id=cmd_id))
+
+            # NEW: Clean stale active payloads via unified exception pipeline
+            stale_payloads = [cmd_id for cmd_id, p in self._active_payloads.items()
+                              if p.timeout_start_on_send_ms and time.ticks_diff(now, p.timeout_start_on_send_ms) > p.timeout_ms]
+            
+            for cmd_id in stale_payloads:
+                # Forward a formal TimeoutError through the handler to clear pending_requests and ignite error callbacks smoothly
+                err = TimeoutError("AFE-{afe_id} command 0x{cmd_id:X} timed out waiting for response bus.".format(afe_id=self.afe_id,cmd_id=cmd_id))
+                await self._handle_complete_message(cmd_id, payload_bytes=None, exception=err)
 
     async def process_loop(self):
+        """Main ingress loop: Demux incoming frames & reassemble payloads using native parsing."""
         while True:
+            if self.request_configuration:
+                await self.configure()
             msg_id, data = await self.rx_queue.get()
+            print("AFE Ingress:", self.afe_id, msg_id, data)
             
-            incoming_afe_id = msg_id >> 4
-            # FIX: Extracted cmd_id directly from the CAN ID mask to match send_command format
-            cmd_id = msg_id & 0x0F
-            
-            if incoming_afe_id != self.afe_id or len(data) < 1:
+            parsed = parse_can_frame((msg_id, None, None, data), self.afe_id)
+            if parsed is None:
                 continue
+                
+            device_id, command, chunk_id, max_chunks, data_bytes, chunk_payload = parsed
+            total_msgs = max_chunks + 1
+            now = millis()
+            buffer_key = (command, total_msgs)
 
-            # Protocol Reassembly Logic mapping payload indices assuming data is sequence byte
-            seq_byte = data[0]
-            total_msgs = ((seq_byte >> 4) & 0x0F) + 1
-            msg_idx = seq_byte & 0x0F
-            chunk_payload = data[1:]
-            now = time.ticks_ms()
-
-            if cmd_id not in self._assembly_buffers:
-                self._assembly_buffers[cmd_id] = {
+            if buffer_key not in self._assembly_buffers:
+                self._assembly_buffers[buffer_key] = {
                     'total': total_msgs,
                     'chunks': {},
                     'last_updated': now
                 }
 
-            buf = self._assembly_buffers[cmd_id]
-            buf['chunks'][msg_idx] = chunk_payload
+            buf = self._assembly_buffers[buffer_key]
+            buf['chunks'][chunk_id] = bytes(chunk_payload)
             buf['last_updated'] = now
 
             if len(buf['chunks']) == buf['total']:
                 full_payload = b"".join(buf['chunks'][i] for i in range(buf['total']))
-                del self._assembly_buffers[cmd_id]
-                await self._handle_complete_message(cmd_id, full_payload)
+                del self._assembly_buffers[buffer_key]
+                await self._handle_complete_message(command, full_payload)
 
-    async def send_command(self, cmd_id: int, payload: bytes):
-        full_can_id = (self.afe_id << 4) | (cmd_id & 0x0F)
-        await self.can.send_frame(full_can_id, payload)
-
-    async def _handle_complete_message(self, cmd_id: int, payload: bytes):
+    async def _handle_complete_message(self, cmd_id: int, payload_bytes: bytes = None, exception: Exception = None):
+        """Delivers data or exceptions to both blocking calls and callback streams."""
+        
+        # --- 1. Handle Synchronous/Blocking Requests ---
         if cmd_id in self._pending_requests:
             req = self._pending_requests[cmd_id]
-            req.result = payload
-            req.event.set()
-        else:
+            req.result = payload_bytes
+            req.exception = exception  # Assign the exception object (if any)
+            req.event.set()            # Wake up execute_command()
+
+        # --- 2. Handle Asynchronous/Enqueued Callbacks ---
+        if cmd_id in self._active_payloads:
+            command_payload = self._active_payloads.pop(cmd_id)
+            command_payload.retval = payload_bytes
+            
+            if exception:
+                command_payload.status = -1  # Error status
+                if command_payload.callback_error:
+                    try:
+                        if asyncio.iscoroutinefunction(command_payload.callback_error):
+                            await command_payload.callback_error(command_payload, exception)
+                        else:
+                            command_payload.callback_error(command_payload, exception)
+                    except Exception as cb_err:
+                        await self.hub.logger.log("ERROR", "Error-callback crashed: {cb_err}".format(cb_err))
+            else:
+                command_payload.status = 1   # Success status
+                if command_payload.callback:
+                    try:
+                        if asyncio.iscoroutinefunction(command_payload.callback):
+                            await command_payload.callback(command_payload)
+                        else:
+                            command_payload.callback(command_payload)
+                    except Exception as cb_err:
+                        await self.hub.logger.log("ERROR", "Callback crashed: {cb_err}".format(cb_err))
+                        if command_payload.callback_error:
+                            try:
+                                command_payload.callback_error(command_payload, cb_err)
+                            except Exception: pass
+
+        # --- 3. Handle Spontaneous Unsolicited Data ---
+        if cmd_id not in self._pending_requests and cmd_id not in self._active_payloads and not exception:
             msg = "AFE-{} spontaneous data for cmd 0x{:X}".format(self.afe_id, cmd_id)
             await self.hub.logger.log("INFO", msg)
+
 
     async def run(self):
         await asyncio.gather(
@@ -192,7 +410,7 @@ class AFEDevice:
             self.command_queue_worker(),
             self.buffer_cleanup_loop()
         )
-        
+
 # ============================================================================
 # 3. MAIN HUB DEVICE
 # ============================================================================
@@ -234,10 +452,18 @@ class HUBDevice:
         """Demux incoming raw CAN messages to the correct AFEDevice queue."""
         while True:
             msg_id, data = await self.rx_queue.get()
-            print(msg_id, data)
-            afe_id = msg_id >> 4
-            if afe_id in self.afes:
-                await self.afes[afe_id].rx_queue.put((msg_id, data))
+            afe_id = (msg_id >> 2) & 0xFF
+            
+            # DYNAMIC REGISTRATION: If it's a new AFE ID, build and start it on the fly
+            if afe_id not in self.afes:
+                await self.logger.log("SYS", "Discovered new hardware AFE-{%i}. Initializing..." % (afe_id))
+                new_afe = AFEDevice(afe_id=afe_id, can_controller=self.can, hub=self) 
+                self.afes[afe_id] = new_afe 
+                asyncio.create_task(new_afe.run())
+            
+            # Forward the frame to the target subdevice queue
+            await self.afes[afe_id].rx_queue.put((msg_id, data))
+
 
     async def run(self):
         await asyncio.gather(
