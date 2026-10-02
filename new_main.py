@@ -196,6 +196,74 @@ def _get_I_measured_ch_id(g):
 def _get_general_ch_id_mask(g):
     return AFECommandChannelMask.master if g == 'M' else AFECommandChannelMask.slave
 
+def TimeoutError(x):
+    print("Error Timeout:",x)
+
+class CommandStatus:
+    NONE = 0
+    SUCCESS = 1
+    ERROR = -1
+
+class AFECommandPayload:
+    """A memory-efficient container for AFE command configurations."""
+    __slots__ = (
+        "command", "frame", "device_id", "can_address", "timeout_ms",
+        "timestamp_ms", "timestamp_ms_enqueued", "can_timeout_ms", "status",
+        "preserve", "timeout_start_on_send_ms", "retval", "callback", "callback_error"
+    )
+
+    def __init__(self, command, frame, device_id, can_address, timeout_ms, 
+                 timestamp_ms, can_timeout_ms, preserve, callback, callback_error):
+        self.command = command
+        self.frame = frame
+        self.device_id = device_id
+        self.can_address = can_address
+        self.timeout_ms = timeout_ms
+        self.timestamp_ms = timestamp_ms
+        self.timestamp_ms_enqueued = timestamp_ms
+        self.can_timeout_ms = can_timeout_ms
+        self.status = CommandStatus.NONE
+        self.preserve = preserve
+        self.timeout_start_on_send_ms = None
+        self.retval = None
+        self.callback = callback
+        self.callback_error = callback_error
+
+class CommandRequest:
+    __slots__ = ("cmd_id", "payload", "timeout_ms", "event", "result", "exception")
+    
+    def __init__(self, cmd_id: int, payload: bytes = b'', timeout_ms: int = 2000):
+        self.cmd_id = cmd_id
+        self.payload = payload
+        self.timeout_ms = timeout_ms
+        self.event = asyncio.Event()
+        self.result = None
+        self.exception = None  
+
+@micropython.native
+def parse_can_frame(received_data, expected_device_id):
+    """Validates and extracts header metadata and payload from raw received data."""
+    if not received_data or len(received_data) < 4:
+        return None
+
+    msg_header = received_data[0]
+    device_id = (msg_header >> 2) & 0xFF
+    msg_from_slave = (msg_header >> 10) & 0x001
+
+    if msg_from_slave != 1 or device_id != expected_device_id:
+        return None
+
+    data_bytes = list(bytes(received_data[3]))
+    if len(data_bytes) < 2:
+        return None  
+
+    command = int(data_bytes[0])
+    chunk_id = int(data_bytes[1] & 0x0F)
+    max_chunks = int((data_bytes[1] >> 4) & 0x0F)
+    chunk_payload = data_bytes[2:]
+
+    return device_id, command, chunk_id, max_chunks, data_bytes, chunk_payload
+
 
 class AFEDevice:
     def __init__(self, afe_id: int, can_controller, hub, stale_buffer_ttl_ms: int = 3000, max_queue_size: int = 32):
@@ -218,8 +286,6 @@ class AFEDevice:
         self.request_configuration = True
         self.is_configured = False
         self.configuration = None
-        
-        self.last_data = {}
 
     def prepare_command(
         self,
@@ -306,12 +372,12 @@ class AFEDevice:
         while True:
             payload = await self.to_execute.get()
             
-            full_can_id = (self.afe_id << 4) | (payload.command & 0x0F)
+            full_can_id = (self.afe_id << 2) | (payload.command & 0x0F)
             payload.timeout_start_on_send_ms = millis()
             
             self._active_payloads[payload.command] = payload
-            print("Sending frame:",payload)
             await self.can.send_frame(full_can_id, payload.frame)
+            await asyncio.sleep_ms(0)
 
     # --- Downstream Specialized Serialization Wrapper Methods ---
 
@@ -332,8 +398,7 @@ class AFEDevice:
 
     # --- Ingress Loops & Housekeeping Loops ---
     def callback_afe_error(self, **x):
-        print("Callbackerror:",x)
-        
+        print("Callback error:",x)
     async def configure(self):
         from my_utilities import get_configuration_from_files, extract_bracketed, convert_to_si
         self.configuration = await get_configuration_from_files(self.afe_id)
@@ -463,13 +528,13 @@ class AFEDevice:
                              if time.ticks_diff(now, buf['last_updated']) > self.stale_buffer_ttl_ms]
             for cmd_id in stale_buffers:
                 del self._assembly_buffers[cmd_id]
-                await self.hub.logger.log("WARN", "AFE-{} purged stale buffer for cmd 0x{:X}".format(self.afe_id, cmd_id))
+                await self.hub.logger.log("WARN", "AFE-{} purged stale buffer for cmd 0x{}".format(self.afe_id, cmd_id))
 
             stale_payloads = [cmd_id for cmd_id, p in self._active_payloads.items()
                               if p.timeout_start_on_send_ms and time.ticks_diff(now, p.timeout_start_on_send_ms) > p.timeout_ms]
             
             for cmd_id in stale_payloads:
-                err = TimeoutError("AFE-{} command 0x{:X} timed out waiting for response bus.".format(self.afe_id, cmd_id))
+                err = TimeoutError("AFE-{} command 0x{} timed out waiting for response bus.".format(self.afe_id, cmd_id))
                 await self._handle_complete_message(cmd_id, payload_bytes=None, exception=err)
 
     async def process_loop(self):
@@ -478,11 +543,11 @@ class AFEDevice:
             if self.request_configuration:
                 await self.configure()
             msg_id, data = await self.rx_queue.get()
-            print("AFE Ingress:", self.afe_id, msg_id, data)
             
             parsed = parse_can_frame((msg_id, None, None, data), self.afe_id)
             if parsed is None:
                 continue
+            print("AFE Ingress:", self.afe_id, msg_id, data, parsed)
                 
             device_id, command, chunk_id, max_chunks, data_bytes, chunk_payload = parsed
             total_msgs = max_chunks + 1
@@ -504,6 +569,7 @@ class AFEDevice:
                 full_payload = b"".join(buf['chunks'][i] for i in range(buf['total']))
                 del self._assembly_buffers[buffer_key]
                 await self._handle_complete_message(command, full_payload)
+            await asyncio.sleep_ms(0)
 
     async def _handle_complete_message(self, cmd_id: int, payload_bytes: bytes = None, exception: Exception = None):
         """Delivers data or exceptions to both blocking calls and callback streams."""
@@ -535,6 +601,7 @@ class AFEDevice:
                             await command_payload.callback(command_payload)
                         else:
                             command_payload.callback(command_payload)
+                        print("Command success:",command_payload)
                     except Exception as cb_err:
                         await self.hub.logger.log("ERROR", "Callback crashed: {}".format(cb_err))
                         if command_payload.callback_error:
@@ -545,13 +612,6 @@ class AFEDevice:
         if cmd_id not in self._pending_requests and cmd_id not in self._active_payloads and not exception:
             msg = "AFE-{} spontaneous data for cmd 0x{:X}".format(self.afe_id, cmd_id)
             await self.hub.logger.log("INFO", msg)
-        
-        if cmd_id == AFECommand.getSerialNumber:
-            unique_id_str = "".join(
-                "{:02X}".format(b) for b in payload_bytes)
-            self.last_data["serial"] = unique_id_str
-            # print("Get Serial Number {}".format(payload_bytes), "->", unique_id_str)
-        print(self.last_data)
 
     async def run(self):
         await asyncio.gather(
@@ -559,7 +619,7 @@ class AFEDevice:
             self.command_queue_worker(),
             self.buffer_cleanup_loop()
         )
-
+        
 # ============================================================================
 # 3. MAIN HUB DEVICE
 # ============================================================================
@@ -614,6 +674,7 @@ class HUBDevice:
             
             # Forward the frame to the target subdevice queue
             await self.afes[afe_id].rx_queue.put((msg_id, data))
+            await asyncio.sleep_ms(0)
 
 
     async def run(self):
@@ -683,6 +744,7 @@ class WebServer:
                 if "content-length:" in header_str:
                     # FIX: Strip whitespace securely and convert to integer
                     content_length = int(header_str.split(":")[1].strip())
+                await asyncio.sleep_ms(0)
 
             if "POST /api/time" in req_str and content_length > 0:
                 body = await reader.read(content_length)
