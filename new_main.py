@@ -5,7 +5,7 @@ import os
 import network
 import socket
 import struct
-from my_utilities import AFECommand
+from my_utilities import (AFECommand, millis, wdt, AFECommandAverage,)
 # ============================================================================
 # 0. LIGHTWEIGHT ASYNC QUEUE FOR UASYNCIO
 # ============================================================================
@@ -108,6 +108,37 @@ class CANController:
 # ============================================================================
 # 2. SUBDEVICE (AFEDevice)
 # ============================================================================
+
+class CommandStatus:
+    NONE = 0
+    SUCCESS = 1
+    ERROR = -1
+
+class AFECommandPayload:
+    """A memory-efficient container for AFE command configurations."""
+    __slots__ = (
+        "command", "frame", "device_id", "can_address", "timeout_ms",
+        "timestamp_ms", "timestamp_ms_enqueued", "can_timeout_ms", "status",
+        "preserve", "timeout_start_on_send_ms", "retval", "callback", "callback_error"
+    )
+
+    def __init__(self, command, frame, device_id, can_address, timeout_ms, 
+                 timestamp_ms, can_timeout_ms, preserve, callback, callback_error):
+        self.command = command
+        self.frame = frame
+        self.device_id = device_id
+        self.can_address = can_address
+        self.timeout_ms = timeout_ms
+        self.timestamp_ms = timestamp_ms
+        self.timestamp_ms_enqueued = timestamp_ms
+        self.can_timeout_ms = can_timeout_ms
+        self.status = CommandStatus.NONE
+        self.preserve = preserve
+        self.timeout_start_on_send_ms = None
+        self.retval = None
+        self.callback = callback
+        self.callback_error = callback_error
+
 class CommandRequest:
     __slots__ = ("cmd_id", "payload", "timeout_ms", "event", "result", "exception")
     
@@ -117,16 +148,12 @@ class CommandRequest:
         self.timeout_ms = timeout_ms
         self.event = asyncio.Event()
         self.result = None
-        self.exception = None  # NEW: Holds errors to bubble up to the caller
+        self.exception = None  
 
 
 @micropython.native
 def parse_can_frame(received_data, expected_device_id):
-    """
-    Validates and extracts header metadata and payload from raw received data.
-    Returns (device_id, command, chunk_id, max_chunks, data_bytes, chunk_payload) 
-    or None if invalid or not directed to this device.
-    """
+    """Validates and extracts header metadata and payload from raw received data."""
     if not received_data or len(received_data) < 4:
         return None
 
@@ -139,7 +166,7 @@ def parse_can_frame(received_data, expected_device_id):
 
     data_bytes = list(bytes(received_data[3]))
     if len(data_bytes) < 2:
-        return None  # Frame too short to parse command and chunk info
+        return None  
 
     command = int(data_bytes[0])
     chunk_id = int(data_bytes[1] & 0x0F)
@@ -148,14 +175,27 @@ def parse_can_frame(received_data, expected_device_id):
 
     return device_id, command, chunk_id, max_chunks, data_bytes, chunk_payload
 
+from my_utilities import (AFECommandSubdevice, AFECommandChannel, AFECommandChannelMask)
+@micropython.native
+def _get_subdevice_ch_id(g):
+    return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
 
-import uasyncio as asyncio
-import struct
-import time
-from time import ticks_ms as millis
+@micropython.native
+def _get_T_measured_ch_id(g):
+    return AFECommandChannel.AFECommandChannel_7 if g == 'M' else AFECommandChannel.AFECommandChannel_6
 
-# Ensure these classes/functions are imported or declared globally:
-# from your_module import Queue, parse_can_frame, CommandStatus, AFECommandPayload, CommandRequest
+@micropython.native
+def _get_U_measured_ch_id(g):
+    return AFECommandChannel.AFECommandChannel_2 if g == 'M' else AFECommandChannel.AFECommandChannel_3
+
+@micropython.native
+def _get_I_measured_ch_id(g):
+    return AFECommandChannel.AFECommandChannel_4 if g == 'M' else AFECommandChannel.AFECommandChannel_5
+
+@micropython.native
+def _get_general_ch_id_mask(g):
+    return AFECommandChannelMask.master if g == 'M' else AFECommandChannelMask.slave
+
 
 class AFEDevice:
     def __init__(self, afe_id: int, can_controller, hub, stale_buffer_ttl_ms: int = 3000, max_queue_size: int = 32):
@@ -164,22 +204,22 @@ class AFEDevice:
         self.hub = hub
         self.stale_buffer_ttl_ms = stale_buffer_ttl_ms
         
-        # Address matching your low-level logic (e.g., if needed for specific framing)
         self.can_address = afe_id << 2
         self.default_command_timeout_ms = 1000
         self.default_can_timeout_ms = 500
         
-        # Queues
-        self.rx_queue = Queue()  # Ingress raw frames
-        self.to_execute = Queue(maxsize=max_queue_size)  # High-performance Ring Buffer for TX
+        self.rx_queue = Queue()  
+        self.to_execute = Queue(maxsize=max_queue_size)  
         
-        self._pending_requests = {}  # For blocking execute_command requests
-        self._active_payloads = {}   # NEW: Track active AFECommandPayloads for callbacks
+        self._pending_requests = {}  
+        self._active_payloads = {}   
         self._assembly_buffers = {}
         
         self.request_configuration = True
         self.is_configured = False
         self.configuration = None
+        
+        self.last_data = {}
 
     def prepare_command(
         self,
@@ -204,7 +244,6 @@ class AFEDevice:
         if data_len > 6:
             data_len = 6
 
-        # Construct frame buffer directly
         chunk_info = (max_chunks << 4) | chunk
         frame = bytearray(2 + data_len)
         frame[0] = command
@@ -239,18 +278,15 @@ class AFEDevice:
         req = CommandRequest(cmd_id, b'', timeout_ms)
         self._pending_requests[cmd_id] = req
 
-        # Queue the command payload
         try:
             await self.enqueue_command(cmd_id, data, timeout_ms=timeout_ms, **kwargs)
         except Exception as queue_err:
             self._pending_requests.pop(cmd_id, None)
-            raise RuntimeError("Failed to enqueue command 0x{cmd_id:X}".format(cmd_id)) from queue_err
+            raise RuntimeError("Failed to enqueue command 0x{:X}".format(cmd_id)) from queue_err
 
         try:
-            # Wait for either completion, timeout, or an error assignment
             await asyncio.wait_for(req.event.wait(), timeout_ms / 1000.0)
             
-            # NEW: If an exception was attached during processing, raise it here
             if req.exception is not None:
                 raise req.exception
                 
@@ -259,10 +295,9 @@ class AFEDevice:
         except asyncio.TimeoutError:
             msg = "AFE-{} cmd 0x{:X} timed out".format(self.afe_id, cmd_id)
             await self.hub.logger.log("WARN", msg)
-            raise TimeoutError(msg) # Raise an explicit, catching-friendly error
+            raise TimeoutError(msg) 
             
         finally:
-            # Always clean up our reference tracking table
             if self._pending_requests.get(cmd_id) is req:
                 self._pending_requests.pop(cmd_id, None)
 
@@ -274,9 +309,8 @@ class AFEDevice:
             full_can_id = (self.afe_id << 4) | (payload.command & 0x0F)
             payload.timeout_start_on_send_ms = millis()
             
-            # Save the payload so the ingress processor can find its callbacks later
             self._active_payloads[payload.command] = payload
-            
+            print("Sending frame:",payload)
             await self.can.send_frame(full_can_id, payload.frame)
 
     # --- Downstream Specialized Serialization Wrapper Methods ---
@@ -297,32 +331,145 @@ class AFEDevice:
         return await self.enqueue_command(command, (channel, value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF, (value >> 24) & 0xFF), **kwargs)
 
     # --- Ingress Loops & Housekeeping Loops ---
-
+    def callback_afe_error(self, **x):
+        print("Callbackerror:",x)
+        
     async def configure(self):
-        from my_utilities import get_configuration_from_files
-        self.configuration = get_configuration_from_files(self.afe_id)
+        from my_utilities import get_configuration_from_files, extract_bracketed, convert_to_si
+        self.configuration = await get_configuration_from_files(self.afe_id)
         self.request_configuration = False
         print(self.configuration)
+        commandKwargs = {"timeout_ms": 10220,
+                    "preserve": False,
+                    "timeout_start_on_send_ms": 3000,
+                    "callback_error": self.callback_afe_error}
+        # if kwargs:
+        #     commandKwargs.update(kwargs)
+        for g in ["M", "S"]:
+            ch_id = None
+            avg_number = 256
+            time_sample_ms = 1000
+            for k, v in self.configuration[g].items():
+                print("Configuring",g,k,v)
+                ch_id = 0x00
+                ks = k.split(" ")[0]
+                unit = None
+                if len(k.split(" ")) > 1:
+                    unit = k.split(" ")[1]
+                    unit = extract_bracketed(unit)
+                    if len(unit):
+                        unit = unit[0]
+                    else:
+                        unit = None
+                if unit:
+                    v = convert_to_si(v, unit)
+                # print("Loading for AFE{}:{} => {} {} [{}]".format(afe_id,g,k,v,unit))
+                if ks == "T_measured_a":
+                    await self.enqueue_float_for_channel(AFECommand.setChannel_a_byMask, _get_T_measured_ch_id(g), v, **commandKwargs)
+                elif ks == "T_measured_b":
+                    await self.enqueue_float_for_channel(
+                        AFECommand.setChannel_b_byMask, _get_T_measured_ch_id(g), v, **commandKwargs)
+                elif ks == "offset":
+                    await self.enqueue_u8_for_channel(
+                        AFECommand.setAD8402Value_byte_byMask, _get_subdevice_ch_id(g), int(v), **commandKwargs)
+                elif ks == "U_measured_a":
+                    await self.enqueue_float_for_channel(
+                        AFECommand.setChannel_a_byMask, _get_U_measured_ch_id(g), v, **commandKwargs)
+                elif ks == "U_measured_b":
+                    await self.enqueue_float_for_channel(
+                        AFECommand.setChannel_b_byMask, _get_U_measured_ch_id(g), v, **commandKwargs)
+                elif ks == "I_measured_a":
+                    await self.enqueue_float_for_channel(
+                        AFECommand.setChannel_a_byMask, _get_I_measured_ch_id(g), v, **commandKwargs)
+                elif ks == "I_measured_b":
+                    await self.enqueue_float_for_channel(
+                        AFECommand.setChannel_b_byMask, _get_I_measured_ch_id(g), v, **commandKwargs)
+                elif ks == "U_set_a":
+                    await self.enqueue_float_for_channel(
+                        AFECommand.setRegulator_a_dac_byMask, _get_subdevice_ch_id(g), v, **commandKwargs)
+                elif ks == "U_set_b":
+                    await self.enqueue_float_for_channel(
+                        AFECommand.setRegulator_b_dac_byMask, _get_subdevice_ch_id(g), v, **commandKwargs)
+                elif ks == "V_opt":
+                    await self.enqueue_float_for_channel(
+                        AFECommand.setRegulator_V_opt_byMask, _get_subdevice_ch_id(g), v, **commandKwargs)
+                elif ks == "dV/dT":
+                    await self.enqueue_float_for_channel(
+                        AFECommand.setRegulator_dV_dT_byMask, _get_subdevice_ch_id(g), v, **commandKwargs)
+                elif ks == "T_opt":
+                    await self.enqueue_float_for_channel(
+                        AFECommand.setRegulator_T_opt_byMask, _get_subdevice_ch_id(g), v, **commandKwargs)
+                elif ks == "avg_number":  # Maximum nuber of samples used in averaging
+                    avg_number = v
+                    if v:
+                        avg_number = v
+                    else:
+                        avg_number = 256
+                    avg_number = int(round(avg_number))
+                    continue
+                elif ks == "avg_mode":
+                    if not v:
+                        v = "NONE"
+                    avg_mode = AFECommandAverage[v]
+                    await self.enqueue_command(AFECommand.setAveragingMode_byMask, [_get_subdevice_ch_id(g),
+                                                                                   avg_mode
+                                                                                   ], **commandKwargs)
+                elif ks == "avg_alpha":  # Average parameter, usually weight
+                    ch_id = _get_general_ch_id_mask(g)
+                    if v:
+                        await self.enqueue_float_for_channel(
+                            AFECommand.setAveragingAlpha_byMask, ch_id, v, **commandKwargs)
+                    else:
+                        await self.enqueue_float_for_channel(
+                            AFECommand.setAveragingAlpha_byMask, ch_id, 1.0/(10000*100.0), **commandKwargs)
+                elif ks == "time_sample":  # time sample
+                    if v:
+                        time_sample_ms = v*1000 # to ms
+                    else:
+                        time_sample_ms = 1000
+                    time_sample_ms = int(round(time_sample_ms))
+                    await self.enqueue_u32_for_channel(
+                        AFECommand.setChannel_dt_ms_byMask, _get_general_ch_id_mask(g), time_sample_ms, **commandKwargs)
+                elif ks == "dT":
+                    await self.enqueue_float_for_channel(
+                        AFECommand.setRegulator_dT_byMask, _get_subdevice_ch_id(g), v, **commandKwargs)
+                elif ks == "V_offset":
+                    await self.enqueue_float_for_channel(
+                        AFECommand.setRegulator_V_offset_byMask, _get_subdevice_ch_id(g), v, **commandKwargs)
+                else:
+                    continue
+                # for uch in afe.unmask_channel(ch_id):
+                #     # await self.logger.log(VerbosityLevel["DEBUG"], {
+                #     await p.print({
+                #         "device_id": afe.device_id,
+                #         "timestamp_ms": millis(),
+                #         "debug": "AFE {} {} Loading {} (CH{} ? {}) value {}".format(
+                #             afe_id, g, k, uch, e_ADC_CHANNEL[uch], v)
+                #     })
+
+            await self.enqueue_u32_for_channel(
+                AFECommand.setAveraging_max_dt_ms_byMask, _get_general_ch_id_mask(g), int(round(time_sample_ms * avg_number)), **commandKwargs)
+            await self.enqueue_u32_for_channel( # Limit temperature loop frequency
+                AFECommand.setTemperatureLoop_loop_every_ms, _get_general_ch_id_mask(g), int(100), **commandKwargs)
+        await self.enqueue_u32_for_channel(AFECommand.startADC,
+            0xFF, int(250), **commandKwargs) # for all channels (0xFF) (not implemented yet), every 500 ms
 
     async def buffer_cleanup_loop(self):
         while True:
             await asyncio.sleep_ms(1000)
             now = millis()
             
-            # Clean stale frame assembly buffers
             stale_buffers = [cmd_id for cmd_id, buf in self._assembly_buffers.items() 
                              if time.ticks_diff(now, buf['last_updated']) > self.stale_buffer_ttl_ms]
             for cmd_id in stale_buffers:
                 del self._assembly_buffers[cmd_id]
-                await self.hub.logger.log("WARN", "AFE-{afe_id} purged stale buffer for cmd 0x{cmd_id:X}".format(afe_id=afe_id,cmd_id=cmd_id))
+                await self.hub.logger.log("WARN", "AFE-{} purged stale buffer for cmd 0x{:X}".format(self.afe_id, cmd_id))
 
-            # NEW: Clean stale active payloads via unified exception pipeline
             stale_payloads = [cmd_id for cmd_id, p in self._active_payloads.items()
                               if p.timeout_start_on_send_ms and time.ticks_diff(now, p.timeout_start_on_send_ms) > p.timeout_ms]
             
             for cmd_id in stale_payloads:
-                # Forward a formal TimeoutError through the handler to clear pending_requests and ignite error callbacks smoothly
-                err = TimeoutError("AFE-{afe_id} command 0x{cmd_id:X} timed out waiting for response bus.".format(afe_id=self.afe_id,cmd_id=cmd_id))
+                err = TimeoutError("AFE-{} command 0x{:X} timed out waiting for response bus.".format(self.afe_id, cmd_id))
                 await self._handle_complete_message(cmd_id, payload_bytes=None, exception=err)
 
     async def process_loop(self):
@@ -360,21 +507,18 @@ class AFEDevice:
 
     async def _handle_complete_message(self, cmd_id: int, payload_bytes: bytes = None, exception: Exception = None):
         """Delivers data or exceptions to both blocking calls and callback streams."""
-        
-        # --- 1. Handle Synchronous/Blocking Requests ---
         if cmd_id in self._pending_requests:
             req = self._pending_requests[cmd_id]
             req.result = payload_bytes
-            req.exception = exception  # Assign the exception object (if any)
-            req.event.set()            # Wake up execute_command()
+            req.exception = exception  
+            req.event.set()            
 
-        # --- 2. Handle Asynchronous/Enqueued Callbacks ---
         if cmd_id in self._active_payloads:
             command_payload = self._active_payloads.pop(cmd_id)
             command_payload.retval = payload_bytes
             
             if exception:
-                command_payload.status = -1  # Error status
+                command_payload.status = CommandStatus.ERROR
                 if command_payload.callback_error:
                     try:
                         if asyncio.iscoroutinefunction(command_payload.callback_error):
@@ -382,9 +526,9 @@ class AFEDevice:
                         else:
                             command_payload.callback_error(command_payload, exception)
                     except Exception as cb_err:
-                        await self.hub.logger.log("ERROR", "Error-callback crashed: {cb_err}".format(cb_err))
+                        await self.hub.logger.log("ERROR", "Error-callback crashed: {}".format(cb_err))
             else:
-                command_payload.status = 1   # Success status
+                command_payload.status = CommandStatus.SUCCESS
                 if command_payload.callback:
                     try:
                         if asyncio.iscoroutinefunction(command_payload.callback):
@@ -392,17 +536,22 @@ class AFEDevice:
                         else:
                             command_payload.callback(command_payload)
                     except Exception as cb_err:
-                        await self.hub.logger.log("ERROR", "Callback crashed: {cb_err}".format(cb_err))
+                        await self.hub.logger.log("ERROR", "Callback crashed: {}".format(cb_err))
                         if command_payload.callback_error:
                             try:
                                 command_payload.callback_error(command_payload, cb_err)
                             except Exception: pass
 
-        # --- 3. Handle Spontaneous Unsolicited Data ---
         if cmd_id not in self._pending_requests and cmd_id not in self._active_payloads and not exception:
             msg = "AFE-{} spontaneous data for cmd 0x{:X}".format(self.afe_id, cmd_id)
             await self.hub.logger.log("INFO", msg)
-
+        
+        if cmd_id == AFECommand.getSerialNumber:
+            unique_id_str = "".join(
+                "{:02X}".format(b) for b in payload_bytes)
+            self.last_data["serial"] = unique_id_str
+            # print("Get Serial Number {}".format(payload_bytes), "->", unique_id_str)
+        print(self.last_data)
 
     async def run(self):
         await asyncio.gather(
@@ -432,11 +581,12 @@ class HUBDevice:
         self.discover_current_id = self.discover_current_id_min
         
     async def discover(self):
-        try:
-            # self.can.can.send(b"\x00\x11", self.discover_current_id << 1, timeout=2)
-            await self.can.send_frame(self.discover_current_id << 2, b"\x00\x11")
-        except Exception:
-            pass
+        if self.afes.get(self.discover_current_id,None) == None:    
+            try:
+                # self.can.can.send(b"\x00\x11", self.discover_current_id << 1, timeout=2)
+                await self.can.send_frame(self.discover_current_id << 2, b"\x00\x11")
+            except Exception:
+                pass
         self.discover_current_id += 1
         if self.discover_current_id > self.discover_current_id_max:
             self.discover_current_id = self.discover_current_id_min
@@ -451,6 +601,7 @@ class HUBDevice:
     async def router_loop(self):
         """Demux incoming raw CAN messages to the correct AFEDevice queue."""
         while True:
+            wdt.feed()
             msg_id, data = await self.rx_queue.get()
             afe_id = (msg_id >> 2) & 0xFF
             
