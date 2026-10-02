@@ -11,8 +11,12 @@ from my_utilities import (
     AFECommandChannel,
     AFECommandChannelMask,
     AFECommandSubdevice,
+    AFECommandGPIO,
+    e_ADC_CHANNEL,
     millis,
 )
+# Fast mapping: byte value -> string name (e.g., 0x01 -> "STANDARD")
+REVERSE_AVG_LOOKUP = {v: k for k, v in AFECommandAverage.items()}
 
 
 # -----------------------------------------------------------------------------
@@ -193,42 +197,31 @@ def parse_can_frame(msg_id, data, expected_device_id):
         data,
         chunk_payload,
     )
-
-
+def unmask_channel(masked_channel):
+    masked_channel &= 0xFF
+    return [i for i in range(8) if (masked_channel >> i) & 1]
 def get_subdevice_ch_id(group):
     if group == "M":
         return AFECommandSubdevice.AFECommandSubdevice_master
     return AFECommandSubdevice.AFECommandSubdevice_slave
-
-
 def get_t_measured_ch_id(group):
     if group == "M":
         return AFECommandChannel.AFECommandChannel_7
     return AFECommandChannel.AFECommandChannel_6
-
-
 def get_u_measured_ch_id(group):
     if group == "M":
         return AFECommandChannel.AFECommandChannel_2
     return AFECommandChannel.AFECommandChannel_3
-
-
 def get_i_measured_ch_id(group):
     if group == "M":
         return AFECommandChannel.AFECommandChannel_4
     return AFECommandChannel.AFECommandChannel_5
-
-
 def get_general_ch_id_mask(group):
     if group == "M":
         return AFECommandChannelMask.master
     return AFECommandChannelMask.slave
-
-
 def is_awaitable(value):
     return value is not None and hasattr(value, "__await__")
-
-
 async def call_callback(callback, *args):
     if callback is None:
         return
@@ -298,7 +291,7 @@ class CANController:
             msg_id, data = await self.tx_queue.get()
             try:
                 self.can.send(data, msg_id, timeout=2)
-                print("CANTX:",(msg_id >> 2) & 0xFF,data)
+                # print("CANTX:",(msg_id >> 2) & 0xFF,data)
             except Exception:
                 pass
             await asyncio.sleep_ms(0)
@@ -310,7 +303,7 @@ class CANController:
                     msg_id, rtr, fmi, data = self.can.recv(0)
                     for queue in self.rx_listeners:
                         await queue.put((msg_id, data))
-                        print("CANRX:",(msg_id >> 2) & 0xFF, data)
+                        # print("CANRX:",(msg_id >> 2) & 0xFF, data)
                 except Exception:
                     pass
             await asyncio.sleep_ms(1)
@@ -347,6 +340,47 @@ class AFEDevice:
         self.request_configuration = True
         self.is_configured = False
         self.configuration = None
+        
+        self.channels = {}
+
+    def _parse_payload_value(self, data_bytes, data_type):
+        """Converts raw trailing payload bytes into specific types safely."""
+        if not data_bytes:
+            return None
+            
+        if data_type == "float":
+            # Replaces self.bytes_to_float()
+            if len(data_bytes) >= 4:
+                return struct.unpack("<f", data_bytes[:4])[0]
+            return 0.0
+            
+        elif data_type == "u32":
+            # Replaces self.bytes_to_u32()
+            if len(data_bytes) >= 4:
+                return struct.unpack("<I", data_bytes[:4])[0]
+            return 0
+            
+        elif data_type == "u16":
+            # Replaces self.bytes_to_u16()
+            if len(data_bytes) >= 2:
+                return struct.unpack("<H", data_bytes[:2])[0]
+            return 0
+            
+        elif data_type == "avg_mode":
+            return REVERSE_AVG_LOOKUP.get(data_bytes[0], "NONE")
+            
+        return None
+
+    def _apply_channel_config(self, mask_byte, trailing_bytes, data_type, config_key):
+        """Helper to extract unmasked channels and apply parsed values to them."""
+        parsed_value = self._parse_payload_value(trailing_bytes, data_type)
+        for uch in unmask_channel(mask_byte):
+            # Check if using dictionary keys (like your e_ADC_CHANNEL strings) or raw index keys
+            # If your self.channels dictionary uses string names (e.g., 'TEMP_LOCAL'), 
+            # make sure to wrap 'uch' with: channel_key = e_ADC_CHANNEL.get(uch, uch)
+            if uch in self.channels:
+                self.channels[uch].config[config_key] = parsed_value
+
 
     def prepare_command(
         self,
@@ -576,7 +610,7 @@ class AFEDevice:
 
             group_config = self.configuration.get(group, {})
             for key, value in group_config.items():
-                print("Configuring", group, key, value)
+                # print("Configuring", group, key, value)
 
                 parts = key.split(" ")
                 setting = parts[0]
@@ -785,7 +819,7 @@ class AFEDevice:
 
     async def process_loop(self):
         while True:
-            print("process loop", millis())
+            # print("process loop", millis())
             if self.request_configuration:
                 self.request_configuration = False
                 asyncio.create_task(self._safe_configure())
@@ -906,6 +940,78 @@ class AFEDevice:
                         "Error-callback crashed: {}".format(callback_error),
                     )
             return
+        command = cmd_id
+        full_payload = payload_bytes
+        print("$$$$ 0x{:02X}".format(command), full_payload)
+        # --- Inside your full_payload command parsing logic ---
+        if command == AFECommand.getSerialNumber:
+            print("0x00")
+        elif command == AFECommand.setAD8402Value_byte_byMask:
+            print(full_payload)
+            mask_byte = full_payload[0]
+            trailing = full_payload[1:]
+            offset_val = self._parse_payload_value(trailing, "u16")
+            
+            for uch in unmask_channel(mask_byte):
+                group = "M" if uch == 0 else "S"
+                self.configuration[group]["offset [bit]"] = offset_val
+                
+                # Error status bit check within the third byte of the payload stream
+                if len(full_payload) > 2 and (0x01 & (full_payload[2] >> uch)):
+                    await self.hub.logger.log(
+                        "ERROR",  # Replaced verbose dictionary with clean string
+                        "AFE {}: ERROR setAD8402Value_byte_byMask for CH{}".format(device_id, uch)
+                    )
+                    self.configuration[group]["offset [bit]"] = None
+
+        elif command == AFECommand.setAveragingMode_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "avg_mode", "averaging_mode")
+
+        elif command == AFECommand.setAveragingAlpha_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "alpha")
+
+        elif command == AFECommand.setChannel_dt_ms_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "u32", "time_interval_ms")
+
+        elif command == AFECommand.setChannel_a_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "a")
+
+        elif command == AFECommand.setChannel_b_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "b")
+                
+        elif command == AFECommand.setRegulator_T_opt_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "T_opt")
+                
+        elif command == AFECommand.setRegulator_dT_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "dT")
+
+        elif command == AFECommand.setRegulator_a_dac_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "a")
+
+        elif command == AFECommand.setRegulator_b_dac_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "b")
+
+        elif command == AFECommand.setRegulator_dV_dT_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "dV_dT")
+
+        elif command == AFECommand.setRegulator_V_opt_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "V_opt")
+
+        elif command == AFECommand.setRegulator_V_offset_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "V_offset")
+
+        elif command == AFECommand.setChannel_period_ms_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "u32", "period_ms")
+
+            # unmasked_channels = self.unmask_channel(chunk_payload[0])
+            # for uch in unmasked_channels:
+            #     averaging_mode = ''
+            #     for a, v in AFECommandAverage.items():
+            #         if v == chunk_payload[1]:
+            #             averaging_mode = a
+            #             break
+            #     self.channels[uch].config["averaging_mode"] = averaging_mode
+
 
         payload.status = CommandStatus.SUCCESS
         payload.completion_event.set()
