@@ -298,6 +298,7 @@ class CANController:
             msg_id, data = await self.tx_queue.get()
             try:
                 self.can.send(data, msg_id, timeout=2)
+                print("CANTX:",(msg_id >> 2) & 0xFF,data)
             except Exception:
                 pass
             await asyncio.sleep_ms(0)
@@ -309,6 +310,7 @@ class CANController:
                     msg_id, rtr, fmi, data = self.can.recv(0)
                     for queue in self.rx_listeners:
                         await queue.put((msg_id, data))
+                        print("CANRX:",(msg_id >> 2) & 0xFF, data)
                 except Exception:
                     pass
             await asyncio.sleep_ms(1)
@@ -481,7 +483,7 @@ class AFEDevice:
                 self._active_payloads[payload.command] = active
             active.append(payload)
 
-            full_can_id = (self.afe_id << 2) | (payload.command & 0x0F)
+            full_can_id = (self.afe_id << 2)# | (payload.command & 0x0F)
 
             try:
                 await self.can.send_frame(full_can_id, payload.frame)
@@ -539,6 +541,17 @@ class AFEDevice:
 
     def callback_afe_error(self, payload, error):
         print("AFE callback error:", error)
+
+    async def _safe_configure(self):
+        try:
+            await self.configure()
+        except Exception as exc:
+            self.request_configuration = True
+            self.is_configured = False
+            await self.hub.logger.log(
+                "ERROR",
+                "AFE-{} configuration failed: {}".format(self.afe_id, exc),
+            )
 
     async def configure(self):
         from my_utilities import (
@@ -745,8 +758,8 @@ class AFEDevice:
                 del self._assembly_buffers[key]
                 await self.hub.logger.log(
                     "WARN",
-                    "AFE-{} purged stale buffer for cmd 0x{:X}".format(
-                        self.afe_id, key[0]
+                    "AFE-{} purged stale buffer for cmd 0x{:02X}".format(
+                        self.afe_id, key
                     ),
                 )
 
@@ -772,17 +785,12 @@ class AFEDevice:
 
     async def process_loop(self):
         while True:
+            print("process loop", millis())
             if self.request_configuration:
-                try:
-                    await self.configure()
-                except Exception as exc:
-                    self.request_configuration = True
-                    await self.hub.logger.log(
-                        "ERROR",
-                        "AFE-{} configuration failed: {}".format(self.afe_id, exc),
-                    )
-                    await asyncio.sleep_ms(1000)
-                    continue
+                self.request_configuration = False
+                asyncio.create_task(self._safe_configure())
+                await asyncio.sleep_ms(10)
+                continue
 
             msg_id, data = await self.rx_queue.get()
             parsed = parse_can_frame(msg_id, data, self.afe_id)
@@ -798,40 +806,47 @@ class AFEDevice:
                 chunk_payload,
             ) = parsed
 
-            total_msgs = max_chunks + 1
-            if chunk_id >= total_msgs:
-                continue
-
             now = millis()
-            buffer_key = (command, total_msgs)
+            buffer_key = command
             buffer_info = self._assembly_buffers.get(buffer_key)
 
+            # 1. Initialize the buffer first so we have a place to store data
             if buffer_info is None:
                 buffer_info = {
-                    "total": total_msgs,
+                    "max_chunks": max_chunks,
                     "chunks": {},
                     "last_updated": now,
                 }
                 self._assembly_buffers[buffer_key] = buffer_info
 
+            # 2. Store the chunk immediately into the buffer
             buffer_info["chunks"][chunk_id] = bytes(chunk_payload)
             buffer_info["last_updated"] = now
 
-            if len(buffer_info["chunks"]) == buffer_info["total"]:
-                chunks = buffer_info["chunks"]
-                try:
-                    full_payload = b"".join(
-                        chunks[index] for index in range(buffer_info["total"])
-                    )
-                except KeyError:
-                    # Count can only reach total with valid unique IDs, but keep
-                    # the guard in case malformed frames arrive.
-                    continue
+            # 3. Run boundary validation check against max_chunks
+            if chunk_id > max_chunks:
+                print("Malformed...")
+                if chunk_id in buffer_info["chunks"]:
+                    del buffer_info["chunks"][chunk_id]
+                continue
 
+            # 4. Check if the sequential structure is completely filled
+            chunks = buffer_info["chunks"]
+            
+            # Since chunk_id starts at 1 and max_chunks is the exact maximum:
+            expected_range = range(1, buffer_info["max_chunks"] + 1)
+            
+            # Ensure every single mandatory index from 1 to max_chunks has arrived
+            if all(idx in chunks for idx in expected_range):
+                try:
+                    # Cleanly merge sequential byte segments without missing gaps
+                    full_payload = b"".join(chunks[idx] for idx in expected_range)
+                except KeyError:
+                    continue
+                
+                # Housekeeping: clear buffer memory map and pass data forward
                 del self._assembly_buffers[buffer_key]
                 await self._handle_complete_message(command, full_payload)
-
-            await asyncio.sleep_ms(0)
 
     async def _handle_complete_message(
         self,
@@ -848,6 +863,8 @@ class AFEDevice:
 
         payloads = self._active_payloads.get(cmd_id)
         payload = specific_payload
+        
+        print("^^^ 0x{:02X}".format(cmd_id), payload_bytes, exception, specific_payload)
 
         if payloads is not None:
             if payload is None:
@@ -930,8 +947,8 @@ class HUBDevice:
 
         self.afes = {}
         self.discover_active = 1
-        self.discover_current_id_min = 40
-        self.discover_current_id_max = 45
+        self.discover_current_id_min = 41
+        self.discover_current_id_max = 41
         self.discover_current_id = self.discover_current_id_min
 
     async def discover(self):
@@ -970,6 +987,7 @@ class HUBDevice:
                 self.afes[afe_id] = afe
                 asyncio.create_task(afe.run())
 
+            # print("HUB puting", afe_id, ":",data)
             await self.afes[afe_id].rx_queue.put((msg_id, data))
             await asyncio.sleep_ms(0)
 
@@ -990,7 +1008,7 @@ class SDLogger:
 
     async def log(self, level, message):
         timestamp = time.time()
-        entry = "[{}] [{}] {}\n".format(timestamp, level, message)
+        entry = "[{}] [{}] {}".format(timestamp, level, message)
         print(entry, end="")
         await self.queue.put(entry)
 
@@ -1030,7 +1048,7 @@ class WebServer:
 
             while True:
                 header = await reader.readline()
-                if not header or header == b"\r\n":
+                if not header or header == b"":
                     break
 
                 header_text = header.decode("utf-8").lower()
@@ -1050,7 +1068,7 @@ class WebServer:
                             break
 
                 if new_time is None:
-                    response = b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"
+                    response = b"HTTP/1.1 400 Bad Request Connection: close"
                 else:
                     tm = time.localtime(new_time)
                     pyb.RTC().datetime(
@@ -1070,9 +1088,9 @@ class WebServer:
                         "Manual RTC adjust: {}".format(new_time),
                     )
                     response = (
-                        b"HTTP/1.1 200 OK\r\n"
-                        b"Content-Type: application/json\r\n"
-                        b"Connection: close\r\n\r\n"
+                        b"HTTP/1.1 200 OK"
+                        b"Content-Type: application/json"
+                        b"Connection: close"
                         b'{"status":"ok"}'
                     )
 
@@ -1083,13 +1101,13 @@ class WebServer:
                 )
                 body = html.encode("utf-8")
                 response = (
-                    "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: text/html\r\n"
-                    "Content-Length: {}\r\n"
-                    "Connection: close\r\n\r\n".format(len(body))
+                    "HTTP/1.1 200 OK"
+                    "Content-Type: text/html"
+                    "Content-Length: {}"
+                    "Connection: close".format(len(body))
                 ).encode("utf-8") + body
             else:
-                response = b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"
+                response = b"HTTP/1.1 404 Not Found Connection: close"
 
             writer.write(response)
             await writer.drain()
