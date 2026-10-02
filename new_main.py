@@ -35,12 +35,15 @@ class Queue:
         self._not_full = asyncio.Event()
         self._not_full.set()
 
+    @micropython.native
     def empty(self):
         return self._count == 0
 
+    @micropython.native
     def full(self):
         return self._count >= self.maxsize
 
+    @micropython.native
     def qsize(self):
         return self._count
 
@@ -57,6 +60,7 @@ class Queue:
         self._count += 1
         self._not_empty.set()
 
+    @micropython.native
     def put_nowait(self, item):
         if self.full():
             raise IndexError("queue is full")
@@ -82,6 +86,7 @@ class Queue:
         self._not_full.set()
         return item
 
+    @micropython.native
     def get_nowait(self):
         if self.empty():
             raise IndexError("queue is empty")
@@ -172,6 +177,7 @@ class CommandRequest:
 # -----------------------------------------------------------------------------
 # CAN frame helpers.
 # -----------------------------------------------------------------------------
+@micropython.native
 def parse_can_frame(msg_id, data, expected_device_id):
     if data is None or len(data) < 2:
         return None
@@ -197,29 +203,36 @@ def parse_can_frame(msg_id, data, expected_device_id):
         data,
         chunk_payload,
     )
+@micropython.native
 def unmask_channel(masked_channel):
     masked_channel &= 0xFF
     return [i for i in range(8) if (masked_channel >> i) & 1]
+@micropython.native
 def get_subdevice_ch_id(group):
     if group == "M":
         return AFECommandSubdevice.AFECommandSubdevice_master
     return AFECommandSubdevice.AFECommandSubdevice_slave
+@micropython.native
 def get_t_measured_ch_id(group):
     if group == "M":
         return AFECommandChannel.AFECommandChannel_7
     return AFECommandChannel.AFECommandChannel_6
+@micropython.native
 def get_u_measured_ch_id(group):
     if group == "M":
         return AFECommandChannel.AFECommandChannel_2
     return AFECommandChannel.AFECommandChannel_3
+@micropython.native
 def get_i_measured_ch_id(group):
     if group == "M":
         return AFECommandChannel.AFECommandChannel_4
     return AFECommandChannel.AFECommandChannel_5
+@micropython.native
 def get_general_ch_id_mask(group):
     if group == "M":
         return AFECommandChannelMask.master
     return AFECommandChannelMask.slave
+@micropython.native
 def is_awaitable(value):
     return value is not None and hasattr(value, "__await__")
 async def call_callback(callback, *args):
@@ -341,47 +354,189 @@ class AFEDevice:
         self.is_configured = False
         self.configuration = None
         
-        self.channels = {}
+        self.channels = {uch: {} for uch in range(8)}
+        self.periodic_data = {
+            "last_data": {uch: {} for uch in range(8)},
+            "average_data": {uch: {} for uch in range(8)}
+        }
+        self.adc_run = False
 
+    @micropython.native
     def _parse_payload_value(self, data_bytes, data_type):
-        """Converts raw trailing payload bytes into specific types safely."""
+        """Converts raw trailing payload bytes into specific scalar types safely."""
         if not data_bytes:
             return None
-            
-        if data_type == "float":
-            # Replaces self.bytes_to_float()
-            if len(data_bytes) >= 4:
-                return struct.unpack("<f", data_bytes[:4])[0]
-            return 0.0
-            
-        elif data_type == "u32":
-            # Replaces self.bytes_to_u32()
-            if len(data_bytes) >= 4:
-                return struct.unpack("<I", data_bytes[:4])[0]
-            return 0
-            
-        elif data_type == "u16":
-            # Replaces self.bytes_to_u16()
-            if len(data_bytes) >= 2:
-                return struct.unpack("<H", data_bytes[:2])[0]
-            return 0
-            
+        if data_type == "float" and len(data_bytes) >= 4:
+            return struct.unpack("<f", data_bytes[:4])[0]
+        elif data_type == "u32" and len(data_bytes) >= 4:
+            return struct.unpack("<I", data_bytes[:4])[0]
+        elif data_type == "u16" and len(data_bytes) >= 2:
+            return struct.unpack("<H", data_bytes[:2])[0]
         elif data_type == "avg_mode":
             return REVERSE_AVG_LOOKUP.get(data_bytes[0], "NONE")
-            
         return None
 
+    @micropython.native
+    def _apply_channel_config(self, mask_byte, trailing_bytes, data_type, config_key):
+        """Helper to extract unmasked channels and apply parsed values directly."""
+        parsed_value = self._parse_payload_value(trailing_bytes, data_type)
+        if parsed_value is not None:
+            for uch in self.unmask_channel(mask_byte):
+                if uch in self.channels:
+                    # Updates config directly inside your numeric channel integer maps (0-7)
+                    self.channels[uch][config_key] = parsed_value
+
+    @micropython.native
     def _apply_channel_config(self, mask_byte, trailing_bytes, data_type, config_key):
         """Helper to extract unmasked channels and apply parsed values to them."""
         parsed_value = self._parse_payload_value(trailing_bytes, data_type)
         for uch in unmask_channel(mask_byte):
+            # print("A {}:{} -> {}".format(config_key, e_ADC_CHANNEL.get(uch), parsed_value))
             # Check if using dictionary keys (like your e_ADC_CHANNEL strings) or raw index keys
             # If your self.channels dictionary uses string names (e.g., 'TEMP_LOCAL'), 
             # make sure to wrap 'uch' with: channel_key = e_ADC_CHANNEL.get(uch, uch)
-            if uch in self.channels:
-                self.channels[uch].config[config_key] = parsed_value
+            # if uch in self.channels:
+            self.channels[uch][config_key] = parsed_value
+            # print(uch)
+    
+    @micropython.native
+    def _handle_full_subdevice_status(self, target_status_list, full_payload):
+        """Parses a completely stitched multi-chunk status payload into a targeted status dictionary."""
+        # Detect segment size by looking at your data types: 
+        # Float (1 mask + 4 data = 5), Boolean (1 mask + 1 data = 2), U32 (1 mask + 4 data = 5)
+        
+        offset = 0
+        payload_len = len(full_payload)
+        chunk_counter = 0  # Replicates the original sequential chunk order (0 to 12)
+        print("$",full_payload)
+        while offset < payload_len:
+            chunk_id_mod = chunk_counter % 13
+            
+            # 1. Peek at the channel mask byte
+            mask_byte = full_payload[offset]
+            channels = self.unmask_channel(mask_byte)
+            
+            # 2. Determine step sizes based on the expected chunk type sequence
+            if chunk_id_mod < 10:
+                data_size = 4  # Float length
+                step_size = 1 + data_size
+                if offset + step_size > payload_len:
+                    break
+                payload_data = full_payload[offset + 1 : offset + step_size]
+                value = struct.unpack("<f", payload_data)[0]
+                key = self._STATUS_KEYS[chunk_id_mod]
+                
+            elif chunk_id_mod in (10, 11):
+                data_size = 1  # Boolean byte length
+                step_size = 1 + data_size
+                if offset + step_size > payload_len:
+                    break
+                payload_data = full_payload[offset + 1 : offset + step_size]
+                
+                if chunk_id_mod == 10:
+                    value = "enabled" if payload_data[0] else "disabled"
+                    key = "temp_loop"
+                else:
+                    value = "true" if payload_data[0] else "false"
+                    key = "ramp_target_reached"
+                    
+            else:  # chunk_id_mod == 12
+                data_size = 4  # U32 length
+                step_size = 1 + data_size
+                if offset + step_size > payload_len:
+                    break
+                payload_data = full_payload[offset + 1 : offset + step_size]
+                value = struct.unpack("<I", payload_data)[0]
+                key = "timestamp_ms"
+
+            # 3. If there are valid targeted channels, distribute the decoded fields
+            if channels:
+                for uch in channels:
+                    # Reset or initialize subdevice dictionary structure on sequence boundaries
+                    if chunk_id_mod == 0 or uch not in target_status_list:
+                        target_status_list[uch] = {"channel": "master" if uch == 0 else "slave"}
+                    
+                    target_status_list[uch][key] = value
+
+            # Move the pointer to the start of the next concatenated chunk segment
+            offset += step_size
+            chunk_counter += 1
+            
+    def _handle_full_periodic_sensor_data(self, full_payload):
+        """Parses a completely stitched multi-chunk periodic sensor data stream."""
+        try:
+            # Re-initialize state safely matched exactly to your schema structures
+            self.periodic_data = {
+                "last_data": {uch: {} for uch in range(8)},
+                "average_data": {uch: {} for uch in range(8)},
+                "timestamp_ms": millis()
+            }
+            
+            offset = 0
+            payload_len = len(full_payload)
+            chunk_counter = 0
+
+            # Step through continuous chunks: 1 byte mask + 4 bytes data payload = 5 bytes
+            while offset < payload_len:
+                if offset + 5 > payload_len:
+                    break  # Shield against short/dangling fragments
+
+                mask_byte = full_payload[offset]
+                data_bytes = full_payload[offset + 1 : offset + 5]
+                unmasked_channels = self.unmask_channel(mask_byte)
+
+                if chunk_counter == 0:  # Last data: data value
+                    val_float = struct.unpack("<f", data_bytes)[0]
+                    for uch in unmasked_channels:
+                        if uch in self.periodic_data["last_data"]:
+                            self.periodic_data["last_data"][uch]["value"] = val_float
+
+                elif chunk_counter == 1:  # Last data as raw byte representation
+                    val_float = struct.unpack("<f", data_bytes)[0]
+                    for uch in unmasked_channels:
+                        if uch in self.periodic_data["last_data"]:
+                            self.periodic_data["last_data"][uch]["value_bytes"] = val_float
+
+                elif chunk_counter == 2:  # Last data: raw measurement timestamp
+                    val_u32 = struct.unpack("<I", data_bytes)[0]
+                    for uch in unmasked_channels:
+                        if uch in self.periodic_data["last_data"]:
+                            self.periodic_data["last_data"][uch]["timestamp_ms"] = val_u32
+
+                elif chunk_counter == 3:  # Average data: calculated arithmetic value
+                    val_float = struct.unpack("<f", data_bytes)[0]
+                    for uch in unmasked_channels:
+                        if uch in self.periodic_data["average_data"]:
+                            self.periodic_data["average_data"][uch]["value"] = val_float
+
+                elif chunk_counter == 4:  # Average data: loop processing timestamp
+                    val_u32 = struct.unpack("<I", data_bytes)[0]
+                    for uch in unmasked_channels:
+                        if uch in self.periodic_data["average_data"]:
+                            self.periodic_data["average_data"][uch]["timestamp_ms"] = val_u32
+
+                offset += 5
+                chunk_counter += 1
+
+            return self.periodic_data
+
+        except Exception as e:
+            if hasattr(self, "hub") and self.hub.logger:
+                asyncio.create_task(self.hub.logger.log("ERROR", "Periodic parse loop failure: {}".format(e)))
+            else:
+                print("Periodic parse loop failure:", e)
+            return None
+
+        except Exception as e:
+            # Replaced fallback logger pointer safely using class hub hooks
+            if hasattr(self, "hub") and self.hub.logger:
+                asyncio.create_task(self.hub.logger.log("ERROR", "Error parsing getSensorDataSi_periodic: {}".format(e)))
+            else:
+                print("Error parsing getSensorDataSi_periodic:", e)
+            return None
 
 
+    @micropython.native
     def prepare_command(
         self,
         command,
@@ -777,6 +932,12 @@ class AFEDevice:
             250,
             **command_kwargs
         )
+        # await self.send_command_and_wait(
+        #     AFECommand.setSensorDataSiAndTimestamp_periodic_average,
+        #     0xFF,
+        #     1000,
+        #     **command_kwargs
+        # )
         print("AFE {} configured!".format(self.afe_id))
 
     async def buffer_cleanup_loop(self):
@@ -818,72 +979,6 @@ class AFEDevice:
                     specific_payload=payload,
                 )
 
-    async def process_loop(self):
-        while True:
-            # print("process loop", millis())
-            if self.request_configuration:
-                self.request_configuration = False
-                asyncio.create_task(self._safe_configure())
-                await asyncio.sleep_ms(10)
-                continue
-
-            msg_id, data = await self.rx_queue.get()
-            parsed = parse_can_frame(msg_id, data, self.afe_id)
-            if parsed is None:
-                continue
-
-            (
-                device_id,
-                command,
-                chunk_id,
-                max_chunks,
-                data_bytes,
-                chunk_payload,
-            ) = parsed
-            if command == AFECommand.setAD8402Value_byte_byMask:
-                print("#####:", data, "&", parsed)
-            now = millis()
-            buffer_key = command
-            buffer_info = self._assembly_buffers.get(buffer_key)
-
-            # 1. Initialize the buffer first so we have a place to store data
-            if buffer_info is None:
-                buffer_info = {
-                    "max_chunks": max_chunks,
-                    "chunks": {},
-                    "last_updated": now,
-                }
-                self._assembly_buffers[buffer_key] = buffer_info
-
-            # 2. Store the chunk immediately into the buffer
-            buffer_info["chunks"][chunk_id] = bytes(chunk_payload)
-            buffer_info["last_updated"] = now
-
-            # 3. Run boundary validation check against max_chunks
-            if chunk_id > max_chunks:
-                print("Malformed...")
-                if chunk_id in buffer_info["chunks"]:
-                    del buffer_info["chunks"][chunk_id]
-                continue
-
-            if chunk_id == max_chunks:
-                try:
-                    # 1. Grab and sort the dictionary keys sequentially (0, 1, 2...)
-                    sorted_keys = sorted(buffer_info["chunks"].keys())
-                    
-                    # 2. Extract and join the byte payloads in the correct order
-                    full_payload = b"".join(buffer_info["chunks"][idx] for idx in sorted_keys)
-                    
-                except Exception as e:
-                    # Consider logging 'e' here so bugs aren't completely silenced
-                    return
-                finally:
-                    # Housekeeping: safely remove buffer from memory map
-                    self._assembly_buffers.pop(buffer_key, None)
-                    
-                # Forward the completed message
-                await self._handle_complete_message(command, full_payload)
-
     async def _handle_complete_message(
         self,
         cmd_id,
@@ -900,7 +995,7 @@ class AFEDevice:
         payloads = self._active_payloads.get(cmd_id)
         payload = specific_payload
         
-        print("^^^ 0x{:02X}".format(cmd_id), payload_bytes, exception, specific_payload)
+        # print("^^^ 0x{:02X}".format(cmd_id), payload_bytes, exception, specific_payload)
 
         if payloads is not None:
             if payload is None:
@@ -944,26 +1039,19 @@ class AFEDevice:
             return
         command = cmd_id
         full_payload = payload_bytes
-        print("$$$$ 0x{:02X}".format(command), full_payload)
+        # print("$$$$ 0x{:02X}".format(command), full_payload)
         # --- Inside your full_payload command parsing logic ---
         if command == AFECommand.getSerialNumber:
             print("0x00")
         elif command == AFECommand.setAD8402Value_byte_byMask:
-            print(full_payload)
             mask_byte = full_payload[0]
-            trailing = full_payload[1:]
-            offset_val = self._parse_payload_value(trailing, "u16")
-            
+            offset_val = self._parse_payload_value(full_payload[1:], "u16")
             for uch in unmask_channel(mask_byte):
                 group = "M" if uch == 0 else "S"
                 self.configuration[group]["offset [bit]"] = offset_val
                 
-                # Error status bit check within the third byte of the payload stream
                 if len(full_payload) > 2 and (0x01 & (full_payload[2] >> uch)):
-                    await self.hub.logger.log(
-                        "ERROR",  # Replaced verbose dictionary with clean string
-                        "AFE {}: ERROR setAD8402Value_byte_byMask for CH{}".format(device_id, uch)
-                    )
+                    await self.hub.logger.log("ERROR", "AFE {}: error setting offset for CH{}".format(device_id, uch))
                     self.configuration[group]["offset [bit]"] = None
 
         elif command == AFECommand.setAveragingMode_byMask:
@@ -1004,16 +1092,27 @@ class AFEDevice:
 
         elif command == AFECommand.setChannel_period_ms_byMask:
             self._apply_channel_config(full_payload[0], full_payload[1:], "u32", "period_ms")
-
-            # unmasked_channels = self.unmask_channel(chunk_payload[0])
-            # for uch in unmasked_channels:
-            #     averaging_mode = ''
-            #     for a, v in AFECommandAverage.items():
-            #         if v == chunk_payload[1]:
-            #             averaging_mode = a
-            #             break
-            #     self.channels[uch].config["averaging_mode"] = averaging_mode
-
+        elif command == AFECommand.setAveraging_max_dt_ms_byMask:
+            self._apply_channel_config(full_payload[0], full_payload[1:], "u32", "averaging_max_dt_ms")
+        elif command == AFECommand.setTemperatureLoop_loop_every_ms:
+            print("setTemperatureLoop_loop_every_ms", full_payload)
+            self._apply_channel_config(full_payload[0], full_payload[1:], "u32", "temperatreloop_every_ms")
+        elif command == AFECommand.startADC:
+            self.adc_run = True
+        # elif command == AFECommand.getSubdeviceStatus:
+        #     print("getSubdeviceStatus")
+        #     # Initialize or fetch your status list tracking structure
+        #     if not hasattr(self, "subdevice_status"):
+        #         self.subdevice_status = {}
+            
+        #     # Parse the complete stitched payload map cleanly in a single pass
+        #     self._handle_full_subdevice_status(self.subdevice_status, full_payload)
+        #     print("^^^", self.subdevice_status)
+        elif command == AFECommand.getSensorDataSi_periodic:
+            parsed_data = self._handle_full_periodic_sensor_data(full_payload)
+            print(parsed_data)
+        else:
+            print("Not handled function 0x{:02X}: {}".format(command,full_payload))
 
         payload.status = CommandStatus.SUCCESS
         payload.completion_event.set()
@@ -1034,6 +1133,73 @@ class AFEDevice:
                         )
                     except Exception:
                         pass
+
+
+    async def process_loop(self):
+        while True:
+            # print("process loop", millis())
+            if self.request_configuration:
+                self.request_configuration = False
+                asyncio.create_task(self._safe_configure())
+                await asyncio.sleep_ms(10)
+                continue
+
+            msg_id, data = await self.rx_queue.get()
+            parsed = parse_can_frame(msg_id, data, self.afe_id)
+            if parsed is None:
+                continue
+
+            (
+                device_id,
+                command,
+                chunk_id,
+                max_chunks,
+                data_bytes,
+                chunk_payload,
+            ) = parsed
+            
+            now = millis()
+            buffer_key = command
+            buffer_info = self._assembly_buffers.get(buffer_key)
+
+            # 1. Initialize the buffer first so we have a place to store data
+            if buffer_info is None:
+                buffer_info = {
+                    "max_chunks": max_chunks,
+                    "chunks": {},
+                    "last_updated": now,
+                }
+                self._assembly_buffers[buffer_key] = buffer_info
+
+            # 2. Store the chunk immediately into the buffer
+            buffer_info["chunks"][chunk_id] = bytes(chunk_payload)
+            buffer_info["last_updated"] = now
+
+            # 3. Run boundary validation check against max_chunks
+            if chunk_id > max_chunks:
+                print("Malformed...")
+                if chunk_id in buffer_info["chunks"]:
+                    del buffer_info["chunks"][chunk_id]
+                continue
+
+            if chunk_id == max_chunks:
+                try:
+                    # 1. Grab and sort the dictionary keys sequentially (0, 1, 2...)
+                    sorted_keys = sorted(buffer_info["chunks"].keys())
+                    
+                    # 2. Extract and join the byte payloads in the correct order
+                    full_payload = b"".join(buffer_info["chunks"][idx] for idx in sorted_keys)
+                    
+                except Exception as e:
+                    # Consider logging 'e' here so bugs aren't completely silenced
+                    return
+                finally:
+                    # Housekeeping: safely remove buffer from memory map
+                    self._assembly_buffers.pop(buffer_key, None)
+                    
+                # Forward the completed message
+                await self._handle_complete_message(command, full_payload)
+
 
     async def run(self):
         await asyncio.gather(
