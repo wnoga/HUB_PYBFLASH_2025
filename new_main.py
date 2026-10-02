@@ -12,7 +12,6 @@ from my_utilities import (
     AFECommandChannelMask,
     AFECommandSubdevice,
     millis,
-    wdt,
 )
 
 
@@ -234,6 +233,37 @@ async def call_callback(callback, *args):
     result = callback(*args)
     if is_awaitable(result):
         await result
+
+
+# -----------------------------------------------------------------------------
+# Hardware watchdog.
+# -----------------------------------------------------------------------------
+class WatchdogManager:
+    """Feeds the MCU watchdog independently of CAN/network activity."""
+
+    def __init__(self, timeout_ms=20000, feed_interval_ms=5000):
+        self.feed_interval_ms = feed_interval_ms
+        self.enabled = False
+        self.wdt = None
+
+        try:
+            from machine import WDT
+            self.wdt = WDT(timeout=timeout_ms)
+            self.enabled = True
+            print("Hardware watchdog enabled: {} ms".format(timeout_ms))
+        except (ImportError, AttributeError):
+            print("Hardware watchdog unavailable")
+        except Exception as exc:
+            print("Hardware watchdog init failed: {}".format(exc))
+
+    async def run(self):
+        while True:
+            if self.enabled and self.wdt is not None:
+                try:
+                    self.wdt.feed()
+                except Exception as exc:
+                    print("Watchdog feed error: {}".format(exc))
+            await asyncio.sleep_ms(self.feed_interval_ms)
 
 
 # -----------------------------------------------------------------------------
@@ -881,7 +911,6 @@ class HUBDevice:
 
     async def router_loop(self):
         while True:
-            wdt.feed()
             msg_id, data = await self.rx_queue.get()
             afe_id = (msg_id >> 2) & 0xFF
 
@@ -1144,8 +1173,10 @@ async def main():
     web_server = WebServer(hub_device=hub)
     net_manager = NetworkManager(logger=logger)
     time_sync = TimeSyncManager(network_manager=net_manager, logger=logger)
+    watchdog = WatchdogManager(timeout_ms=20000, feed_interval_ms=5000)
 
     await asyncio.gather(
+        watchdog.run(),
         can_bus.tx_loop(),
         can_bus.rx_loop(),
         logger.writer_loop(),
