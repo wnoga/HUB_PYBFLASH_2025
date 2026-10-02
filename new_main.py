@@ -777,6 +777,7 @@ class AFEDevice:
             250,
             **command_kwargs
         )
+        print("AFE {} configured!".format(self.afe_id))
 
     async def buffer_cleanup_loop(self):
         while True:
@@ -839,7 +840,8 @@ class AFEDevice:
                 data_bytes,
                 chunk_payload,
             ) = parsed
-
+            if command == AFECommand.setAD8402Value_byte_byMask:
+                print("#####:", data, "&", parsed)
             now = millis()
             buffer_key = command
             buffer_info = self._assembly_buffers.get(buffer_key)
@@ -864,22 +866,22 @@ class AFEDevice:
                     del buffer_info["chunks"][chunk_id]
                 continue
 
-            # 4. Check if the sequential structure is completely filled
-            chunks = buffer_info["chunks"]
-            
-            # Since chunk_id starts at 1 and max_chunks is the exact maximum:
-            expected_range = range(1, buffer_info["max_chunks"] + 1)
-            
-            # Ensure every single mandatory index from 1 to max_chunks has arrived
-            if all(idx in chunks for idx in expected_range):
+            if chunk_id == max_chunks:
                 try:
-                    # Cleanly merge sequential byte segments without missing gaps
-                    full_payload = b"".join(chunks[idx] for idx in expected_range)
-                except KeyError:
-                    continue
-                
-                # Housekeeping: clear buffer memory map and pass data forward
-                del self._assembly_buffers[buffer_key]
+                    # 1. Grab and sort the dictionary keys sequentially (0, 1, 2...)
+                    sorted_keys = sorted(buffer_info["chunks"].keys())
+                    
+                    # 2. Extract and join the byte payloads in the correct order
+                    full_payload = b"".join(buffer_info["chunks"][idx] for idx in sorted_keys)
+                    
+                except Exception as e:
+                    # Consider logging 'e' here so bugs aren't completely silenced
+                    return
+                finally:
+                    # Housekeeping: safely remove buffer from memory map
+                    self._assembly_buffers.pop(buffer_key, None)
+                    
+                # Forward the completed message
                 await self._handle_complete_message(command, full_payload)
 
     async def _handle_complete_message(
