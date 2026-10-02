@@ -120,6 +120,7 @@ class AFECommandPayload:
         "retval",
         "callback",
         "callback_error",
+        "completion_event",
     )
 
     def __init__(
@@ -149,6 +150,7 @@ class AFECommandPayload:
         self.retval = None
         self.callback = callback
         self.callback_error = callback_error
+        self.completion_event = asyncio.Event()
 
 
 class CommandRequest:
@@ -398,50 +400,88 @@ class AFEDevice:
         await self.to_execute.put(payload)
         return payload
 
-    async def execute_command(self, cmd_id, data=None, timeout_ms=2000, **kwargs):
-        # The protocol uses command ID as the response key. Do not allow two
-        # simultaneous waiters for the same command to overwrite each other.
-        if cmd_id in self._pending_requests:
-            raise RuntimeError(
-                "Command 0x{:X} already has a pending request".format(cmd_id)
-            )
+    async def send_command_and_wait(self, command, data=None, *args, **kwargs):
+        """Send a command and wait for its matching CAN response.
 
-        request = CommandRequest(cmd_id, b"", timeout_ms)
-        self._pending_requests[cmd_id] = request
+        AFE responses may arrive in any order. Completion is correlated by
+        command ID. The optional third positional value preserves the
+        configure() helper calling convention: command, channel, value.
+        """
+        if args:
+            if len(args) != 1:
+                raise TypeError("expected command, channel, value")
+            channel = data
+            value = args[0]
+
+            float_commands = (
+                AFECommand.setChannel_a_byMask,
+                AFECommand.setChannel_b_byMask,
+                AFECommand.setRegulator_a_dac_byMask,
+                AFECommand.setRegulator_b_dac_byMask,
+                AFECommand.setRegulator_V_opt_byMask,
+                AFECommand.setRegulator_dV_dT_byMask,
+                AFECommand.setRegulator_T_opt_byMask,
+                AFECommand.setAveragingAlpha_byMask,
+                AFECommand.setRegulator_dT_byMask,
+                AFECommand.setRegulator_V_offset_byMask,
+            )
+            if command in float_commands:
+                packed = struct.pack("<f", value)
+                data = (channel, packed[0], packed[1], packed[2], packed[3])
+            elif command == AFECommand.setAD8402Value_byte_byMask:
+                data = (channel, int(value) & 0xFF)
+            else:
+                data = (
+                    channel,
+                    int(value) & 0xFF,
+                    (int(value) >> 8) & 0xFF,
+                    (int(value) >> 16) & 0xFF,
+                    (int(value) >> 24) & 0xFF,
+                )
+
+        timeout_ms = kwargs.get("timeout_ms")
+        if timeout_ms is None:
+            timeout_ms = self.default_command_timeout_ms
+            kwargs["timeout_ms"] = timeout_ms
+
+        payload = await self.enqueue_command(command, data, **kwargs)
 
         try:
-            await self.enqueue_command(cmd_id, data, timeout_ms=timeout_ms, **kwargs)
-        except Exception as exc:
-            self._pending_requests.pop(cmd_id, None)
-            raise RuntimeError(
-                "Failed to enqueue command 0x{:X}: {}".format(cmd_id, exc)
+            await asyncio.wait_for_ms(
+                payload.completion_event.wait(),
+                timeout_ms,
             )
-
-        try:
-            # wait_for_ms is available in current MicroPython uasyncio and
-            # avoids floating-point seconds used by CPython-style wait_for.
-            await asyncio.wait_for_ms(request.event.wait(), timeout_ms)
-            if request.exception is not None:
-                raise request.exception
-            return request.result
         except asyncio.TimeoutError:
-            message = "AFE-{} cmd 0x{:X} timed out".format(self.afe_id, cmd_id)
-            await self.hub.logger.log("WARN", message)
+            message = "AFE-{} cmd 0x{:X} timed out".format(
+                self.afe_id, command
+            )
             raise AFETimeoutError(message)
-        finally:
-            if self._pending_requests.get(cmd_id) is request:
-                self._pending_requests.pop(cmd_id, None)
+
+        if payload.status != CommandStatus.SUCCESS:
+            if payload.retval is not None and isinstance(payload.retval, Exception):
+                raise payload.retval
+            raise RuntimeError(
+                "AFE-{} cmd 0x{:X} transfer failed".format(
+                    self.afe_id, command
+                )
+            )
+
+        return payload.retval
 
     async def command_queue_worker(self):
+        """Transmit queued commands and track them until their CAN response arrives."""
         while True:
             payload = await self.to_execute.get()
-            full_can_id = (self.afe_id << 2) | (payload.command & 0x0F)
+
             payload.timeout_start_on_send_ms = millis()
+
             active = self._active_payloads.get(payload.command)
             if active is None:
                 active = []
                 self._active_payloads[payload.command] = active
             active.append(payload)
+
+            full_can_id = (self.afe_id << 2) | (payload.command & 0x0F)
 
             try:
                 await self.can.send_frame(full_can_id, payload.frame)
@@ -450,6 +490,7 @@ class AFEDevice:
                     payload.command,
                     payload_bytes=None,
                     exception=exc,
+                    specific_payload=payload,
                 )
 
             await asyncio.sleep_ms(0)
@@ -536,84 +577,84 @@ class AFEDevice:
                     value = convert_to_si(value, unit)
 
                 if setting == "T_measured_a":
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setChannel_a_byMask,
                         get_t_measured_ch_id(group),
                         value,
                         **command_kwargs
                     )
                 elif setting == "T_measured_b":
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setChannel_b_byMask,
                         get_t_measured_ch_id(group),
                         value,
                         **command_kwargs
                     )
                 elif setting == "offset":
-                    await self.enqueue_u8_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setAD8402Value_byte_byMask,
                         get_subdevice_ch_id(group),
                         int(value),
                         **command_kwargs
                     )
                 elif setting == "U_measured_a":
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setChannel_a_byMask,
                         get_u_measured_ch_id(group),
                         value,
                         **command_kwargs
                     )
                 elif setting == "U_measured_b":
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setChannel_b_byMask,
                         get_u_measured_ch_id(group),
                         value,
                         **command_kwargs
                     )
                 elif setting == "I_measured_a":
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setChannel_a_byMask,
                         get_i_measured_ch_id(group),
                         value,
                         **command_kwargs
                     )
                 elif setting == "I_measured_b":
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setChannel_b_byMask,
                         get_i_measured_ch_id(group),
                         value,
                         **command_kwargs
                     )
                 elif setting == "U_set_a":
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setRegulator_a_dac_byMask,
                         get_subdevice_ch_id(group),
                         value,
                         **command_kwargs
                     )
                 elif setting == "U_set_b":
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setRegulator_b_dac_byMask,
                         get_subdevice_ch_id(group),
                         value,
                         **command_kwargs
                     )
                 elif setting == "V_opt":
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setRegulator_V_opt_byMask,
                         get_subdevice_ch_id(group),
                         value,
                         **command_kwargs
                     )
                 elif setting == "dV/dT":
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setRegulator_dV_dT_byMask,
                         get_subdevice_ch_id(group),
                         value,
                         **command_kwargs
                     )
                 elif setting == "T_opt":
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setRegulator_T_opt_byMask,
                         get_subdevice_ch_id(group),
                         value,
@@ -628,7 +669,7 @@ class AFEDevice:
                     if not value:
                         value = "NONE"
                     avg_mode = AFECommandAverage[value]
-                    await self.enqueue_command(
+                    await self.send_command_and_wait(
                         AFECommand.setAveragingMode_byMask,
                         [get_subdevice_ch_id(group), avg_mode],
                         **command_kwargs
@@ -638,7 +679,7 @@ class AFEDevice:
                         alpha = value
                     else:
                         alpha = 1.0 / 1000000.0
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setAveragingAlpha_byMask,
                         get_general_ch_id_mask(group),
                         alpha,
@@ -649,41 +690,41 @@ class AFEDevice:
                         time_sample_ms = int(round(value * 1000))
                     else:
                         time_sample_ms = 1000
-                    await self.enqueue_u32_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setChannel_dt_ms_byMask,
                         get_general_ch_id_mask(group),
                         time_sample_ms,
                         **command_kwargs
                     )
                 elif setting == "dT":
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setRegulator_dT_byMask,
                         get_subdevice_ch_id(group),
                         value,
                         **command_kwargs
                     )
                 elif setting == "V_offset":
-                    await self.enqueue_float_for_channel(
+                    await self.send_command_and_wait(
                         AFECommand.setRegulator_V_offset_byMask,
                         get_subdevice_ch_id(group),
                         value,
                         **command_kwargs
                     )
 
-            await self.enqueue_u32_for_channel(
+            await self.send_command_and_wait(
                 AFECommand.setAveraging_max_dt_ms_byMask,
                 get_general_ch_id_mask(group),
                 int(round(time_sample_ms * avg_number)),
                 **command_kwargs
             )
-            await self.enqueue_u32_for_channel(
+            await self.send_command_and_wait(
                 AFECommand.setTemperatureLoop_loop_every_ms,
                 get_general_ch_id_mask(group),
                 100,
                 **command_kwargs
             )
 
-        await self.enqueue_u32_for_channel(
+        await self.send_command_and_wait(
             AFECommand.startADC,
             0xFF,
             250,
@@ -834,6 +875,7 @@ class AFEDevice:
 
         if exception is not None:
             payload.status = CommandStatus.ERROR
+            payload.completion_event.set()
             if payload.callback_error is not None:
                 try:
                     await call_callback(
@@ -849,6 +891,7 @@ class AFEDevice:
             return
 
         payload.status = CommandStatus.SUCCESS
+        payload.completion_event.set()
         if payload.callback is not None:
             try:
                 await call_callback(payload.callback, payload)
