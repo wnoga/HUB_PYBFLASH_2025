@@ -25,15 +25,15 @@ except (ImportError, AttributeError):
             return (2000, 1, 1, 1, 0, 0, 0, 0)
     rtc = DummyRTC()
 
-try:
-    from machine import WDT
-    wdt = WDT(timeout=20000)
-    wdt.feed()
-except (ImportError, AttributeError):
-    class DummyWDT:
-        def feed(self):
-            pass
-    wdt = DummyWDT()
+# try:
+#     from machine import WDT
+#     wdt = WDT(timeout=20000)
+#     wdt.feed()
+# except (ImportError, AttributeError):
+#     class DummyWDT:
+#         def feed(self):
+#             pass
+#     wdt = DummyWDT()
 
 try:
     import uasyncio
