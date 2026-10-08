@@ -290,6 +290,9 @@ def get_general_ch_id_mask(group):
 def is_awaitable(value):
     return value is not None and hasattr(value, "__await__")
 
+@micropython.native
+def get_subdevice_ch_id(g):
+    return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
 
 async def call_callback(callback, *args):
     if callback is None:
@@ -773,19 +776,27 @@ class AFEDevice:
                 AFECommand.setRegulator_V_offset_byMask,
             )
 
+            # Inside the if/elif/else block of send_command_and_wait:
             if command in float_commands:
                 packed = struct.pack("<f", value)
-                base_payload.extend(packed)  # Appends the 4 bytes of the float
+                base_payload.extend(packed)
             elif command == AFECommand.setAD8402Value_byte_byMask:
                 base_payload.append(int(value) & 0xFF)
+            elif command == AFECommand.setDACValueRaw_bySubdeviceMask:
+                # Explicitly force a 16-bit (2 byte) layout
+                base_payload.extend([
+                    int(value) & 0xFF,
+                    (int(value) >> 8) & 0xFF,
+                ])
             else:
-                # Handles 32-bit integers (like your 250 value)
+                # 32-bit (4 byte) layout fallback
                 base_payload.extend([
                     int(value) & 0xFF,
                     (int(value) >> 8) & 0xFF,
                     (int(value) >> 16) & 0xFF,
                     (int(value) >> 24) & 0xFF,
                 ])
+
             
             # Convert back to a tuple if that's what enqueue_command expects
             data = tuple(base_payload)
@@ -824,7 +835,18 @@ class AFEDevice:
     async def _safe_configure(self):
         try:
             await self.configure()
+            # If we reach this line without exceptions, configuration was successful
+            self.is_configured = True
+        except asyncio.CancelledError:
+            # The configuration loop explicitly stopped us to restart or shut down.
+            # Do NOT retry automatically here; let the loop manage the restart.
+            self.is_configured = False
+            await self.hub.logger.log(
+                "INFO", "AFE-{} configuration was canceled by system.".format(self.afe_id)
+            )
+            raise  # Always propagate CancelledError in asyncio
         except Exception as exc:
+            # A real runtime/hardware error happened. Flag for a retry.
             self.request_configuration = True
             self.is_configured = False
             await self.hub.logger.log(
@@ -875,6 +897,7 @@ class AFEDevice:
                         value,
                         **command_kwargs
                     )
+                
                 elif setting == "T_measured_b":
                     await self.send_command_and_wait(
                         AFECommand.setChannel_b_byMask,
@@ -1022,22 +1045,65 @@ class AFEDevice:
             250,
             **command_kwargs
         )
+        
+        await self.default_set_dac()
+        # This will now parse properly using your updated send_command_and_wait mechanism!
         await self.send_command_and_wait(
             AFECommand.setTemperatureLoopForChannelState_byMask_asStatus,
             [0x03, 1],
             250,
             **command_kwargs
         )
-        # await self.send_command_and_wait(
-        #     AFECommand.setSensorDataSiAndTimestamp_periodic_average,
-        #     0xFF,
-        #     1000,
-        #     **command_kwargs
+        print("Configured", self.afe_id)
+        
+    async def default_set_dac(self, dac_master=3000, dac_slave=3000):
+        # Using self directly since this belongs to the AFE class instance
+        # await self.logger.log(
+        #     VerbosityLevel["INFO"],
+        #     {
+        #         "device_id": self.device_id,
+        #         "timestamp_ms": millis(),
+        #         "info": "default_set_dac"
+        #     }
         # )
-        # await afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus, [
-        #     subdevice, 1 if status else 0], **commandKwargs)
-        self.is_configured = True
-        print("AFE {} configured!".format(self.afe_id))
+        AFEGPIO_EN_HV0 = AFECommandGPIO(port="PORTB", pin=10)
+        AFEGPIO_EN_HV1 = AFECommandGPIO(port="PORTB", pin=11)
+        AFEGPIO_EN_CAL_IN0 = AFECommandGPIO(port="PORTB", pin=15)
+        AFEGPIO_EN_CAL_IN1 = AFECommandGPIO(port="PORTB", pin=14)
+
+        commandKwargs = {
+            "timeout_ms": 10220,
+            "preserve": False,
+            "timeout_start_on_send_ms": 2000
+        }
+
+        for g in ["M", "S"]:
+            dac_value = dac_master if g == 'M' else dac_slave
+            subdevice_id = get_subdevice_ch_id(g)
+
+            # 1. Set raw DAC value (16-bit payload variant)
+            await self.send_command_and_wait(
+                AFECommand.setDACValueRaw_bySubdeviceMask,
+                subdevice_id,
+                dac_value,
+                **commandKwargs
+            )
+
+            # 2. Activate DAC setting
+            await self.send_command_and_wait(
+                AFECommand.setDAC_bySubdeviceMask,
+                [subdevice_id, 1],
+                **commandKwargs
+            )
+
+            # 3. Write GPIO state sequentially
+            gpio_obj = AFEGPIO_EN_HV0 if g == 'M' else AFEGPIO_EN_HV1
+            await self.send_command_and_wait(
+                AFECommand.writeGPIO,
+                [gpio_obj.port, gpio_obj.pin, 1],
+                **commandKwargs
+            )
+
 
     async def buffer_cleanup_loop(self):
         while True:
@@ -1281,14 +1347,33 @@ class AFEDevice:
             await asyncio.sleep_ms(10)
 
     # @robust_worker(error_delay_ms=100)
+    async def configuration_loop(self):
+        """Dedicated loop to monitor and handle configuration requests."""
+        config_task = None
+        while True:
+            if self.request_configuration:
+                print("Start configure", self.afe_id, millis())
+                self.request_configuration = False
+
+                # If a previous configuration task is still running, cancel it
+                if config_task and not config_task.done():
+                    print("Canceling ongoing configuration for AFE-{}", self.afe_id)
+                    config_task.cancel()
+                    try:
+                        await config_task
+                    except asyncio.CancelledError:
+                        pass  # Expected cancellation behavior
+
+                # Start the new configuration task
+                config_task = asyncio.create_task(self._safe_configure())
+            
+            # Small non-blocking sleep to prevent CPU hogging
+            await asyncio.sleep_ms(10)
+
     async def process_loop(self):
         while True:
-            # print("process loop", millis())
-            if self.request_configuration:
-                self.request_configuration = False
-                asyncio.create_task(self._safe_configure())
-                await asyncio.sleep_ms(10)
-                continue
+            # Removed the configuration check block entirely from here.
+            # This loop now solely processes incoming CAN messages without interruptions.
 
             # There is blocked until new msg arrive
             msg_id, data = await self.rx_queue.get()
@@ -1324,7 +1409,7 @@ class AFEDevice:
 
             # 3. Run boundary validation check against max_chunks
             if chunk_id > max_chunks:
-                print("Malformed...", device_id, self.afe_id, " : ", chunk_id, max_chunks, command, )
+                print("Malformed...", device_id, self.afe_id, " : ", chunk_id, max_chunks, command)
                 if chunk_id in buffer_info["chunks"]:
                     del buffer_info["chunks"][chunk_id]
                 continue
@@ -1351,10 +1436,12 @@ class AFEDevice:
     async def run(self):
         await asyncio.gather(
             self.process_loop(),
+            self.configuration_loop(),  # Registered the new loop here
             self.command_queue_worker(),
             self.buffer_cleanup_loop(),
             self.periodic_debug_loop(),
         )
+
 
 
 # -----------------------------------------------------------------------------
