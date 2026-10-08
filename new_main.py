@@ -21,6 +21,12 @@ from my_utilities import (
 # Fast mapping: byte value -> string name (e.g., 0x01 -> "STANDARD")
 REVERSE_AVG_LOOKUP = {v: k for k, v in AFECommandAverage.items()}
 
+can_tx_sleep_ms = 5
+can_rx_sleep_ms = 5
+sdlogger_sleep_ms = 200
+hub_router_loop_sleep_ms = 0
+hub_discovery_loop_sleep_ms = 250
+
 def robust_worker(error_delay_ms=100):
     """Decorator to make individual class worker methods resilient."""
     def decorator(func):
@@ -357,7 +363,7 @@ class CANController:
                 # print("CANTX:",(msg_id >> 2) & 0xFF,data)
             except Exception:
                 pass
-            await asyncio.sleep_ms(0)
+            await asyncio.sleep_ms(can_tx_sleep_ms)
 
     async def rx_loop(self):
         while True:
@@ -369,7 +375,7 @@ class CANController:
                         # print("CANRX:",(msg_id >> 2) & 0xFF, data)
                 except Exception:
                     pass
-            await asyncio.sleep_ms(1)
+            await asyncio.sleep_ms(can_rx_sleep_ms)
 
 
 # -----------------------------------------------------------------------------
@@ -743,12 +749,15 @@ class AFEDevice:
 
         AFE responses may arrive in any order. Completion is correlated by
         command ID. The optional third positional value preserves the
-        configure() helper calling convention: command, channel, value.
+        configure() helper calling convention: command, channel, value OR command, [mask, state], value.
         """
         if args:
             if len(args) != 1:
-                raise TypeError("expected command, channel, value")
-            channel = data
+                raise TypeError("expected command, channel/mask_state, value")
+            
+            # Determine if data is a single channel or a list/tuple of [mask, state]
+            is_sequence = isinstance(data, (list, tuple))
+            base_payload = list(data) if is_sequence else [data]
             value = args[0]
 
             float_commands = (
@@ -763,19 +772,23 @@ class AFEDevice:
                 AFECommand.setRegulator_dT_byMask,
                 AFECommand.setRegulator_V_offset_byMask,
             )
+
             if command in float_commands:
                 packed = struct.pack("<f", value)
-                data = (channel, packed[0], packed[1], packed[2], packed[3])
+                base_payload.extend(packed)  # Appends the 4 bytes of the float
             elif command == AFECommand.setAD8402Value_byte_byMask:
-                data = (channel, int(value) & 0xFF)
+                base_payload.append(int(value) & 0xFF)
             else:
-                data = (
-                    channel,
+                # Handles 32-bit integers (like your 250 value)
+                base_payload.extend([
                     int(value) & 0xFF,
                     (int(value) >> 8) & 0xFF,
                     (int(value) >> 16) & 0xFF,
                     (int(value) >> 24) & 0xFF,
-                )
+                ])
+            
+            # Convert back to a tuple if that's what enqueue_command expects
+            data = tuple(base_payload)
 
         timeout_ms = kwargs.get("timeout_ms")
         if timeout_ms is None:
@@ -842,7 +855,7 @@ class AFEDevice:
 
             group_config = self.configuration.get(group, {})
             for key, value in group_config.items():
-                # print("Configuring", group, key, value)
+                # print("Configuring", self.afe_id, group, key, value)
 
                 parts = key.split(" ")
                 setting = parts[0]
@@ -1009,12 +1022,20 @@ class AFEDevice:
             250,
             **command_kwargs
         )
+        await self.send_command_and_wait(
+            AFECommand.setTemperatureLoopForChannelState_byMask_asStatus,
+            [0x03, 1],
+            250,
+            **command_kwargs
+        )
         # await self.send_command_and_wait(
         #     AFECommand.setSensorDataSiAndTimestamp_periodic_average,
         #     0xFF,
         #     1000,
         #     **command_kwargs
         # )
+        # await afe.enqueue_command(AFECommand.setTemperatureLoopForChannelState_byMask_asStatus, [
+        #     subdevice, 1 if status else 0], **commandKwargs)
         self.is_configured = True
         print("AFE {} configured!".format(self.afe_id))
 
@@ -1088,13 +1109,13 @@ class AFEDevice:
                 del self._active_payloads[cmd_id]
 
         if payload is None:
-            if request is None and exception is None:
-                await self.hub.logger.log(
-                    "INFO",
-                    "AFE-{} spontaneous data for cmd 0x{:X}".format(
-                        self.afe_id, cmd_id
-                    ),
-                )
+            # if request is None and exception is None:
+            #     await self.hub.logger.log(
+            #         "INFO",
+            #         "AFE-{} spontaneous data for cmd 0x{:X}".format(
+            #             self.afe_id, cmd_id
+            #         ),
+            #     )
             return
 
         if exception is not None:
@@ -1303,7 +1324,7 @@ class AFEDevice:
 
             # 3. Run boundary validation check against max_chunks
             if chunk_id > max_chunks:
-                print("Malformed...")
+                print("Malformed...", device_id, self.afe_id, " : ", chunk_id, max_chunks, command, )
                 if chunk_id in buffer_info["chunks"]:
                     del buffer_info["chunks"][chunk_id]
                 continue
@@ -1343,14 +1364,39 @@ class HUBDevice:
     def __init__(self, can, logger):
         self.can = can
         self.logger = logger
-        self.rx_queue = Queue(maxsize=32)
+        self.rx_queue = Queue(maxsize=128)
         self.can.register_listener(self.rx_queue)
 
         self.afes = {}
         self.discover_active = 1
-        self.discover_current_id_min = 41
-        self.discover_current_id_max = 41
+        self.discover_current_id_min = 1
+        self.discover_current_id_max = 99
         self.discover_current_id = self.discover_current_id_min
+        
+    async def powerOn(self):
+        # await self.logger.log("INFO",
+        #                       {
+        #     "device_id": 0,
+        #     "timestamp_ms": millis(),
+        #     "info": "powerOn"
+        # })
+        pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
+        pyb.Pin.cpu.E12.value(1)
+        pyb.Pin.cpu.E10.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
+        pyb.Pin.cpu.E10.value(0)
+        
+
+    async def powerOff(self):  # Changed to async def
+        # await self.logger.log("INFO",
+        #                       json.dumps({
+        #     "device_id": 0,
+        #     "timestamp_ms": millis(),
+        #     "info": "powerOff"
+        # }))
+        pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
+        pyb.Pin.cpu.E12.value(0)
+        pyb.Pin.cpu.E10.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
+        pyb.Pin.cpu.E10.value(1)
 
     async def discover(self):
         afe_id = self.discover_current_id
@@ -1368,7 +1414,7 @@ class HUBDevice:
         while True:
             if self.discover_active:
                 await self.discover()
-            await asyncio.sleep_ms(250)
+            await asyncio.sleep_ms(hub_discovery_loop_sleep_ms)
 
     async def router_loop(self):
         while True:
@@ -1391,9 +1437,10 @@ class HUBDevice:
 
             # print("HUB puting", afe_id, ":",data)
             await self.afes[afe_id].rx_queue.put((msg_id, data))
-            await asyncio.sleep_ms(0)
+            await asyncio.sleep_ms(hub_router_loop_sleep_ms)
 
     async def run(self):
+        await self.powerOn()
         tasks = [self.router_loop(), self.discovery_loop()]
         for afe in self.afes.values():
             tasks.append(afe.run())
@@ -1423,6 +1470,7 @@ class SDLogger:
         self.current_file_size = 0
         self._update_filepath(rename_existing=False)
 
+    @micropython.native
     def _get_next_sequence_number(self):
         """Scans the SD card to find the highest sequence number used so far."""
         max_seq = 0
@@ -1440,6 +1488,7 @@ class SDLogger:
             pass
         return max_seq + 1
 
+    @micropython.native
     def _update_filepath(self, rename_existing=False, old_file_to_rename=None):
         """Generates the correct filename based on time-sync status."""
         if self.time_synced and self.current_datetime_str:
@@ -1459,6 +1508,7 @@ class SDLogger:
         self.current_file_lines = 0
         self.current_file_size = 0
 
+    @micropython.native
     def notify_time_synced(self):
         """Called by TimeSyncManager when time is synchronized via NTP."""
         tm = time.localtime()
@@ -1474,6 +1524,7 @@ class SDLogger:
         if was_default_name:
             self._update_filepath(rename_existing=True, old_file_to_rename=old_path)
 
+    @micropython.native
     def list_log_files(self):
         """Returns a sorted list of all log filenames found in the mount point."""
         logs = []
@@ -1555,7 +1606,7 @@ class SDLogger:
             except Exception as exc:
                 print("SD Write Error: {}".format(exc))
             
-            await asyncio.sleep_ms(200)
+            await asyncio.sleep_ms(sdlogger_sleep_ms)
 
 # -----------------------------------------------------------------------------
 # Minimal HTTP server and RTC adjustment.
@@ -1827,6 +1878,16 @@ class WebServer:
                     "status": "error",
                     "message": "AFE device {} not found".format(afe_id)
                 }
+                
+        elif procedure == "get_all_latest_status":
+            toreturn = {
+                "status": "ok",
+                "procedure": procedure,
+                "afe_id": 0,
+                "result": {afe.afe_id: afe.last_data for afe in afes}
+            }
+            print(toreturn)
+
 
         elif procedure == "set_time":
             new_time = data.get("epoch")
@@ -1978,8 +2039,7 @@ async def main():
         hub.run(),
         web_server.start(),
     )
-
-
+    
 if __name__ == "__main__":
     try:
         asyncio.run(main())
