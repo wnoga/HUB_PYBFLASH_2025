@@ -1742,136 +1742,181 @@ class WebServer:
         response_body = '{"status":"error","message":"Unknown error"}'
         status_code = "500 Internal Server Error"
         content_type_resp = "application/json"
+        is_http_request = True  # Track if we need to format an HTTP header response
 
         try:
-            request_line = await reader.readline()
-            if not request_line:
+            request_line_bytes = await reader.readline()
+            if not request_line_bytes:
                 return
+            print("R@", request_line_bytes)
 
-            request_line = request_line.decode("utf-8").strip()
-            content_length = 0
-            content_type = ""
-
-            # Read headers until empty line
-            while True:
-                header = await reader.readline()
-                if not header or header == b"\r\n" or header == b"\n":
-                    break
-
-                header_text = header.decode("utf-8").lower()
-                if header_text.startswith("content-length:"):
-                    content_length = int(header_text.split(":", 1)[1].strip())
-                elif header_text.startswith("content-type:"):
-                    content_type = header_text.split(":", 1)[1].strip()
-
-            # --- Periodic SSE Stream Endpoint (/stream) ---
-            if request_line.startswith("GET /stream"):
-                header = (
-                    "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: text/event-stream\r\n"
-                    "Cache-Control: no-cache\r\n"
-                    "Connection: keep-alive\r\n\r\n"
-                )
-                writer.write(header.encode("utf-8"))
-                await writer.drain()
-
-                while True:
-                    current_millis = time.ticks_ms() if hasattr(
-                        time, "ticks_ms") else int(time.time() * 1000)
-                    payload = json.dumps({"millis": current_millis})
-                    message = "data: {}\r\n\r\n".format(payload)
-                    writer.write(message.encode("utf-8"))
-                    await writer.drain()
-                    await asyncio.sleep(1)
-
-            # --- Standard JSON POST Procedures via Queue ---
-            elif request_line.startswith("POST") and content_length > 0:
-                body = await reader.read(content_length)
-
-                if "json" in content_type or body.lstrip().startswith(b"{"):
-                    try:
-                        data = json.loads(body.decode("utf-8"))
-                        procedure = data.get("procedure")
-
-                        if not procedure:
-                            status_code = "400 Bad Request"
-                            response_body = json.dumps(
-                                {"status": "error", "message": "Missing procedure field"})
+            # Check if this is a raw JSON payload directly on the first line instead of HTTP
+            clean_bytes = request_line_bytes.lstrip()
+            if clean_bytes.startswith(b"{"):
+                is_http_request = False  # Bypasses HTTP headers wrapping on response
+                try:
+                    data = json.loads(clean_bytes.decode("utf-8"))
+                    procedure = data.get("procedure")
+                    
+                    if procedure:
+                        req = ProcedureRequest(procedure, data)
+                        await self.queue.put(req)
+                        await req.event.wait()
+                        
+                        if req.error:
+                            response_body = json.dumps({"status": "error", "message": req.error})
                         else:
-                            req = ProcedureRequest(procedure, data)
-                            await self.queue.put(req)
-
-                            # Wait for worker to finish this specific request
-                            await req.event.wait()
-
-                            if req.error:
-                                status_code = "500 Internal Server Error"
-                                response_body = json.dumps(
-                                    {"status": "error", "message": req.error})
-                            else:
-                                status_code = "200 OK"
-                                response_body = json.dumps(req.result)
-
-                    except Exception as e:
-                        status_code = "400 Bad Request"
-                        response_body = json.dumps(
-                            {"status": "error", "message": str(e)})
-
-                elif "/api/time" in request_line:
-                    body_text = body.decode("utf-8")
-                    new_time = None
-                    for pair in body_text.split("&"):
-                        if "=" in pair:
-                            key, value = pair.split("=", 1)
-                            if key.strip() == "epoch":
-                                new_time = int(value.strip())
-                                break
-
-                    if new_time is None:
-                        status_code = "400 Bad Request"
-                        response_body = '{"status":"error","message":"Missing epoch"}'
+                            response_body = json.dumps(req.result)
                     else:
-                        tm = time.localtime(new_time)
-                        if pyb:
-                            pyb.RTC().datetime(
-                                (tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
-                        if hasattr(self.hub, "logger"):
-                            await self.hub.logger.log("SYS", "Manual RTC adjust: {}".format(new_time))
-                        status_code = "200 OK"
-                        response_body = '{"status":"ok"}'
+                        response_body = json.dumps({"status": "error", "message": "Missing procedure field"})
+                except Exception as e:
+                    response_body = json.dumps({"status": "error", "message": "Malformed raw JSON: " + str(e)})
+
+            # --- Fallback to Standard HTTP Processing Engine ---
+            else:
+                request_line = request_line_bytes.decode("utf-8").strip()
+                content_length = 0
+                content_type = ""
+
+                # Read headers until empty line
+                while True:
+                    header = await reader.readline()
+                    print("H@", header)
+                    if not header or header == b"\r\n" or header == b"\n":
+                        break
+
+                    header_text = header.decode("utf-8").lower()
+                    if header_text.startswith("content-length:"):
+                        content_length = int(header_text.split(":", 1)[1].strip())
+                    elif header_text.startswith("content-type:"):
+                        content_type = header_text.split(":", 1)[1].strip()
+
+                # --- Periodic SSE Stream Endpoint (/stream) ---
+                if request_line.startswith("GET /stream"):
+                    header = (
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: text/event-stream\r\n"
+                        "Cache-Control: no-cache\r\n"
+                        "Connection: keep-alive\r\n\r\n"
+                    )
+                    writer.write(header.encode("utf-8"))
+                    await writer.drain()
+
+                    while True:
+                        current_millis = time.ticks_ms() if hasattr(
+                            time, "ticks_ms") else int(time.time() * 1000)
+                        payload = json.dumps({"millis": current_millis})
+                        message = "data: {}\r\n\r\n".format(payload)
+                        writer.write(message.encode("utf-8"))
+                        await writer.drain()
+                        await asyncio.sleep(1)
+
+                # --- Handle HTTP POST Routes ---
+                elif request_line.startswith("POST") and content_length > 0:
+                    body = await reader.read(content_length)
+                    body_text = body.decode("utf-8")
+                    
+                    if "/api/time" in request_line:
+                        new_time = None
+                        for pair in body_text.split("&"):
+                            if "=" in pair:
+                                key, value = pair.split("=", 1)
+                                if key.strip() == "epoch":
+                                    new_time = int(value.strip())
+                                    break
+
+                        if new_time is None:
+                            status_code = "400 Bad Request"
+                            response_body = '{"status":"error","message":"Missing epoch"}'
+                        else:
+                            tm = time.localtime(new_time)
+                            if pyb:
+                                pyb.RTC().datetime(
+                                    (tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
+                            if hasattr(self.hub, "logger"):
+                                await self.hub.logger.log("SYS", "Manual RTC adjust: {}".format(new_time))
+                            status_code = "200 OK"
+                            response_body = '{"status":"ok"}'
+
+                    else:
+                        procedure = None
+                        data = {}
+
+                        if "json" in content_type or body.lstrip().startswith(b"{"):
+                            try:
+                                data = json.loads(body_text)
+                                procedure = data.get("procedure")
+                            except Exception as e:
+                                status_code = "400 Bad Request"
+                                response_body = json.dumps({"status": "error", "message": "Malformed JSON: " + str(e)})
+                                procedure = None
+                        else:
+                            if "procedure=" in body_text:
+                                for pair in body_text.split("&"):
+                                    if "=" in pair:
+                                        key, value = pair.split("=", 1)
+                                        if key.strip() == "procedure":
+                                            procedure = value.strip()
+                                        else:
+                                            data[key.strip()] = value.strip()
+                            else:
+                                procedure = body_text.strip()
+
+                        if procedure:
+                            try:
+                                req = ProcedureRequest(procedure, data)
+                                await self.queue.put(req)
+                                await req.event.wait()
+
+                                if req.error:
+                                    status_code = "500 Internal Server Error"
+                                    response_body = json.dumps({"status": "error", "message": req.error})
+                                else:
+                                    status_code = "200 OK"
+                                    response_body = json.dumps(req.result)
+                            except Exception as e:
+                                status_code = "500 Internal Server Error"
+                                response_body = json.dumps({"status": "error", "message": str(e)})
+                        elif status_code != "400 Bad Request":
+                            status_code = "400 Bad Request"
+                            response_body = json.dumps({"status": "error", "message": "Missing procedure field"})
+
+                elif request_line.startswith("GET /"):
+                    status_code = "200 OK"
+                    content_type_resp = "text/html"
+                    response_body = (
+                        "<html><body><h1>HUB Controller</h1>"
+                        "<p>Status: Running</p>"
+                        "<p>Stream Endpoint: /stream</p></body></html>"
+                    )
                 else:
                     status_code = "404 Not Found"
-                    response_body = '{"status":"error","message":"Endpoint not found"}'
-
-            elif request_line.startswith("GET /"):
-                status_code = "200 OK"
-                content_type_resp = "text/html"
-                response_body = (
-                    "<html><body><h1>HUB Controller</h1>"
-                    "<p>Status: Running</p>"
-                    "<p>Stream Endpoint: /stream</p></body></html>"
-                )
-            else:
-                status_code = "404 Not Found"
-                content_type_resp = "text/html"
-                response_body = "<h1>404 Not Found</h1>"
+                    content_type_resp = "text/html"
+                    response_body = "<h1>404 Not Found</h1>"
 
         except Exception as exc:
             print("Web server transaction error: {}".format(exc))
-            status_code = "500 Internal Server Error"
-            response_body = json.dumps(
-                {"status": "error", "message": str(exc)})
+            if is_http_request:
+                status_code = "500 Internal Server Error"
+            response_body = json.dumps({"status": "error", "message": str(exc)})
 
         finally:
             try:
                 body_bytes = response_body.encode("utf-8")
-                response = (
-                    "HTTP/1.1 {}\r\n"
-                    "Content-Type: {}\r\n"
-                    "Content-Length: {}\r\n"
-                    "Connection: close\r\n\r\n".format(
-                        status_code, content_type_resp, len(body_bytes))
-                ).encode("utf-8") + body_bytes
+                
+                # Only prepend HTTP header protocol wrappers if it wasn't a raw client JSON transaction
+                if is_http_request:
+                    response = (
+                        "HTTP/1.1 {}\r\n"
+                        "Content-Type: {}\r\n"
+                        "Content-Length: {}\r\n"
+                        "Connection: close\r\n\r\n".format(
+                            status_code, content_type_resp, len(body_bytes))
+                    ).encode("utf-8") + body_bytes
+                else:
+                    # Raw JSON response directly back over the plain stream pipeline
+                    response = body_bytes + b"\n"
+
                 writer.write(response)
                 await writer.drain()
             except Exception:
@@ -1932,6 +1977,7 @@ class WebServer:
                 return {"status": "error", "message": "AFE device {} not found".format(afe_id)}
 
         elif procedure == "get_afe_sensor_data":
+            print("AAAAAAAAAA")
             afe_id = int(data.get("afe_id", 41))
             # Channel mask (e.g., 0xFF for all channels)
             mask = int(data.get("mask", 0xFF))
@@ -1971,9 +2017,20 @@ class WebServer:
                 "status": "ok",
                 "procedure": procedure,
                 "afe_id": 0,
-                "result": {afe.afe_id: afe.last_data for afe in afes}
+                "result": {
+                    afe.afe_id: {
+                        e_ADC_CHANNEL[ch]: data
+                        for ch, data in afe.periodic_data["last_data"].items()
+                        if ch in e_ADC_CHANNEL
+                    }
+                    # Fixed: .values() ensures you pull the actual AFE objects, not their integer IDs
+                    for afe in self.hub.afes.values() 
+                }
             }
             print(toreturn)
+            return toreturn
+
+
 
 
         elif procedure == "set_time":
