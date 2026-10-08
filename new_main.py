@@ -21,6 +21,20 @@ from my_utilities import (
 # Fast mapping: byte value -> string name (e.g., 0x01 -> "STANDARD")
 REVERSE_AVG_LOOKUP = {v: k for k, v in AFECommandAverage.items()}
 
+def robust_worker(error_delay_ms=100):
+    """Decorator to make individual class worker methods resilient."""
+    def decorator(func):
+        async def wrapper(self, *args, **kwargs):
+            while True:
+                try:
+                    await func(self, *args, **kwargs)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    print("[{0}] Unhandled exception: {1}".format(func.__name__, exc))
+                    await asyncio.sleep_ms(error_delay_ms)
+        return wrapper
+    return decorator
 
 # -----------------------------------------------------------------------------
 # Small uasyncio-compatible bounded FIFO.
@@ -104,6 +118,8 @@ class Queue:
 # -----------------------------------------------------------------------------
 # Exceptions and command containers.
 # -----------------------------------------------------------------------------
+
+
 class AFETimeoutError(Exception):
     pass
 
@@ -161,7 +177,7 @@ class AFECommandPayload:
         self.callback = callback
         self.callback_error = callback_error
         self.completion_event = asyncio.Event()
-        
+
     def to_dict(self):
         """Helper to serialize allowed slots into a clean dictionary."""
         return {
@@ -178,8 +194,10 @@ class AFECommandPayload:
         """Return JSON string representation."""
         return json.dumps(self.to_dict())
 
+
 class CommandRequest:
-    __slots__ = ("cmd_id", "payload", "timeout_ms", "event", "result", "exception")
+    __slots__ = ("cmd_id", "payload", "timeout_ms",
+                 "event", "result", "exception")
 
     def __init__(self, cmd_id, payload=b"", timeout_ms=2000):
         self.cmd_id = cmd_id
@@ -219,38 +237,54 @@ def parse_can_frame(msg_id, data, expected_device_id):
         data,
         chunk_payload,
     )
+
+
 @micropython.native
 def unmask_channel(masked_channel):
     masked_channel &= 0xFF
     return [i for i in range(8) if (masked_channel >> i) & 1]
+
+
 @micropython.native
 def get_subdevice_ch_id(group):
     if group == "M":
         return AFECommandSubdevice.AFECommandSubdevice_master
     return AFECommandSubdevice.AFECommandSubdevice_slave
+
+
 @micropython.native
 def get_t_measured_ch_id(group):
     if group == "M":
         return AFECommandChannel.AFECommandChannel_7
     return AFECommandChannel.AFECommandChannel_6
+
+
 @micropython.native
 def get_u_measured_ch_id(group):
     if group == "M":
         return AFECommandChannel.AFECommandChannel_2
     return AFECommandChannel.AFECommandChannel_3
+
+
 @micropython.native
 def get_i_measured_ch_id(group):
     if group == "M":
         return AFECommandChannel.AFECommandChannel_4
     return AFECommandChannel.AFECommandChannel_5
+
+
 @micropython.native
 def get_general_ch_id_mask(group):
     if group == "M":
         return AFECommandChannelMask.master
     return AFECommandChannelMask.slave
+
+
 @micropython.native
 def is_awaitable(value):
     return value is not None and hasattr(value, "__await__")
+
+
 async def call_callback(callback, *args):
     if callback is None:
         return
@@ -369,14 +403,14 @@ class AFEDevice:
         self.request_configuration = True
         self.is_configured = False
         self.configuration = None
-        
+
         self.channels = {uch: {} for uch in range(8)}
         self.periodic_data = {
             "last_data": {uch: {} for uch in range(8)},
             "average_data": {uch: {} for uch in range(8)}
         }
         self.adc_run = False
-        
+
         self.debug_request_average_ms = 0
         self.debug_request_average_ms_period = 1500
 
@@ -402,59 +436,60 @@ class AFEDevice:
         for uch in unmask_channel(mask_byte):
             # print("A {}:{} -> {}".format(config_key, e_ADC_CHANNEL.get(uch), parsed_value))
             # Check if using dictionary keys (like your e_ADC_CHANNEL strings) or raw index keys
-            # If your self.channels dictionary uses string names (e.g., 'TEMP_LOCAL'), 
+            # If your self.channels dictionary uses string names (e.g., 'TEMP_LOCAL'),
             # make sure to wrap 'uch' with: channel_key = e_ADC_CHANNEL.get(uch, uch)
             # if uch in self.channels:
             self.channels[uch][config_key] = parsed_value
             # print(uch)
-    
+
     @micropython.native
     def _handle_full_subdevice_status(self, target_status_list, full_payload):
         """Parses a completely stitched multi-chunk status payload into a targeted status dictionary."""
-        # Detect segment size by looking at your data types: 
+        # Detect segment size by looking at your data types:
         # Float (1 mask + 4 data = 5), Boolean (1 mask + 1 data = 2), U32 (1 mask + 4 data = 5)
-        
+
         offset = 0
         payload_len = len(full_payload)
-        chunk_counter = 0  # Replicates the original sequential chunk order (0 to 12)
-        print("$",full_payload)
+        # Replicates the original sequential chunk order (0 to 12)
+        chunk_counter = 0
+        print("$", full_payload)
         while offset < payload_len:
             chunk_id_mod = chunk_counter % 13
-            
+
             # 1. Peek at the channel mask byte
             mask_byte = full_payload[offset]
             channels = unmask_channel(mask_byte)
-            
+
             # 2. Determine step sizes based on the expected chunk type sequence
             if chunk_id_mod < 10:
                 data_size = 4  # Float length
                 step_size = 1 + data_size
                 if offset + step_size > payload_len:
                     break
-                payload_data = full_payload[offset + 1 : offset + step_size]
+                payload_data = full_payload[offset + 1: offset + step_size]
                 value = struct.unpack("<f", payload_data)[0]
                 key = self._STATUS_KEYS[chunk_id_mod]
-                
+
             elif chunk_id_mod in (10, 11):
                 data_size = 1  # Boolean byte length
                 step_size = 1 + data_size
                 if offset + step_size > payload_len:
                     break
-                payload_data = full_payload[offset + 1 : offset + step_size]
-                
+                payload_data = full_payload[offset + 1: offset + step_size]
+
                 if chunk_id_mod == 10:
                     value = "enabled" if payload_data[0] else "disabled"
                     key = "temp_loop"
                 else:
                     value = "true" if payload_data[0] else "false"
                     key = "ramp_target_reached"
-                    
+
             else:  # chunk_id_mod == 12
                 data_size = 4  # U32 length
                 step_size = 1 + data_size
                 if offset + step_size > payload_len:
                     break
-                payload_data = full_payload[offset + 1 : offset + step_size]
+                payload_data = full_payload[offset + 1: offset + step_size]
                 value = struct.unpack("<I", payload_data)[0]
                 key = "timestamp_ms"
 
@@ -463,14 +498,15 @@ class AFEDevice:
                 for uch in channels:
                     # Reset or initialize subdevice dictionary structure on sequence boundaries
                     if chunk_id_mod == 0 or uch not in target_status_list:
-                        target_status_list[uch] = {"channel": "master" if uch == 0 else "slave"}
-                    
+                        target_status_list[uch] = {
+                            "channel": "master" if uch == 0 else "slave"}
+
                     target_status_list[uch][key] = value
 
             # Move the pointer to the start of the next concatenated chunk segment
             offset += step_size
             chunk_counter += 1
-            
+
     def _handle_full_periodic_sensor_data(self, full_payload):
         """Parses a completely stitched multi-chunk periodic sensor data stream."""
         try:
@@ -480,7 +516,7 @@ class AFEDevice:
                 "average_data": {uch: {} for uch in range(8)},
                 "timestamp_ms": millis()
             }
-            
+
             offset = 0
             payload_len = len(full_payload)
             chunk_counter = 0
@@ -491,7 +527,7 @@ class AFEDevice:
                     break  # Shield against short/dangling fragments
 
                 mask_byte = full_payload[offset]
-                data_bytes = full_payload[offset + 1 : offset + 5]
+                data_bytes = full_payload[offset + 1: offset + 5]
                 unmasked_channels = unmask_channel(mask_byte)
 
                 if chunk_counter == 0:  # Last data: data value
@@ -531,7 +567,8 @@ class AFEDevice:
 
         except Exception as e:
             if hasattr(self, "hub") and self.hub.logger:
-                asyncio.create_task(self.hub.logger.log("ERROR", "Periodic parse loop failure: {}".format(e)))
+                asyncio.create_task(self.hub.logger.log(
+                    "ERROR", "Periodic parse loop failure: {}".format(e)))
             else:
                 print("Periodic parse loop failure:", e)
             return None
@@ -539,33 +576,34 @@ class AFEDevice:
         except Exception as e:
             # Replaced fallback logger pointer safely using class hub hooks
             if hasattr(self, "hub") and self.hub.logger:
-                asyncio.create_task(self.hub.logger.log("ERROR", "Error parsing getSensorDataSi_periodic: {}".format(e)))
+                asyncio.create_task(self.hub.logger.log(
+                    "ERROR", "Error parsing getSensorDataSi_periodic: {}".format(e)))
             else:
                 print("Error parsing getSensorDataSi_periodic:", e)
             return None
-        
+
     @micropython.native
     def _handle_full_sensor_data_block(self, full_payload, target_key):
         """Parses stitched last or average sensor data payload streams directly into integer channel keys."""
         # Ensure your periodic tracking schema is safely initialized
         if not hasattr(self, "periodic_data") or self.periodic_data is None:
             self.periodic_data = {
-                "last_data": {uch: {} for uch in range(8)}, 
+                "last_data": {uch: {} for uch in range(8)},
                 "average_data": {uch: {} for uch in range(8)}
             }
-            
+
         offset = 0
         payload_len = len(full_payload)
         target_dict = self.periodic_data[target_key]
-        
+
         # Step through unified 5-byte chunks (1 byte mask + 4 bytes data payload)
         while offset < payload_len:
             if offset + 5 > payload_len:
                 break  # Protect against malformed trailing boundary fragments
-                
+
             mask_byte = full_payload[offset]
-            data_bytes = full_payload[offset + 1 : offset + 5]
-            
+            data_bytes = full_payload[offset + 1: offset + 5]
+
             # The last 5-byte block in the stitched buffer stream is the timestamp (U32)
             if offset + 5 == payload_len:
                 timestamp_val = struct.unpack("<I", data_bytes)[0]
@@ -576,9 +614,8 @@ class AFEDevice:
                 for uch in unmask_channel(mask_byte):
                     if uch in target_dict:
                         target_dict[uch]["value"] = float_val
-                        
-            offset += 5
 
+            offset += 5
 
     @micropython.native
     def prepare_command(
@@ -634,6 +671,72 @@ class AFEDevice:
         payload = self.prepare_command(command, data, **kwargs)
         await self.to_execute.put(payload)
         return payload
+
+    async def command_queue_worker(self):
+        """Transmit queued commands and track them until their CAN response arrives."""
+        while True:
+            payload = await self.to_execute.get()
+
+            payload.timeout_start_on_send_ms = millis()
+
+            active = self._active_payloads.get(payload.command)
+            if active is None:
+                active = []
+                self._active_payloads[payload.command] = active
+            active.append(payload)
+
+            full_can_id = (self.afe_id << 2)  # | (payload.command & 0x0F)
+
+            try:
+                await self.can.send_frame(full_can_id, payload.frame)
+            except Exception as exc:
+                await self._handle_complete_message(
+                    payload.command,
+                    payload_bytes=None,
+                    exception=exc,
+                    specific_payload=payload,
+                )
+
+            await asyncio.sleep_ms(0)
+
+    async def enqueue_gpio_set(self, gpio, state, **kwargs):
+        return await self.enqueue_command(
+            AFECommand.writeGPIO,
+            (gpio.port, gpio.pin, state),
+            **kwargs
+        )
+
+    async def enqueue_float_for_channel(self, command, channel, value, **kwargs):
+        packed = struct.pack("<f", value)
+        return await self.enqueue_command(command,
+            (channel, packed[0], packed[1], packed[2], packed[3]), **kwargs
+        )
+
+    async def enqueue_u8_for_channel(self, command, channel, value, **kwargs):
+        return await self.enqueue_command(command,
+            (channel, value & 0xFF), **kwargs
+        )
+
+    async def enqueue_u16_for_channel(self, command, channel, value, **kwargs):
+        return await self.enqueue_command(command,
+            (channel, value & 0xFF, (value >> 8) & 0xFF), **kwargs
+        )
+
+    async def enqueue_u32_for_channel(self, command, channel, value, **kwargs):
+        return await self.enqueue_command(command,
+            (
+                channel,
+                value & 0xFF,
+                (value >> 8) & 0xFF,
+                (value >> 16) & 0xFF,
+                (value >> 24) & 0xFF,
+            ), **kwargs
+        )
+
+    async def enqueue_channel(self, command, channel, **kwargs):
+        return await self.enqueue_command(
+            command, (channel), **kwargs
+        )
 
     async def send_command_and_wait(self, command, data=None, *args, **kwargs):
         """Send a command and wait for its matching CAN response.
@@ -701,83 +804,6 @@ class AFEDevice:
                 )
             )
         return payload.retval
-
-    async def command_queue_worker(self):
-        """Transmit queued commands and track them until their CAN response arrives."""
-        while True:
-            payload = await self.to_execute.get()
-
-            payload.timeout_start_on_send_ms = millis()
-
-            active = self._active_payloads.get(payload.command)
-            if active is None:
-                active = []
-                self._active_payloads[payload.command] = active
-            active.append(payload)
-
-            full_can_id = (self.afe_id << 2)# | (payload.command & 0x0F)
-
-            try:
-                await self.can.send_frame(full_can_id, payload.frame)
-            except Exception as exc:
-                await self._handle_complete_message(
-                    payload.command,
-                    payload_bytes=None,
-                    exception=exc,
-                    specific_payload=payload,
-                )
-
-            await asyncio.sleep_ms(0)
-
-    async def enqueue_gpio_set(self, gpio, state, **kwargs):
-        return await self.enqueue_command(
-            AFECommand.writeGPIO,
-            (gpio.port, gpio.pin, state),
-            **kwargs
-        )
-
-    async def enqueue_float_for_channel(self, command, channel, value, **kwargs):
-        packed = struct.pack("<f", value)
-        return await self.enqueue_command(
-            command,
-            (channel, packed[0], packed[1], packed[2], packed[3]),
-            **kwargs
-        )
-
-    async def enqueue_u8_for_channel(self, command, channel, value, **kwargs):
-        return await self.enqueue_command(
-            command,
-            (channel, value & 0xFF),
-            **kwargs
-        )
-
-    async def enqueue_u16_for_channel(self, command, channel, value, **kwargs):
-        return await self.enqueue_command(
-            command,
-            (channel, value & 0xFF, (value >> 8) & 0xFF),
-            **kwargs
-        )
-
-    async def enqueue_u32_for_channel(self, command, channel, value, **kwargs):
-        return await self.enqueue_command(
-            command,
-            (
-                channel,
-                value & 0xFF,
-                (value >> 8) & 0xFF,
-                (value >> 16) & 0xFF,
-                (value >> 24) & 0xFF,
-            ),
-            **kwargs
-        )
-    async def enqueue_channel(self, command, channel, **kwargs):
-        return await self.enqueue_command(
-            command,
-            (
-                channel
-            ),
-            **kwargs
-        )
 
     def callback_afe_error(self, payload, error):
         print("AFE callback error:", error)
@@ -1046,7 +1072,7 @@ class AFEDevice:
 
         payloads = self._active_payloads.get(cmd_id)
         payload = specific_payload
-        
+
         # print("^^^ 0x{:02X}".format(cmd_id), payload_bytes, exception, specific_payload)
 
         if payloads is not None:
@@ -1091,7 +1117,7 @@ class AFEDevice:
 
         command = cmd_id
         full_payload = payload_bytes
-        
+
         # Default retval to raw payload bytes, can be overridden below
         payload.retval = full_payload
 
@@ -1105,54 +1131,69 @@ class AFEDevice:
             for uch in unmask_channel(mask_byte):
                 group = "M" if uch == 0 else "S"
                 self.configuration[group]["offset [bit]"] = offset_val
-                
+
                 if len(full_payload) > 2 and (0x01 & (full_payload[2] >> uch)):
                     await self.hub.logger.log("ERROR", "AFE {}: error setting offset for CH{}".format(device_id, uch))
                     self.configuration[group]["offset [bit]"] = None
 
         elif command == AFECommand.setAveragingMode_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "avg_mode", "averaging_mode")
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "avg_mode", "averaging_mode")
 
         elif command == AFECommand.setAveragingAlpha_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "alpha")
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "float", "alpha")
 
         elif command == AFECommand.setChannel_dt_ms_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "u32", "time_interval_ms")
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "u32", "time_interval_ms")
 
         elif command == AFECommand.setChannel_a_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "a")
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "float", "a")
 
         elif command == AFECommand.setChannel_b_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "b")
-                
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "float", "b")
+
         elif command == AFECommand.setRegulator_T_opt_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "T_opt")
-                
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "float", "T_opt")
+
         elif command == AFECommand.setRegulator_dT_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "dT")
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "float", "dT")
 
         elif command == AFECommand.setRegulator_a_dac_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "a")
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "float", "a")
 
         elif command == AFECommand.setRegulator_b_dac_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "b")
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "float", "b")
 
         elif command == AFECommand.setRegulator_dV_dT_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "dV_dT")
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "float", "dV_dT")
 
         elif command == AFECommand.setRegulator_V_opt_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "V_opt")
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "float", "V_opt")
 
         elif command == AFECommand.setRegulator_V_offset_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "float", "V_offset")
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "float", "V_offset")
 
         elif command == AFECommand.setChannel_period_ms_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "u32", "period_ms")
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "u32", "period_ms")
         elif command == AFECommand.setAveraging_max_dt_ms_byMask:
-            self._apply_channel_config(full_payload[0], full_payload[1:], "u32", "averaging_max_dt_ms")
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "u32", "averaging_max_dt_ms")
         elif command == AFECommand.setTemperatureLoop_loop_every_ms:
             print("setTemperatureLoop_loop_every_ms", full_payload)
-            self._apply_channel_config(full_payload[0], full_payload[1:], "u32", "temperatreloop_every_ms")
+            self._apply_channel_config(
+                full_payload[0], full_payload[1:], "u32", "temperatreloop_every_ms")
         elif command == AFECommand.startADC:
             self.adc_run = True
 
@@ -1165,12 +1206,13 @@ class AFEDevice:
             payload.retval = self.periodic_data["average_data"]
 
         else:
-            print("Not handled function 0x{:02X}: {}".format(command, full_payload))
+            print("Not handled function 0x{:02X}: {}".format(
+                command, full_payload))
 
         # Completion event and success status are now handled strictly after parsing
         payload.status = CommandStatus.SUCCESS
         payload.completion_event.set()
-        
+
         if payload.callback is not None:
             try:
                 await call_callback(payload.callback, payload)
@@ -1188,8 +1230,7 @@ class AFEDevice:
                         )
                     except Exception:
                         pass
-                    
-                    
+
     async def periodic_debug_loop(self):
         """Dedicated loop that manages periodic data collection requests independently."""
         # Wait until the device finishes configuring before starting requests
@@ -1206,18 +1247,19 @@ class AFEDevice:
                 try:
                     # Pointing to the corrected spelling parameter name
                     await self.send_command_and_wait(
-                        AFECommand.getSensorDataSi_average_byMask, 
-                        0xFF, 
+                        AFECommand.getSensorDataSi_average_byMask,
+                        0xFF,
                         **command_kwargs
                     )
                 except Exception as exc:
                     print("Periodic average request failed:", exc)
-                
+
                 self.debug_request_average_ms = millis()
 
             # High accuracy polling window: yields control back to CPU cleanly
             await asyncio.sleep_ms(10)
 
+    # @robust_worker(error_delay_ms=100)
     async def process_loop(self):
         while True:
             # print("process loop", millis())
@@ -1227,7 +1269,8 @@ class AFEDevice:
                 await asyncio.sleep_ms(10)
                 continue
 
-            msg_id, data = await self.rx_queue.get() # There is blocked until new msg arrive
+            # There is blocked until new msg arrive
+            msg_id, data = await self.rx_queue.get()
             parsed = parse_can_frame(msg_id, data, self.afe_id)
             if parsed is None:
                 continue
@@ -1241,7 +1284,7 @@ class AFEDevice:
                 chunk_payload,
             ) = parsed
             now = millis()
-            
+
             buffer_key = command
             buffer_info = self._assembly_buffers.get(buffer_key)
 
@@ -1269,20 +1312,20 @@ class AFEDevice:
                 try:
                     # 1. Grab and sort the dictionary keys sequentially (0, 1, 2...)
                     sorted_keys = sorted(buffer_info["chunks"].keys())
-                    
+
                     # 2. Extract and join the byte payloads in the correct order
-                    full_payload = b"".join(buffer_info["chunks"][idx] for idx in sorted_keys)
-                    
+                    full_payload = b"".join(
+                        buffer_info["chunks"][idx] for idx in sorted_keys)
+
                 except Exception as e:
                     # Consider logging 'e' here so bugs aren't completely silenced
                     return
                 finally:
                     # Housekeeping: safely remove buffer from memory map
                     self._assembly_buffers.pop(buffer_key, None)
-                    
+
                 # Forward the completed message
                 await self._handle_complete_message(command, full_payload)
-
 
     async def run(self):
         await asyncio.gather(
@@ -1335,7 +1378,8 @@ class HUBDevice:
             if afe_id not in self.afes:
                 await self.logger.log(
                     "SYS",
-                    "Discovered new hardware AFE-{}. Initializing...".format(afe_id),
+                    "Discovered new hardware AFE-{}. Initializing...".format(
+                        afe_id),
                 )
                 afe = AFEDevice(
                     afe_id=afe_id,
@@ -1354,22 +1398,129 @@ class HUBDevice:
         for afe in self.afes.values():
             tasks.append(afe.run())
         await asyncio.gather(*tasks)
-        
+
     def procedure_get_all_afe_id(self):
-        return {"test":millis()}
+        return {"test": millis()}
 
 
 # -----------------------------------------------------------------------------
 # SD logger.
 # -----------------------------------------------------------------------------
 class SDLogger:
-    def __init__(self, mount_point="/sd", filename="system.log"):
-        self.filepath = "{}/{}".format(mount_point, filename)
+    MAX_FILE_SIZE = 1024 * 1024 * 1024  # 1024 MB
+    MAX_LINES = 10000
+
+    def __init__(self, mount_point="/sd"):
+        self.mount_point = mount_point
         self.queue = Queue(maxsize=64)
+        self.sequence_num = self._get_next_sequence_number()
+        self.time_synced = False
+        self.current_datetime_str = None
+        
+        # Track active file stats
+        self.current_filepath = None
+        self.current_file_lines = 0
+        self.current_file_size = 0
+        self._update_filepath(rename_existing=False)
+
+    def _get_next_sequence_number(self):
+        """Scans the SD card to find the highest sequence number used so far."""
+        max_seq = 0
+        try:
+            files = uos.listdir(self.mount_point)
+            for f in files:
+                if f.startswith("log_") and f.endswith(".jsonl"):
+                    parts = f.split("_")
+                    seq_part = parts[-1].split(".")[0]
+                    if seq_part.isdigit():
+                        seq = int(seq_part)
+                        if seq > max_seq:
+                            max_seq = seq
+        except Exception:
+            pass
+        return max_seq + 1
+
+    def _update_filepath(self, rename_existing=False, old_file_to_rename=None):
+        """Generates the correct filename based on time-sync status."""
+        if self.time_synced and self.current_datetime_str:
+            filename = "log_{}_{}.jsonl".format(self.current_datetime_str, self.sequence_num)
+        else:
+            filename = "log_{}.jsonl".format(self.sequence_num)
+        
+        new_path = "{}/{}".format(self.mount_point, filename)
+
+        if rename_existing and old_file_to_rename and old_file_to_rename != new_path:
+            try:
+                uos.rename(old_file_to_rename, new_path)
+            except Exception as exc:
+                print("SD Rename Error: {}".format(exc))
+
+        self.current_filepath = new_path
+        self.current_file_lines = 0
+        self.current_file_size = 0
+
+    def notify_time_synced(self):
+        """Called by TimeSyncManager when time is synchronized via NTP."""
+        tm = time.localtime()
+        self.current_datetime_str = "{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}".format(
+            tm[0], tm[1], tm[2], tm[3], tm[4], tm[5]
+        )
+        
+        old_path = self.current_filepath
+        was_default_name = "log_{}.jsonl".format(self.sequence_num) in old_path
+        
+        self.time_synced = True
+        
+        if was_default_name:
+            self._update_filepath(rename_existing=True, old_file_to_rename=old_path)
+
+    def list_log_files(self):
+        """Returns a sorted list of all log filenames found in the mount point."""
+        logs = []
+        try:
+            for f in uos.listdir(self.mount_point):
+                if f.startswith("log_") and f.endswith(".jsonl"):
+                    logs.append(f)
+            logs.sort()
+        except Exception as exc:
+            print("SD List Error: {}".format(exc))
+        return logs
+
+    async def stream_log_file(self, filename, writer, chunk_size=1024):
+        """
+        Reads a log file chunk by chunk and streams it to a destination writer 
+        (e.g., a WebSocket connection or another file object).
+        """
+        filepath = "{}/{}".format(self.mount_point, filename)
+        try:
+            with open(filepath, "r") as f:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    
+                    # Support both sync and async writer interfaces (.write or .send)
+                    if hasattr(writer, "write"):
+                        if asyncio.iscoroutinefunction(writer.write):
+                            await writer.write(chunk)
+                        else:
+                            writer.write(chunk)
+                    elif hasattr(writer, "send"):
+                        if asyncio.iscoroutinefunction(writer.send):
+                            await writer.send(chunk)
+                        else:
+                            writer.send(chunk)
+                    
+                    # Yield control briefly to keep the event loop responsive
+                    await asyncio.sleep_ms(10)
+        except Exception as exc:
+            print("SD Stream Error for {}: {}".format(filename, exc))
 
     async def log(self, level, message):
         timestamp = time.time()
-        entry = "[{}] [{}] {}".format(timestamp, level, message)
+        entry = "{{\"timestamp\": {}, \"level\": \"{}\", \"message\": \"{}\"}}\n".format(
+            timestamp, level, message
+        )
         print(entry, end="")
         await self.queue.put(entry)
 
@@ -1377,20 +1528,41 @@ class SDLogger:
         while True:
             entry = await self.queue.get()
             try:
-                with open(self.filepath, "a") as file_obj:
+                entry_len = len(entry.encode('utf-8'))
+                if self.current_file_lines >= self.MAX_LINES or self.current_file_size + entry_len > self.MAX_FILE_SIZE:
+                    self.sequence_num += 1
+                    self._update_filepath(rename_existing=False)
+
+                with open(self.current_filepath, "a") as file_obj:
                     file_obj.write(entry)
+                    self.current_file_lines += 1
+                    self.current_file_size += entry_len
+
                     while not self.queue.empty():
-                        file_obj.write(self.queue.get_nowait())
+                        next_entry = self.queue.get_nowait()
+                        next_entry_len = len(next_entry.encode('utf-8'))
+                        
+                        if self.current_file_lines >= self.MAX_LINES or self.current_file_size + next_entry_len > self.MAX_FILE_SIZE:
+                            file_obj.close()
+                            self.sequence_num += 1
+                            self._update_filepath(rename_existing=False)
+                            file_obj = open(self.current_filepath, "a")
+
+                        file_obj.write(next_entry)
+                        self.current_file_lines += 1
+                        self.current_file_size += next_entry_len
+
             except Exception as exc:
                 print("SD Write Error: {}".format(exc))
+            
             await asyncio.sleep_ms(200)
-
 
 # -----------------------------------------------------------------------------
 # Minimal HTTP server and RTC adjustment.
 # -----------------------------------------------------------------------------
 class ProcedureRequest:
     """Helper wrapper to hold request data and wait for the background worker response."""
+
     def __init__(self, procedure, data):
         self.procedure = procedure
         self.data = data
@@ -1410,7 +1582,7 @@ class WebServer:
     async def start(self):
         # Start the background worker that processes the queue sequentially
         self._worker_task = asyncio.create_task(self._worker_loop())
-        
+
         server = await asyncio.start_server(self.handle_client, self.host, self.port)
         await server.wait_closed()
 
@@ -1466,7 +1638,8 @@ class WebServer:
                 await writer.drain()
 
                 while True:
-                    current_millis = time.ticks_ms() if hasattr(time, "ticks_ms") else int(time.time() * 1000)
+                    current_millis = time.ticks_ms() if hasattr(
+                        time, "ticks_ms") else int(time.time() * 1000)
                     payload = json.dumps({"millis": current_millis})
                     message = "data: {}\r\n\r\n".format(payload)
                     writer.write(message.encode("utf-8"))
@@ -1481,27 +1654,30 @@ class WebServer:
                     try:
                         data = json.loads(body.decode("utf-8"))
                         procedure = data.get("procedure")
-                        
+
                         if not procedure:
                             status_code = "400 Bad Request"
-                            response_body = json.dumps({"status": "error", "message": "Missing procedure field"})
+                            response_body = json.dumps(
+                                {"status": "error", "message": "Missing procedure field"})
                         else:
                             req = ProcedureRequest(procedure, data)
                             await self.queue.put(req)
-                            
+
                             # Wait for worker to finish this specific request
                             await req.event.wait()
-                            
+
                             if req.error:
                                 status_code = "500 Internal Server Error"
-                                response_body = json.dumps({"status": "error", "message": req.error})
+                                response_body = json.dumps(
+                                    {"status": "error", "message": req.error})
                             else:
                                 status_code = "200 OK"
                                 response_body = json.dumps(req.result)
 
                     except Exception as e:
                         status_code = "400 Bad Request"
-                        response_body = json.dumps({"status": "error", "message": str(e)})
+                        response_body = json.dumps(
+                            {"status": "error", "message": str(e)})
 
                 elif "/api/time" in request_line:
                     body_text = body.decode("utf-8")
@@ -1519,7 +1695,8 @@ class WebServer:
                     else:
                         tm = time.localtime(new_time)
                         if pyb:
-                            pyb.RTC().datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
+                            pyb.RTC().datetime(
+                                (tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
                         if hasattr(self.hub, "logger"):
                             await self.hub.logger.log("SYS", "Manual RTC adjust: {}".format(new_time))
                         status_code = "200 OK"
@@ -1544,7 +1721,8 @@ class WebServer:
         except Exception as exc:
             print("Web server transaction error: {}".format(exc))
             status_code = "500 Internal Server Error"
-            response_body = json.dumps({"status": "error", "message": str(exc)})
+            response_body = json.dumps(
+                {"status": "error", "message": str(exc)})
 
         finally:
             try:
@@ -1553,7 +1731,8 @@ class WebServer:
                     "HTTP/1.1 {}\r\n"
                     "Content-Type: {}\r\n"
                     "Content-Length: {}\r\n"
-                    "Connection: close\r\n\r\n".format(status_code, content_type_resp, len(body_bytes))
+                    "Connection: close\r\n\r\n".format(
+                        status_code, content_type_resp, len(body_bytes))
                 ).encode("utf-8") + body_bytes
                 writer.write(response)
                 await writer.drain()
@@ -1567,7 +1746,7 @@ class WebServer:
 
     async def handle_procedure(self, procedure, data):
         """Dispatches procedures and returns data back to the client."""
-        
+
         # 1. Handle Global Hub Procedures
         if procedure == "get_all_afe_id":
             if hasattr(self.hub, "procedure_get_all_afe_id"):
@@ -1585,7 +1764,7 @@ class WebServer:
         # 2. Handle Specific AFE Device Procedures (e.g., AFE 41)
         elif procedure == "get_afe_data":
             afe_id = int(data.get("afe_id", 41))
-            
+
             # Check if hub stores afes dict or list
             afes = getattr(self.hub, "afes", None)
             if afes and afe_id in afes:
@@ -1602,9 +1781,9 @@ class WebServer:
 
         elif procedure == "set_afe_gpio":
             afe_id = int(data.get("afe_id", 41))
-            gpio_obj = data.get("gpio") # e.g., mapping port/pin
+            gpio_obj = data.get("gpio")  # e.g., mapping port/pin
             state = data.get("state")
-            
+
             afes = getattr(self.hub, "afes", None)
             if afes and afe_id in afes:
                 afe_device = afes[afe_id]
@@ -1613,22 +1792,23 @@ class WebServer:
                 return {"status": "ok", "afe_id": afe_id}
             else:
                 return {"status": "error", "message": "AFE device {} not found".format(afe_id)}
-            
+
         elif procedure == "get_afe_sensor_data":
             afe_id = int(data.get("afe_id", 41))
-            mask = int(data.get("mask", 0xFF))  # Channel mask (e.g., 0xFF for all channels)
-            
+            # Channel mask (e.g., 0xFF for all channels)
+            mask = int(data.get("mask", 0xFF))
+
             afes = getattr(self.hub, "afes", None)
             if afes and afe_id in afes:
                 afe_device = afes[afe_id]
                 try:
                     # send_command_and_wait waits for completion and returns payload.retval
                     result_data = await afe_device.send_command_and_wait(
-                        AFECommand.getSensorDataSi_last_byMask, 
+                        AFECommand.getSensorDataSi_last_byMask,
                         mask,
                         timeout_ms=3000
                     )
-                    
+
                     toreturn = {
                         "status": "ok",
                         "procedure": procedure,
@@ -1639,34 +1819,36 @@ class WebServer:
                     return toreturn
                 except Exception as e:
                     return {
-                        "status": "error", 
+                        "status": "error",
                         "message": "AFE-{} command failed: {}".format(afe_id, str(e))
                     }
             else:
                 return {
-                    "status": "error", 
+                    "status": "error",
                     "message": "AFE device {} not found".format(afe_id)
                 }
-                
+
         elif procedure == "set_time":
             new_time = data.get("epoch")
             if new_time is not None:
                 tm = time.localtime(int(new_time))
                 if pyb:
-                    pyb.RTC().datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
+                    pyb.RTC().datetime(
+                        (tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
                 if hasattr(self.hub, "logger"):
                     logger_log = self.hub.logger.log
                     if hasattr(asyncio, "iscoroutinefunction") and asyncio.iscoroutinefunction(logger_log):
                         await logger_log("SYS", "Manual RTC adjust: {}".format(new_time))
                     else:
-                        logger_log("SYS", "Manual RTC adjust: {}".format(new_time))
+                        logger_log(
+                            "SYS", "Manual RTC adjust: {}".format(new_time))
                 return {"status": "ok", "procedure": procedure}
             return {"status": "error", "message": "Missing epoch parameter"}
 
         else:
             return {"status": "error", "message": "Unknown procedure: {}".format(procedure)}
 
-        
+
 # -----------------------------------------------------------------------------
 # Ethernet and NTP.
 # -----------------------------------------------------------------------------
@@ -1753,6 +1935,10 @@ class TimeSyncManager:
                             0,
                         )
                     )
+                    
+                    if hasattr(self.logger, "notify_time_synced"):
+                        self.logger.notify_time_synced()
+
                     await self.logger.log(
                         "SYS",
                         "NTP Synced: {}".format(unix_time),
@@ -1770,13 +1956,12 @@ class TimeSyncManager:
             else:
                 await asyncio.sleep_ms(15000)
 
-
 # -----------------------------------------------------------------------------
 # Application entry point.
 # -----------------------------------------------------------------------------
 async def main():
     can_bus = CANController(can_id=1)
-    logger = SDLogger()
+    logger = SDLogger(mount_point="/sd")
     hub = HUBDevice(can=can_bus, logger=logger)
     web_server = WebServer(hub_device=hub)
     net_manager = NetworkManager(logger=logger)
