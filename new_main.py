@@ -5,6 +5,7 @@ import network
 import socket
 import struct
 import json
+import io
 
 from my_utilities import (
     AFECommand,
@@ -21,8 +22,8 @@ from my_utilities import (
 # Fast mapping: byte value -> string name (e.g., 0x01 -> "STANDARD")
 REVERSE_AVG_LOOKUP = {v: k for k, v in AFECommandAverage.items()}
 
-can_tx_sleep_ms = 5
-can_rx_sleep_ms = 5
+can_tx_sleep_ms = 1
+can_rx_sleep_ms = 0
 sdlogger_sleep_ms = 200
 hub_router_loop_sleep_ms = 0
 hub_discovery_loop_sleep_ms = 250
@@ -213,6 +214,115 @@ class CommandRequest:
         self.result = None
         self.exception = None
 
+
+class ChannelDataPoint:
+    __slots__ = ("value", "value_bytes", "timestamp_ms")
+
+    def __init__(self, value: float | int = 0, value_bytes: float = 0.0, timestamp_ms: int = 0):
+        self.value = value
+        self.value_bytes = value_bytes
+        self.timestamp_ms = timestamp_ms
+
+    def to_dict(self):
+        """Maintains clean dictionary structures for the JSON API."""
+        return {
+            "value": self.value,
+            "value_bytes": self.value_bytes,
+            "timestamp_ms": self.timestamp_ms
+        }
+
+    async def write_json(self, writer):
+        """Asynchronously streams the data point key-by-key directly to the writer."""
+        await writer.write('{"value":')
+        await writer.write(str(self.value))
+        await writer.write(',"value_bytes":')
+        await writer.write(str(self.value_bytes))
+        await writer.write(',"timestamp_ms":')
+        await writer.write(str(self.timestamp_ms))
+        await writer.write('}')
+
+    def to_json_str(self):
+        """Returns the JSON representation as a string (synchronously)."""
+        buf = io.StringIO()
+        buf.write('{"value":')
+        buf.write(str(self.value))
+        buf.write(',"value_bytes":')
+        buf.write(str(self.value_bytes))
+        buf.write(',"timestamp_ms":')
+        buf.write(str(self.timestamp_ms))
+        buf.write('}')
+        return buf.getvalue()
+
+
+class PeriodicDataContainer:
+    __slots__ = ("last_data", "average_data", "timestamp_ms")
+
+    def __init__(self):
+        self.last_data = {uch: ChannelDataPoint() for uch in range(8)}
+        self.average_data = {uch: ChannelDataPoint() for uch in range(8)}
+        self.timestamp_ms = 0
+        
+    def to_dict(self):
+        """Returns the container structure as a clean nested dictionary."""
+        return {
+            "timestamp_ms": self.timestamp_ms,
+            "last_data": {str(e_ADC_CHANNEL[uch]): dp.to_dict() for uch, dp in self.last_data.items()},
+            "average_data": {str(e_ADC_CHANNEL[uch]): dp.to_dict() for uch, dp in self.average_data.items()}
+        }
+
+    async def write_json(self, writer):
+        """Asynchronously streams the entire container structure key-by-key."""
+        await writer.write('{"timestamp_ms":')
+        await writer.write(str(self.timestamp_ms))
+        
+        # Stream last_data dictionary
+        await writer.write(',"last_data":{')
+        first = True
+        for uch, dp in self.last_data.items():
+            if not first:
+                await writer.write(',')
+            await writer.write('"%s":' %  e_ADC_CHANNEL[uch])
+            await dp.write_json(writer)
+            first = False
+        await writer.write('}')
+
+        # Stream average_data dictionary
+        await writer.write(',"average_data":{')
+        first = True
+        for uch, dp in self.average_data.items():
+            if not first:
+                await writer.write(',')
+            await writer.write('"%s":' % e_ADC_CHANNEL[uch])
+            await dp.write_json(writer)
+            first = False
+        await writer.write('}}')
+
+    def to_json_str(self):
+        """Returns the JSON representation of the container as a string (synchronously)."""
+        buf = io.StringIO()
+        buf.write('{"timestamp_ms":')
+        buf.write(str(self.timestamp_ms))
+        
+        buf.write(',"last_data":{')
+        first = True
+        for uch, dp in self.last_data.items():
+            if not first:
+                buf.write(',')
+            buf.write('"%s":' % e_ADC_CHANNEL[uch])
+            buf.write(dp.to_json_str())
+            first = False
+        buf.write('}')
+
+        buf.write(',"average_data":{')
+        first = True
+        for uch, dp in self.average_data.items():
+            if not first:
+                buf.write(',')
+            buf.write('"%s":' % e_ADC_CHANNEL[uch])
+            buf.write(dp.to_json_str())
+            first = False
+        buf.write('}}')
+        return buf.getvalue()
 
 # -----------------------------------------------------------------------------
 # CAN frame helpers.
@@ -414,10 +524,11 @@ class AFEDevice:
         self.configuration = None
 
         self.channels = {uch: {} for uch in range(8)}
-        self.periodic_data = {
-            "last_data": {uch: {} for uch in range(8)},
-            "average_data": {uch: {} for uch in range(8)}
-        }
+        # self.periodic_data = {
+        #     "last_data": {uch: {} for uch in range(8)},
+        #     "average_data": {uch: {} for uch in range(8)}
+        # }
+        self.periodic_data = PeriodicDataContainer()
         self.adc_run = False
 
         self.debug_request_average_ms = 0
@@ -519,12 +630,11 @@ class AFEDevice:
     def _handle_full_periodic_sensor_data(self, full_payload):
         """Parses a completely stitched multi-chunk periodic sensor data stream."""
         try:
-            # Re-initialize state safely matched exactly to your schema structures
-            self.periodic_data = {
-                "last_data": {uch: {} for uch in range(8)},
-                "average_data": {uch: {} for uch in range(8)},
-                "timestamp_ms": millis()
-            }
+            # Safely verify container existence without overriding object references
+            if not hasattr(self, "periodic_data") or self.periodic_data is None:
+                self.periodic_data = PeriodicDataContainer()
+            
+            self.periodic_data.timestamp_ms = millis()
 
             offset = 0
             payload_len = len(full_payload)
@@ -542,32 +652,32 @@ class AFEDevice:
                 if chunk_counter == 0:  # Last data: data value
                     val_float = struct.unpack("<f", data_bytes)[0]
                     for uch in unmasked_channels:
-                        if uch in self.periodic_data["last_data"]:
-                            self.periodic_data["last_data"][uch]["value"] = val_float
+                        if uch in self.periodic_data.last_data:
+                            self.periodic_data.last_data[uch].value = val_float
 
                 elif chunk_counter == 1:  # Last data as raw byte representation
                     val_float = struct.unpack("<f", data_bytes)[0]
                     for uch in unmasked_channels:
-                        if uch in self.periodic_data["last_data"]:
-                            self.periodic_data["last_data"][uch]["value_bytes"] = val_float
+                        if uch in self.periodic_data.last_data:
+                            self.periodic_data.last_data[uch].value_bytes = val_float
 
                 elif chunk_counter == 2:  # Last data: raw measurement timestamp
                     val_u32 = struct.unpack("<I", data_bytes)[0]
                     for uch in unmasked_channels:
-                        if uch in self.periodic_data["last_data"]:
-                            self.periodic_data["last_data"][uch]["timestamp_ms"] = val_u32
+                        if uch in self.periodic_data.last_data:
+                            self.periodic_data.last_data[uch].timestamp_ms = val_u32
 
                 elif chunk_counter == 3:  # Average data: calculated arithmetic value
                     val_float = struct.unpack("<f", data_bytes)[0]
                     for uch in unmasked_channels:
-                        if uch in self.periodic_data["average_data"]:
-                            self.periodic_data["average_data"][uch]["value"] = val_float
+                        if uch in self.periodic_data.average_data:
+                            self.periodic_data.average_data[uch].value = val_float
 
                 elif chunk_counter == 4:  # Average data: loop processing timestamp
                     val_u32 = struct.unpack("<I", data_bytes)[0]
                     for uch in unmasked_channels:
-                        if uch in self.periodic_data["average_data"]:
-                            self.periodic_data["average_data"][uch]["timestamp_ms"] = val_u32
+                        if uch in self.periodic_data.average_data:
+                            self.periodic_data.average_data[uch].timestamp_ms = val_u32
 
                 offset += 5
                 chunk_counter += 1
@@ -582,49 +692,45 @@ class AFEDevice:
                 print("Periodic parse loop failure:", e)
             return None
 
-        except Exception as e:
-            # Replaced fallback logger pointer safely using class hub hooks
-            if hasattr(self, "hub") and self.hub.logger:
-                asyncio.create_task(self.hub.logger.log(
-                    "ERROR", "Error parsing getSensorDataSi_periodic: {}".format(e)))
-            else:
-                print("Error parsing getSensorDataSi_periodic:", e)
-            return None
-
     @micropython.native
     def _handle_full_sensor_data_block(self, full_payload, target_key):
         """Parses stitched last or average sensor data payload streams directly into integer channel keys."""
-        # Ensure your periodic tracking schema is safely initialized
         if not hasattr(self, "periodic_data") or self.periodic_data is None:
-            self.periodic_data = {
-                "last_data": {uch: {} for uch in range(8)},
-                "average_data": {uch: {} for uch in range(8)}
-            }
+            self.periodic_data = PeriodicDataContainer()
 
         offset = 0
         payload_len = len(full_payload)
-        target_dict = self.periodic_data[target_key]
+        target_dict = getattr(self.periodic_data, target_key)
+        
+        # Track which channels we modified in this specific payload run
+        updated_channels = []
 
         # Step through unified 5-byte chunks (1 byte mask + 4 bytes data payload)
         while offset < payload_len:
             if offset + 5 > payload_len:
-                break  # Protect against malformed trailing boundary fragments
+                break 
 
             mask_byte = full_payload[offset]
             data_bytes = full_payload[offset + 1: offset + 5]
 
-            # The last 5-byte block in the stitched buffer stream is the timestamp (U32)
+            # Last 5-byte block contains the timestamp (U32)
             if offset + 5 == payload_len:
                 timestamp_val = struct.unpack("<I", data_bytes)[0]
-                target_dict["timestamp_ms"] = timestamp_val
+                self.periodic_data.timestamp_ms = timestamp_val
+                
+                # Retroactively apply the freshly parsed timestamp to all touched channels
+                for uch in updated_channels:
+                    target_dict[uch].timestamp_ms = timestamp_val
             else:
-                # All intermediate blocks are telemetry metrics values (Float)
+                # Intermediate blocks contain metric floats
                 float_val = struct.unpack("<f", data_bytes)[0]
                 for uch in unmask_channel(mask_byte):
                     if uch in target_dict:
-                        target_dict[uch]["value"] = float_val
+                        target_dict[uch].value = float_val
+                        updated_channels.append(uch)
 
             offset += 5
+
 
     @micropython.native
     def prepare_command(
@@ -1207,7 +1313,7 @@ class AFEDevice:
 
         # Default retval to raw payload bytes, can be overridden below
         payload.retval = full_payload
-
+        print("Handle complete message 0x{:02X}".format(command))
         # --- Inside your full_payload command parsing logic ---
         if command == AFECommand.getSerialNumber:
             print("0x00")
@@ -1286,11 +1392,13 @@ class AFEDevice:
 
         elif command == AFECommand.getSensorDataSi_last_byMask:
             self._handle_full_sensor_data_block(full_payload, "last_data")
-            payload.retval = self.periodic_data["last_data"]
+            payload.retval = self.periodic_data.last_data
+            # print("Recieved last data", full_payload, "->", self.periodic_data.to_json_str())
 
         elif command == AFECommand.getSensorDataSi_average_byMask:
             self._handle_full_sensor_data_block(full_payload, "average_data")
-            payload.retval = self.periodic_data["average_data"]
+            payload.retval = self.periodic_data.average_data
+            # print("Recieved average data", full_payload, "->", self.periodic_data.to_json_str())
 
         else:
             print("Not handled function 0x{:02X}: {}".format(
@@ -1333,6 +1441,11 @@ class AFEDevice:
                 }
                 try:
                     # Pointing to the corrected spelling parameter name
+                    await self.send_command_and_wait(
+                        AFECommand.getSensorDataSi_last_byMask,
+                        0xFF,
+                        **command_kwargs
+                    )
                     await self.send_command_and_wait(
                         AFECommand.getSensorDataSi_average_byMask,
                         0xFF,
@@ -1699,11 +1812,11 @@ class SDLogger:
 # Minimal HTTP server and RTC adjustment.
 # -----------------------------------------------------------------------------
 class ProcedureRequest:
-    """Helper wrapper to hold request data and wait for the background worker response."""
-
-    def __init__(self, procedure, data):
+    def __init__(self, procedure, data, reader=None, writer=None):
         self.procedure = procedure
         self.data = data
+        self.reader = reader
+        self.writer = writer
         self.event = asyncio.Event()
         self.result = None
         self.error = None
@@ -1714,7 +1827,7 @@ class WebServer:
         self.hub = hub_device
         self.host = host
         self.port = port
-        self.queue = Queue(maxsize=queue_size)
+        self.queue = asyncio.Queue(maxsize=queue_size)
         self._worker_task = None
 
     async def start(self):
@@ -1729,8 +1842,10 @@ class WebServer:
         while True:
             req = await self.queue.get()
             try:
-                # Execute the procedure
-                req.result = await self.handle_procedure(req.procedure, req.data)
+                # Execute the procedure, passing reader and writer down
+                req.result = await self.handle_procedure(
+                    req.procedure, req.data, reader=req.reader, writer=req.writer
+                )
             except Exception as e:
                 print("Worker procedure execution error: {}".format(e))
                 req.error = str(e)
@@ -1759,7 +1874,8 @@ class WebServer:
                     procedure = data.get("procedure")
                     
                     if procedure:
-                        req = ProcedureRequest(procedure, data)
+                        # Pass reader and writer to ProcedureRequest
+                        req = ProcedureRequest(procedure, data, reader=reader, writer=writer)
                         await self.queue.put(req)
                         await req.event.wait()
                         
@@ -1830,7 +1946,7 @@ class WebServer:
                             response_body = '{"status":"error","message":"Missing epoch"}'
                         else:
                             tm = time.localtime(new_time)
-                            if pyb:
+                            if "pyb" in globals() and pyb:
                                 pyb.RTC().datetime(
                                     (tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
                             if hasattr(self.hub, "logger"):
@@ -1864,7 +1980,8 @@ class WebServer:
 
                         if procedure:
                             try:
-                                req = ProcedureRequest(procedure, data)
+                                # Pass reader and writer to ProcedureRequest
+                                req = ProcedureRequest(procedure, data, reader=reader, writer=writer)
                                 await self.queue.put(req)
                                 await req.event.wait()
 
@@ -1927,8 +2044,8 @@ class WebServer:
             except Exception:
                 pass
 
-    async def handle_procedure(self, procedure, data):
-        """Dispatches procedures and returns data back to the client."""
+    async def handle_procedure(self, procedure, data, reader=None, writer=None):
+        """Dispatches procedures and returns data back to the client (with access to reader/writer)."""
 
         # 1. Handle Global Hub Procedures
         if procedure == "get_all_afe_id":
@@ -1948,11 +2065,9 @@ class WebServer:
         elif procedure == "get_afe_data":
             afe_id = int(data.get("afe_id", 41))
 
-            # Check if hub stores afes dict or list
             afes = getattr(self.hub, "afes", None)
             if afes and afe_id in afes:
                 afe_device = afes[afe_id]
-                # Return current collected periodic / sensor data from the AFE instance
                 return {
                     "status": "ok",
                     "afe_id": afe_id,
@@ -1964,13 +2079,12 @@ class WebServer:
 
         elif procedure == "set_afe_gpio":
             afe_id = int(data.get("afe_id", 41))
-            gpio_obj = data.get("gpio")  # e.g., mapping port/pin
+            gpio_obj = data.get("gpio")
             state = data.get("state")
 
             afes = getattr(self.hub, "afes", None)
             if afes and afe_id in afes:
                 afe_device = afes[afe_id]
-                # Calls your async enqueue_gpio_set method on the AFEDevice
                 await afe_device.enqueue_gpio_set(gpio_obj, state)
                 return {"status": "ok", "afe_id": afe_id}
             else:
@@ -1979,14 +2093,12 @@ class WebServer:
         elif procedure == "get_afe_sensor_data":
             print("AAAAAAAAAA")
             afe_id = int(data.get("afe_id", 41))
-            # Channel mask (e.g., 0xFF for all channels)
             mask = int(data.get("mask", 0xFF))
 
             afes = getattr(self.hub, "afes", None)
             if afes and afe_id in afes:
                 afe_device = afes[afe_id]
                 try:
-                    # send_command_and_wait waits for completion and returns payload.retval
                     result_data = await afe_device.send_command_and_wait(
                         AFECommand.getSensorDataSi_last_byMask,
                         mask,
@@ -2014,30 +2126,25 @@ class WebServer:
                 
         elif procedure == "get_all_latest_status":
             toreturn = {
-                "status": "ok",
-                "procedure": procedure,
-                "afe_id": 0,
-                "result": {
-                    afe.afe_id: {
-                        e_ADC_CHANNEL[ch]: data
-                        for ch, data in afe.periodic_data["last_data"].items()
-                        if ch in e_ADC_CHANNEL
+                'status': 'OK',
+                'data': {
+                    'procedure': procedure,
+                    'status': 'ok',
+                    'afe_id': 0,
+                    'result': {
+                        str(afe.afe_id): afe.periodic_data.to_dict()
+                        for afe in self.hub.afes.values()
                     }
-                    # Fixed: .values() ensures you pull the actual AFE objects, not their integer IDs
-                    for afe in self.hub.afes.values() 
                 }
             }
             print(toreturn)
             return toreturn
 
-
-
-
         elif procedure == "set_time":
             new_time = data.get("epoch")
             if new_time is not None:
                 tm = time.localtime(int(new_time))
-                if pyb:
+                if "pyb" in globals() and pyb:
                     pyb.RTC().datetime(
                         (tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
                 if hasattr(self.hub, "logger"):
@@ -2052,7 +2159,6 @@ class WebServer:
 
         else:
             return {"status": "error", "message": "Unknown procedure: {}".format(procedure)}
-
 
 # -----------------------------------------------------------------------------
 # Ethernet and NTP.
