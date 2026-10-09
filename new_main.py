@@ -1315,7 +1315,7 @@ class AFEDevice:
 
         # Default retval to raw payload bytes, can be overridden below
         payload.retval = full_payload
-        print("Handle complete message 0x{:02X}".format(command))
+        # print("Handle complete message 0x{:02X}".format(command))
         # --- Inside your full_payload command parsing logic ---
         if command == AFECommand.getSerialNumber:
             print("0x00")
@@ -1994,6 +1994,7 @@ class WebServer:
         """Dispatches procedures and streams data using non-blocking send_raw utilities."""
         status_code = "200 OK"
         response_body = ""
+        print("Handl procedure", procedure)
 
         if procedure == "get_all_afe_id":
             if hasattr(self.hub, "procedure_get_all_afe_id"):
@@ -2104,7 +2105,7 @@ class WebServer:
 
             await send_raw(writer, b'}}}')
             if not is_http_request:
-                await send_raw(writer, b'\n')
+                await send_raw(writer, b'\r\n')
             return
 
         elif procedure == "set_time":
