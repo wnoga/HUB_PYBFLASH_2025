@@ -1838,7 +1838,7 @@ class WebServer:
         self.hub = hub_device
         self.host = host
         self.port = port
-        self.queue = asyncio.Queue(maxsize=queue_size)
+        self.queue = Queue(maxsize=queue_size)
         self._worker_task = None
 
     async def start(self):
@@ -1991,7 +1991,7 @@ class WebServer:
         await send_raw(writer, response)
 
     async def handle_procedure(self, procedure, data, reader, writer, is_http_request=True):
-        """Dispatches procedures and streams data using memory-efficient stream utilities."""
+        """Dispatches procedures and streams data using non-blocking send_raw utilities."""
         status_code = "200 OK"
         response_body = ""
 
@@ -2078,35 +2078,33 @@ class WebServer:
             await self._send_response(writer, status_code, response_body, is_http=is_http_request)
                 
         elif procedure == "get_all_latest_status":
-            # Stream key-by-key using chunked transfer encoding to prevent memory overload
+            # Stream key-by-key using send_raw directly to prevent memory overload without adding chunk framing
             if is_http_request:
                 header = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
-                    "Transfer-Encoding: chunked\r\n"
                     "Connection: close\r\n\r\n"
                 )
                 await send_raw(writer, header.encode("utf-8"))
 
-            await send_chunk_raw(writer, b'{"status":"OK","data":{"procedure":"get_all_latest_status","status":"ok","afe_id":0,"result":{'))
+            await send_raw(writer, b'{"status":"OK","data":{"procedure":"get_all_latest_status","status":"ok","afe_id":0,"result":{')
 
             first = True
             afes = getattr(self.hub, "afes", {})
             for afe in afes.values():
                 if not first:
-                    await send_chunk_raw(writer, b',')
+                    await send_raw(writer, b',')
                 first = False
 
-                # Serialize and stream key and value incrementally using key-by-key utility
-                key_bytes = json.dumps(str(afe.afe_id)).encode("utf-8")
-                await send_chunk_raw(writer, key_bytes + b':')
-
+                k_json = json.dumps(str(afe.afe_id))
                 afe_data = afe.periodic_data.to_dict() if hasattr(afe.periodic_data, "to_dict") else afe.periodic_data
-                await stream_json_key_by_key(writer, afe_data)
+                v_json = json.dumps(afe_data)
+                await send_raw(writer, (k_json + ":" + v_json).encode("utf-8"))
                 gc.collect()
 
-            await send_chunk_raw(writer, b'}}}')
-            await finish_chunked_stream(writer)
+            await send_raw(writer, b'}}}')
+            if not is_http_request:
+                await send_raw(writer, b'\n')
             return
 
         elif procedure == "set_time":
@@ -2132,6 +2130,7 @@ class WebServer:
             status_code = "400 Bad Request"
             response_body = json.dumps({"status": "error", "message": "Unknown procedure: {}".format(procedure)})
             await self._send_response(writer, status_code, response_body, is_http=is_http_request)
+
 # -----------------------------------------------------------------------------
 # Ethernet and NTP.
 # -----------------------------------------------------------------------------
