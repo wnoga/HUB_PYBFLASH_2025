@@ -1649,7 +1649,7 @@ class HUBDevice:
         await asyncio.gather(*tasks)
 
     def procedure_get_all_afe_id(self):
-        return {"test": millis()}
+        return {"afe_id_list":[afe.afe_id for afe in self.afes]}
 
 
 # -----------------------------------------------------------------------------
@@ -2088,7 +2088,7 @@ class WebServer:
                 )
                 await send_raw(writer, header.encode("utf-8"))
 
-            await send_raw(writer, b'{"status":"OK","data":{"procedure":"get_all_latest_status","status":"ok","afe_id":0,"result":{')
+            await send_raw(writer, b'{')
 
             first = True
             afes = getattr(self.hub, "afes", {})
@@ -2103,7 +2103,7 @@ class WebServer:
                 await send_raw(writer, (k_json + ":" + v_json).encode("utf-8"))
                 gc.collect()
 
-            await send_raw(writer, b'}}}')
+            await send_raw(writer, b'}}')
             if not is_http_request:
                 await send_raw(writer, b'\r\n')
             return
