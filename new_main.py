@@ -402,9 +402,6 @@ def get_general_ch_id_mask(group):
 def is_awaitable(value):
     return value is not None and hasattr(value, "__await__")
 
-@micropython.native
-def get_subdevice_ch_id(g):
-    return AFECommandSubdevice.AFECommandSubdevice_master if g == 'M' else AFECommandSubdevice.AFECommandSubdevice_slave
 
 async def call_callback(callback, *args):
     if callback is None:
@@ -1873,6 +1870,7 @@ class WebServer:
             # 1. Handle raw JSON payload starting with '{'
             if clean_bytes.startswith(b"{"):
                 try:
+                    print(request_line_bytes, "->", clean_bytes.decode("utf-8"))
                     data = json.loads(clean_bytes.decode("utf-8"))
                     procedure = data.get("procedure")
                     if procedure:
@@ -1994,7 +1992,7 @@ class WebServer:
         """Dispatches procedures and streams data using non-blocking send_raw utilities."""
         status_code = "200 OK"
         response_body = ""
-        print("Handl procedure", procedure)
+        print("Handle procedure", procedure)
 
         if procedure == "get_all_afe_id":
             if hasattr(self.hub, "procedure_get_all_afe_id"):
@@ -2087,7 +2085,6 @@ class WebServer:
                     "Connection: close\r\n\r\n"
                 )
                 await send_raw(writer, header.encode("utf-8"))
-
             await send_raw(writer, b'{')
 
             first = True
@@ -2096,17 +2093,40 @@ class WebServer:
                 if not first:
                     await send_raw(writer, b',')
                 first = False
-
+                # await stream_json_key_by_key(writer, afe.periodic_data.to_dict())
                 k_json = json.dumps(str(afe.afe_id))
                 afe_data = afe.periodic_data.to_dict() if hasattr(afe.periodic_data, "to_dict") else afe.periodic_data
                 v_json = json.dumps(afe_data)
                 await send_raw(writer, (k_json + ":" + v_json).encode("utf-8"))
                 gc.collect()
 
-            await send_raw(writer, b'}}')
+            await send_raw(writer, b'}')
             if not is_http_request:
                 await send_raw(writer, b'\r\n')
             return
+        
+        elif procedure == "shift_voltage":
+            print("Procedure", procedure, "data:", data)
+            async def _callback(msg=None):
+                print("Failed set_offset")
+                # await send_raw(writer, b'{"status":"failed"}\r\n')
+            command_kwargs = {
+                "timeout_ms": 10220,
+                "preserve": False,
+                "callback_error": _callback,
+            }
+            afe_id = int(data.get('id'))
+            group = data.get('type')
+            value = float(data.get('value'))
+            afe = self.hub.afes[afe_id]
+            retval = await afe.send_command_and_wait(
+                AFECommand.setRegulator_V_offset_byMask,
+                get_subdevice_ch_id(group),
+                value,
+                **command_kwargs
+            )
+            print(retval)
+            await send_raw(writer, b'{"status":"OK"}\r\n')
 
         elif procedure == "set_time":
             new_time = data.get("epoch")
