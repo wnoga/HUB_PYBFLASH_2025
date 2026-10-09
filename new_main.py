@@ -6,6 +6,8 @@ import socket
 import struct
 import json
 import io
+import gc
+
 
 from my_utilities import (
     AFECommand,
@@ -1811,9 +1813,16 @@ class SDLogger:
 # -----------------------------------------------------------------------------
 # Minimal HTTP server and RTC adjustment.
 # -----------------------------------------------------------------------------
-import asyncio
-import json
-import time
+
+from stream_utilities import (
+    send_raw,
+    send_chunk_raw,
+    send_chunk_str,
+    stream_json_value,
+    stream_json_key_by_key,
+    finish_chunked_stream,
+    send_json_dict_chunked
+)
 
 class ProcedureRequest:
     def __init__(self, procedure, data, reader, writer, is_http_request=True):
@@ -1951,15 +1960,13 @@ class WebServer:
             "Cache-Control: no-cache\r\n"
             "Connection: keep-alive\r\n\r\n"
         )
-        writer.write(header.encode("utf-8"))
-        await writer.drain()
+        await send_raw(writer, header.encode("utf-8"))
 
         while True:
             current_millis = time.ticks_ms() if hasattr(time, "ticks_ms") else int(time.time() * 1000)
             payload = json.dumps({"millis": current_millis})
             message = "data: {}\r\n\r\n".format(payload)
-            writer.write(message.encode("utf-8"))
-            await writer.drain()
+            await send_raw(writer, message.encode("utf-8"))
             await asyncio.sleep(1)
 
     async def _handle_procedure_request(self, reader, writer, procedure, data, is_http=True):
@@ -1969,7 +1976,7 @@ class WebServer:
         await req.event.wait()
 
     async def _send_response(self, writer, status_code, response_body, content_type="application/json", is_http=True):
-        """Utility method to send responses using writer."""
+        """Utility method to send responses using non-blocking send_raw."""
         body_bytes = response_body.encode("utf-8")
         if is_http:
             response = (
@@ -1981,11 +1988,10 @@ class WebServer:
         else:
             response = body_bytes + b"\n"
 
-        writer.write(response)
-        await writer.drain()
+        await send_raw(writer, response)
 
     async def handle_procedure(self, procedure, data, reader, writer, is_http_request=True):
-        """Dispatches procedures and uses writer to send data directly, streaming key-by-key where loops/dictionaries occur."""
+        """Dispatches procedures and streams data using memory-efficient stream utilities."""
         status_code = "200 OK"
         response_body = ""
 
@@ -2072,37 +2078,36 @@ class WebServer:
             await self._send_response(writer, status_code, response_body, is_http=is_http_request)
                 
         elif procedure == "get_all_latest_status":
-            # Stream key-by-key to prevent memory overload from large dictionary comprehensions over all AFEs
+            # Stream key-by-key using chunked transfer encoding to prevent memory overload
             if is_http_request:
                 header = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
+                    "Transfer-Encoding: chunked\r\n"
                     "Connection: close\r\n\r\n"
                 )
-                writer.write(header.encode("utf-8"))
-                await writer.drain()
+                await send_raw(writer, header.encode("utf-8"))
 
-            writer.write(b'{"status":"OK","data":{"procedure":"get_all_latest_status","status":"ok","afe_id":0,"result":{'))
-            await writer.drain()
+            await send_chunk_raw(writer, b'{"status":"OK","data":{"procedure":"get_all_latest_status","status":"ok","afe_id":0,"result":{'))
 
             first = True
             afes = getattr(self.hub, "afes", {})
             for afe in afes.values():
                 if not first:
-                    writer.write(b',')
-                    await writer.drain()
+                    await send_chunk_raw(writer, b',')
                 first = False
 
-                k_json = json.dumps(str(afe.afe_id))
-                v_json = json.dumps(afe.periodic_data.to_dict() if hasattr(afe.periodic_data, "to_dict") else afe.periodic_data)
-                writer.write((k_json + ":" + v_json).encode("utf-8"))
-                await writer.drain()
+                # Serialize and stream key and value incrementally using key-by-key utility
+                key_bytes = json.dumps(str(afe.afe_id)).encode("utf-8")
+                await send_chunk_raw(writer, key_bytes + b':')
 
-            writer.write(b'}}}')
-            if not is_http_request:
-                writer.write(b'\n')
-            await writer.drain()
-            return  # Response fully sent key-by-key
+                afe_data = afe.periodic_data.to_dict() if hasattr(afe.periodic_data, "to_dict") else afe.periodic_data
+                await stream_json_key_by_key(writer, afe_data)
+                gc.collect()
+
+            await send_chunk_raw(writer, b'}}}')
+            await finish_chunked_stream(writer)
+            return
 
         elif procedure == "set_time":
             new_time = data.get("epoch")
@@ -2127,7 +2132,6 @@ class WebServer:
             status_code = "400 Bad Request"
             response_body = json.dumps({"status": "error", "message": "Unknown procedure: {}".format(procedure)})
             await self._send_response(writer, status_code, response_body, is_http=is_http_request)
-            
 # -----------------------------------------------------------------------------
 # Ethernet and NTP.
 # -----------------------------------------------------------------------------
