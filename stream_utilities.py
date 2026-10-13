@@ -40,6 +40,7 @@ async def send_raw(sock_or_writer, raw_b: bytes, timeout_ms: int = 5000):
         while total_sent < total_len:
             try:
                 sent = sock_or_writer.send(view[total_sent:])
+                print("]->", view[total_sent:])
                 if sent is None or sent == 0:
                     retries += 1
                     if retries > max_retries:

@@ -7,7 +7,7 @@ import struct
 import json
 import io
 import gc
-
+import uos
 
 from my_utilities import (
     AFECommand,
