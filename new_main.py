@@ -1775,10 +1775,13 @@ class SDLogger:
         await self.queue.put(entry)
 
     async def writer_loop(self):
+        global sdlogger_sleep_ms
         while True:
             entry = await self.queue.get()
             try:
                 entry_len = len(entry.encode('utf-8'))
+                
+                # Check if the current entry forces a file rotation BEFORE opening
                 if self.current_file_lines >= self.MAX_LINES or self.current_file_size + entry_len > self.MAX_FILE_SIZE:
                     self.sequence_num += 1
                     self._update_filepath(rename_existing=False)
@@ -1788,25 +1791,34 @@ class SDLogger:
                     self.current_file_lines += 1
                     self.current_file_size += entry_len
 
+                    # Drain any other accumulated logs safely
                     while not self.queue.empty():
                         next_entry = self.queue.get_nowait()
                         next_entry_len = len(next_entry.encode('utf-8'))
                         
+                        # If the NEXT entry exceeds the file limit, we must rotate.
+                        # Since we already popped it, we MUST write it to the NEW file instead of dropping it!
                         if self.current_file_lines >= self.MAX_LINES or self.current_file_size + next_entry_len > self.MAX_FILE_SIZE:
-                            file_obj.close()
+                            file_obj.close()  # Close current file
                             self.sequence_num += 1
                             self._update_filepath(rename_existing=False)
-                            file_obj = open(self.current_filepath, "a")
+                            file_obj = open(self.current_filepath, "a")  # Open new file
 
                         file_obj.write(next_entry)
                         self.current_file_lines += 1
                         self.current_file_size += next_entry_len
+                    
+                    # Ensure everything is committed to physical storage
+                    file_obj.flush()
+                    try:
+                        uos.sync()
+                    except AttributeError:
+                        pass
 
             except Exception as exc:
                 print("SD Write Error: {}".format(exc))
             
             await asyncio.sleep_ms(sdlogger_sleep_ms)
-
 # -----------------------------------------------------------------------------
 # Minimal HTTP server and RTC adjustment.
 # -----------------------------------------------------------------------------
