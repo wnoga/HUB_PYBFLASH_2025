@@ -13,7 +13,7 @@ from stream_utilities import (
 DASHBOARD_CSS = (
     b"body{font-family:monospace,sans-serif;margin:15px;background:#1e1e1e;color:#d4d4d4;}"
     b".card{background:#252526;padding:15px;border-radius:6px;border:1px solid #3c3c3c;margin-bottom:15px;}"
-    b"h2{color:#569cd6;margin-top:0;font-size:1.1em;border-bottom:1px solid #3c3c3c;padding-bottom:5px;}"
+    b"h2{color:#569cd6;margin-top:0;font-size:1.1em;border-bottom:1px solid #3c3c3c;padding-bottom:5px;display:flex;justify-content:space-between;align-items:center;}"
     b"table{width:100%;border-collapse:collapse;margin-top:10px;}"
     b"td,th{padding:6px 10px;text-align:left;border-bottom:1px solid #333;font-size:0.85em;vertical-align:top;}"
     b"th{color:#9cdcfe;width:30%;background-color:#2d2d2d;}"
@@ -34,56 +34,37 @@ DASHBOARD_CSS = (
     b".btn-dl:hover{background:#1177bb;}"
     b".btn-action{background:#388a34;color:#fff;border:none;padding:5px 10px;border-radius:3px;cursor:pointer;font-size:0.85em;margin-right:5px;}"
     b".btn-action:hover{background:#46a742;}"
+    b".btn-refresh{background:#0e639c;color:#fff;border:none;padding:3px 8px;border-radius:3px;cursor:pointer;font-size:0.75em;}"
+    b".btn-refresh:hover{background:#1177bb;}"
+    b".control-group{margin-top:8px;display:flex;gap:5px;align-items:center;flex-wrap:wrap;font-size:0.85em;}"
+    b"input[type=number]{background:#1e1e1e;color:#d4d4d4;border:1px solid #3c3c3c;padding:3px;border-radius:3px;width:80px;}"
     b"tr:nth-child(even){background:#333;}"
     b"tr:hover {background:#515;}"
 )
 
 
 async def stream_afe_status_html(writer, status_data):
-    """Streams the AFE status HTML directly to the writer in sub-512 byte chunks."""
-    if not isinstance(status_data, dict) or "last_data" not in status_data:
+    """Streams parsed live metrics (U_SIPM_MEAS0, U_SIPM_MEAS1, TEMP_LOCAL, TEMP_EXT) directly to HTML."""
+    if not isinstance(status_data, dict):
         return
 
     last = status_data.get("last_data", {})
+    if not last:
+        return
 
-    u0 = last.get("U_SIPM_MEAS0", {}).get("value", 0.0)
-    u1 = last.get("U_SIPM_MEAS1", {}).get("value", 0.0)
-    i0_na = last.get("I_SIPM_MEAS0", {}).get("value", 0.0) * 1e9
-    i1_na = last.get("I_SIPM_MEAS1", {}).get("value", 0.0) * 1e9
-    dc0 = last.get("DC_LEVEL_MEAS0", {}).get("value", 0)
-    dc1 = last.get("DC_LEVEL_MEAS1", {}).get("value", 0)
-    temp_ext = last.get("TEMP_EXT", {}).get("value", 0.0)
-    temp_loc = last.get("TEMP_LOCAL", {}).get("value", 0.0)
-    uid = status_data.get("unique_id_str", {}).get("value", "N/A")
+    u0 = last.get("U_SIPM_MEAS0", {}).get("value", 0.0) if isinstance(last.get("U_SIPM_MEAS0"), dict) else getattr(last.get("U_SIPM_MEAS0"), "value", 0.0)
+    u1 = last.get("U_SIPM_MEAS1", {}).get("value", 0.0) if isinstance(last.get("U_SIPM_MEAS1"), dict) else getattr(last.get("U_SIPM_MEAS1"), "value", 0.0)
+    temp_ext = last.get("TEMP_EXT", {}).get("value", 0.0) if isinstance(last.get("TEMP_EXT"), dict) else getattr(last.get("TEMP_EXT"), "value", 0.0)
+    temp_loc = last.get("TEMP_LOCAL", {}).get("value", 0.0) if isinstance(last.get("TEMP_LOCAL"), dict) else getattr(last.get("TEMP_LOCAL"), "value", 0.0)
 
     await send_chunk_str(
         writer,
         '<div class="sys-row">'
-        "<span><strong>Ext Temp:</strong> %.1f °C</span>"
-        "<span><strong>Loc Temp:</strong> %.1f °C</span>"
-        "<span><strong>UID:</strong> %s</span>"
-        "</div>" % (temp_ext, temp_loc, str(uid)),
-        max_chunk=512,
-    )
-
-    await send_chunk_str(
-        writer,
-        '<div class="sipm-grid">'
-        '<div class="sipm-chan"><h3>Channel 0</h3>'
-        '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
-        '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
-        '<div class="metric"><span>DC Offset:</span><span class="metric-val">%d</span></div>'
-        "</div>" % (u0, i0_na, int(dc0)),
-        max_chunk=512,
-    )
-
-    await send_chunk_str(
-        writer,
-        '<div class="sipm-chan"><h3>Channel 1</h3>'
-        '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
-        '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
-        '<div class="metric"><span>DC Offset:</span><span class="metric-val">%d</span></div>'
-        "</div></div>" % (u1, i1_na, int(dc1)),
+        "<span><strong>U_SIPM_0:</strong> %.2f V</span>"
+        "<span><strong>U_SIPM_1:</strong> %.2f V</span>"
+        "<span><strong>Local Temp:</strong> %.2f °C</span>"
+        "<span><strong>Ext Temp:</strong> %.2f °C</span>"
+        "</div>" % (u0, u1, temp_loc, temp_ext),
         max_chunk=512,
     )
 
@@ -120,6 +101,15 @@ async def send_control_web_page_raw(server_inst, writer):
             b'  fetch("/", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(Object.assign({procedure: proc}, data))})'
             b'  .then(res => res.json()).then(out => { alert("Result: " + JSON.stringify(out)); location.reload(); })'
             b'  .catch(err => alert("Error: " + err));'
+            b'}'
+            b'function refreshSection(sectionName) {'
+            b'  location.reload();'
+            b'}'
+            b'function setVoltageOffset(afeId) {'
+            b'  const val = parseFloat(document.getElementById("offset_val_" + afeId).value);'
+            b'  const target = document.getElementById("offset_target_" + afeId).value;'
+            b'  let mask = target === "M" ? 1 : (target === "S" ? 2 : 3);'
+            b'  sendProcedure("set_voltage_offset", {afe_id: afeId, mask: mask, value: val});'
             b'}'
             b'</script></head><body>',
             max_chunk=512,
@@ -175,18 +165,40 @@ async def send_control_web_page_raw(server_inst, writer):
                     "<tr><th>Config Requested</th><td>%s</td></tr>"
                     '<tr><th>Actions</th><td>'
                     '<button class="btn-action" onclick="sendProcedure(\'get_afe_sensor_data\', {afe_id: %s})">Get Sensors</button>'
-                    '<button class="btn-action" onclick="sendProcedure(\'shift_voltage\', {id: %s, type: \'M\', value: 0.1})">Shift +0.1V</button>'
+                    '<button class="btn-action" onclick="sendProcedure(\'shift_voltage\', {id: %s, type: \'M\', value: 1.0})">Shift +1.0V</button>'
                     '</td></tr>'
-                    '<tr><th>Configuration (JSON)</th><td><div class="scroll-box"><pre>'
+                    '<tr><th>Set Voltage Offset</th><td>'
+                    '<div class="control-group">'
+                    '<select id="offset_target_%s"><option value="M">Master</option><option value="S">Slave</option><option value="Both">Both</option></select>'
+                    '<input type="number" id="offset_val_%s" value="0.0" step="0.1">'
+                    '<button class="btn-action" onclick="setVoltageOffset(%s)">Apply Offset</button>'
+                    '</div></td></tr>'
+                    '<tr><th>Live Telemetry <button class="btn-refresh" onclick="refreshSection(\'live\')">Refresh</button></th><td>'
                     % (
                         str(afe_id),
                         '<span class="badge-on">YES</span>' if is_configured else '<span class="badge-off">NO</span>',
                         '<span class="badge-on">YES</span>' if request_config else '<span class="badge-off">NO</span>',
                         str(afe_id),
                         str(afe_id),
+                        str(afe_id),
+                        str(afe_id),
+                        str(afe_id),
                     ),
                     max_chunk=512,
                 )
+
+                # Stream parsed main telemetry row
+                periodic_data = getattr(afe, "periodic_data", {})
+                if periodic_data:
+                    if hasattr(periodic_data, "to_dict"):
+                        p_dict = periodic_data.to_dict()
+                    elif hasattr(periodic_data, "__dict__"):
+                        p_dict = periodic_data.__dict__
+                    else:
+                        p_dict = periodic_data if isinstance(periodic_data, dict) else {}
+                    await stream_afe_status_html(writer, p_dict)
+
+                await send_chunk_str(writer, '</td></tr><tr><th>Configuration (JSON)</th><td><div class="scroll-box"><pre>', max_chunk=512)
 
                 if isinstance(config, (dict, list)):
                     await stream_json_key_by_key(writer, config, is_async_writer=True)
@@ -196,12 +208,16 @@ async def send_control_web_page_raw(server_inst, writer):
                 await send_chunk_str(writer, "</pre></div></td></tr>", max_chunk=512)
                 
                 # Periodic / Latest Status Data Container
-                periodic_data = getattr(afe, "periodic_data", {})
-                raw_status = periodic_data.__dict__ if hasattr(periodic_data, "__dict__") else (periodic_data if isinstance(periodic_data, dict) else {})
+                if hasattr(periodic_data, "to_dict"):
+                    raw_status = periodic_data.to_dict()
+                elif hasattr(periodic_data, "__dict__"):
+                    raw_status = periodic_data.__dict__
+                else:
+                    raw_status = periodic_data if isinstance(periodic_data, dict) else {}
 
                 await send_chunk_str(
                     writer,
-                    '<tr><th>Periodic Sensor Data</th><td><div class="scroll-box"><pre>',
+                    '<tr><th>Periodic Sensor Data <button class="btn-refresh" onclick="refreshSection(\'periodic\')">Refresh</button></th><td><div class="scroll-box"><pre>',
                     max_chunk=512,
                 )
 
@@ -218,6 +234,20 @@ async def send_control_web_page_raw(server_inst, writer):
                     await send_chunk_str(writer, "<tr><th>Channels Telemetry</th><td>", max_chunk=512)
                     await stream_afe_channels_html(writer, channels)
                     await send_chunk_str(writer, "</td></tr>", max_chunk=512)
+                
+                # Subdevice / Latest Status Data
+                latest_status = getattr(afe, "latest_status", {})
+                if latest_status:
+                    await send_chunk_str(
+                        writer,
+                        '<tr><th>Subdevice Status (M/S) <button class="btn-refresh" onclick="refreshSection(\'substatus\')">Refresh</button></th><td><div class="scroll-box"><pre>',
+                        max_chunk=512,
+                    )
+                    if isinstance(latest_status, (dict, list)):
+                        await stream_json_key_by_key(writer, latest_status, is_async_writer=True)
+                    else:
+                        await send_chunk_str(writer, str(latest_status), max_chunk=512)
+                    await send_chunk_str(writer, "</pre></div></td></tr>", max_chunk=512)
 
                 await send_chunk_str(writer, "</table></div>", max_chunk=512)
         else:
@@ -235,7 +265,7 @@ async def send_control_web_page_raw(server_inst, writer):
 
         await send_chunk_str(
             writer,
-            '<div class="card"><h2>Server Metrics</h2><table>'
+            '<div class="card"><h2>Server Metrics <button class="btn-refresh" onclick="refreshSection(\'server\')">Refresh</button></h2><table>'
             "<tr><th>Free RAM</th><td>%d bytes</td></tr>"
             "<tr><th>Active Sockets</th><td>%d / %d</td></tr>"
             "<tr><th>Uptime</th><td>%d s</td></tr>"
@@ -267,7 +297,7 @@ async def send_control_web_page_raw(server_inst, writer):
         if sd_mounted:
             await send_chunk_str(
                 writer,
-                '<div class="card"><h2>SD Card Storage Metrics</h2><table>'
+                '<div class="card"><h2>SD Card Storage Metrics <button class="btn-refresh" onclick="refreshSection(\'sd\')">Refresh</button></h2><table>'
                 '<tr><th>Status</th><td><span class="badge-on">MOUNTED</span></td></tr>'
                 '<tr><th>Total Space</th><td>%.2f MB</td></tr>'
                 '<tr><th>Free Space</th><td>%.2f MB</td></tr>'
@@ -289,7 +319,7 @@ async def send_control_web_page_raw(server_inst, writer):
         else:
             await send_chunk_str(
                 writer,
-                '<div class="card"><h2>SD Card Storage Metrics</h2>'
+                '<div class="card"><h2>SD Card Storage Metrics <button class="btn-refresh" onclick="refreshSection(\'sd\')">Refresh</button></h2>'
                 '<p><span class="badge-off">UNMOUNTED / NOT FOUND</span></p></div>',
                 max_chunk=512,
             )
@@ -383,7 +413,6 @@ async def handle_log_download(server_inst, request_path, writer):
                 file_name = param.split("=", 1)[1]
                 break
 
-    # Security check for directory traversal
     if not file_name or "/" in file_name or "\\" in file_name or ".." in file_name:
         writer.write(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nInvalid Parameter")
         await writer.drain()
