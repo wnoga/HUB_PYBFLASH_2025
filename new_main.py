@@ -1432,6 +1432,7 @@ class AFEDevice:
                         )
                     except Exception:
                         pass
+        p.print(payload)
 
     async def periodic_debug_loop(self):
         """Dedicated loop that manages periodic data collection requests independently."""
@@ -1446,6 +1447,7 @@ class AFEDevice:
                     "callback_error": self.callback_afe_error,
                 }
                 try:
+                    p.print("Jeeeeee")
                     await self.send_command_and_wait(
                         AFECommand.getSensorDataSi_last_byMask,
                         0xFF,

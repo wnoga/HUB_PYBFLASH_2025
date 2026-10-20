@@ -33,6 +33,8 @@ DASHBOARD_CSS = (
     b".scroll-box::-webkit-scrollbar-thumb{background:#3c3c3c;border-radius:3px;}"
     b".btn-dl{background:#0e639c;color:#fff;padding:3px 8px;text-decoration:none;border-radius:3px;font-size:0.85em;display:inline-block;}"
     b".btn-dl:hover{background:#1177bb;}"
+    b".btn-action{background:#388a34;color:#fff;border:none;padding:5px 10px;border-radius:3px;cursor:pointer;font-size:0.85em;margin-right:5px;}"
+    b".btn-action:hover{background:#46a742;}"
     b"tr:nth-child(even){background:#333;}"
     b"tr:hover {background:#515;}"
 )
@@ -101,7 +103,7 @@ async def send_control_web_page_raw(server_inst, writer):
         )
         await send_chunk_raw(writer, header.encode("ascii"), max_chunk=512)
         
-        # 2. Document Shell & Static CSS
+        # 2. Document Shell & Static CSS + JS helper for procedures
         await send_chunk_raw(
             writer,
             b'<!DOCTYPE html><html><head>'
@@ -114,7 +116,13 @@ async def send_control_web_page_raw(server_inst, writer):
 
         await send_chunk_raw(
             writer,
-            b'</style></head><body>',
+            b'</style><script>'
+            b'function sendProcedure(proc, data) {'
+            b'  fetch("/", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(Object.assign({procedure: proc}, data))})'
+            b'  .then(res => res.json()).then(out => { alert("Result: " + JSON.stringify(out)); location.reload(); })'
+            b'  .catch(err => alert("Error: " + err));'
+            b'}'
+            b'</script></head><body>',
             max_chunk=512,
         )
 
@@ -148,36 +156,35 @@ async def send_control_web_page_raw(server_inst, writer):
             max_chunk=512,
         )
 
-        # 4. AFE Devices
-        afe_devices = getattr(server_inst.hub, "afe_devices", [])
+        # 4. AFE Devices from self.hub.afes
+        afes_data = getattr(server_inst.hub, "afes", {})
+        afe_devices = afes_data.values() if isinstance(afes_data, dict) else afes_data
+
         if afe_devices:
             for afe in afe_devices:
                 gc.collect()
-                dev_id = getattr(afe, "device_id", "Unknown")
+                afe_id = getattr(afe, "afe_id", getattr(afe, "device_id", "Unknown"))
                 config = getattr(afe, "configuration", {})
 
-                is_online = getattr(afe, "is_online", False)
-                firmware_version = getattr(afe, "firmware_version", "N/A")
-                version_checked = getattr(afe, "version_checked", False)
                 is_configured = getattr(afe, "is_configured", False)
-                is_config_started = getattr(afe, "is_configuration_started", False)
+                request_config = getattr(afe, "request_configuration", False)
 
                 await send_chunk_str(
                     writer,
                     '<div class="card"><h2>AFE Device: %s</h2><table>'
-                    "<tr><th>Online Status</th><td>%s</td></tr>"
-                    "<tr><th>Firmware Version</th><td><strong>%s</strong></td></tr>"
-                    "<tr><th>Version Checked</th><td>%s</td></tr>"
                     "<tr><th>Configured</th><td>%s</td></tr>"
-                    "<tr><th>Configuration Started</th><td>%s</td></tr>"
+                    "<tr><th>Config Requested</th><td>%s</td></tr>"
+                    '<tr><th>Actions</th><td>'
+                    '<button class="btn-action" onclick="sendProcedure(\'get_afe_sensor_data\', {afe_id: %s})">Get Sensors</button>'
+                    '<button class="btn-action" onclick="sendProcedure(\'shift_voltage\', {id: %s, type: \'M\', value: 0.1})">Shift +0.1V</button>'
+                    '</td></tr>'
                     '<tr><th>Configuration (JSON)</th><td><div class="scroll-box"><pre>'
                     % (
-                        str(dev_id),
-                        '<span class="badge-on">ONLINE</span>' if is_online else '<span class="badge-off">OFFLINE</span>',
-                        str(firmware_version),
-                        '<span class="badge-on">YES</span>' if version_checked else '<span class="badge-off">NO</span>',
+                        str(afe_id),
                         '<span class="badge-on">YES</span>' if is_configured else '<span class="badge-off">NO</span>',
-                        '<span class="badge-on">YES</span>' if is_config_started else '<span class="badge-off">NO</span>',
+                        '<span class="badge-on">YES</span>' if request_config else '<span class="badge-off">NO</span>',
+                        str(afe_id),
+                        str(afe_id),
                     ),
                     max_chunk=512,
                 )
@@ -189,10 +196,13 @@ async def send_control_web_page_raw(server_inst, writer):
 
                 await send_chunk_str(writer, "</pre></div></td></tr>", max_chunk=512)
                 
-                raw_status = getattr(afe, "latest_status", {})
+                # Periodic / Latest Status Data Container
+                periodic_data = getattr(afe, "periodic_data", {})
+                raw_status = periodic_data.__dict__ if hasattr(periodic_data, "__dict__") else (periodic_data if isinstance(periodic_data, dict) else {})
+
                 await send_chunk_str(
                     writer,
-                    '<tr><th>Latest Data (JSON)</th><td><div class="scroll-box"><pre>',
+                    '<tr><th>Periodic Sensor Data</th><td><div class="scroll-box"><pre>',
                     max_chunk=512,
                 )
 
@@ -203,13 +213,11 @@ async def send_control_web_page_raw(server_inst, writer):
 
                 await send_chunk_str(writer, "</pre></div></td></tr>", max_chunk=512)
 
-                if isinstance(raw_status, dict) and "last_data" in raw_status:
-                    await send_chunk_str(
-                        writer,
-                        "<tr><th>Telemetry Visual</th><td>",
-                        max_chunk=512,
-                    )
-                    await stream_afe_status_html(writer, raw_status)
+                # Channels Telemetry
+                channels = getattr(afe, "channels", {})
+                if channels:
+                    await send_chunk_str(writer, "<tr><th>Channels Telemetry</th><td>", max_chunk=512)
+                    await stream_afe_channels_html(writer, channels)
                     await send_chunk_str(writer, "</td></tr>", max_chunk=512)
 
                 await send_chunk_str(writer, "</table></div>", max_chunk=512)
@@ -340,6 +348,30 @@ async def send_control_web_page_raw(server_inst, writer):
 
     except OSError:
         pass
+
+
+async def stream_afe_channels_html(writer, channels_data):
+    """Streams channel configurations and parameters for the AFE device."""
+    if not isinstance(channels_data, dict):
+        return
+
+    await send_chunk_str(writer, '<div class="sipm-grid">', max_chunk=512)
+    for uch, ch_dict in channels_data.items():
+        if not ch_dict:
+            continue
+        await send_chunk_str(
+            writer,
+            '<div class="sipm-chan"><h3>Channel %s</h3>' % str(uch),
+            max_chunk=512,
+        )
+        for k, v in ch_dict.items():
+            await send_chunk_str(
+                writer,
+                '<div class="metric"><span>%s:</span><span class="metric-val">%s</span></div>' % (str(k), str(v)),
+                max_chunk=512,
+            )
+        await send_chunk_str(writer, "</div>", max_chunk=512)
+    await send_chunk_str(writer, "</div>", max_chunk=512)
 
 
 async def handle_log_download(server_inst, request_path, writer):
