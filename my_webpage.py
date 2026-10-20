@@ -7,6 +7,7 @@ from stream_utilities import (
     send_chunk_raw,
     send_chunk_str,
     stream_json_key_by_key,
+    finish_chunked_stream,
 )
 from my_utilities import p
 
@@ -37,8 +38,8 @@ DASHBOARD_CSS = (
 )
 
 
-async def stream_afe_status_html(sock, status_data):
-    """Streams the AFE status HTML directly to the socket in sub-512 byte chunks."""
+async def stream_afe_status_html(writer, status_data):
+    """Streams the AFE status HTML directly to the writer in sub-512 byte chunks."""
     if not isinstance(status_data, dict) or "last_data" not in status_data:
         return
 
@@ -55,7 +56,7 @@ async def stream_afe_status_html(sock, status_data):
     uid = status_data.get("unique_id_str", {}).get("value", "N/A")
 
     await send_chunk_str(
-        sock,
+        writer,
         '<div class="sys-row">'
         "<span><strong>Ext Temp:</strong> %.1f °C</span>"
         "<span><strong>Loc Temp:</strong> %.1f °C</span>"
@@ -65,7 +66,7 @@ async def stream_afe_status_html(sock, status_data):
     )
 
     await send_chunk_str(
-        sock,
+        writer,
         '<div class="sipm-grid">'
         '<div class="sipm-chan"><h3>Channel 0</h3>'
         '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
@@ -76,7 +77,7 @@ async def stream_afe_status_html(sock, status_data):
     )
 
     await send_chunk_str(
-        sock,
+        writer,
         '<div class="sipm-chan"><h3>Channel 1</h3>'
         '<div class="metric"><span>Bias (U):</span><span class="metric-val">%.2f V</span></div>'
         '<div class="metric"><span>Current (I):</span><span class="metric-val">%.1f nA</span></div>'
@@ -86,7 +87,7 @@ async def stream_afe_status_html(sock, status_data):
     )
 
 
-async def send_control_web_page_raw(server_inst, sock):
+async def send_control_web_page_raw(server_inst, writer):
     """Streams HTML dashboard keeping allocations strictly under 512 bytes and JSON key-by-key."""
     try:
         gc.collect()
@@ -98,20 +99,21 @@ async def send_control_web_page_raw(server_inst, sock):
             "Transfer-Encoding: chunked\r\n"
             "Connection: close\r\n\r\n"
         )
-        await send_chunk_raw(sock, header.encode("ascii"), max_chunk=512)
+        await send_chunk_raw(writer, header.encode("ascii"), max_chunk=512)
+        
         # 2. Document Shell & Static CSS
         await send_chunk_raw(
-            sock,
+            writer,
             b'<!DOCTYPE html><html><head>'
             b'<meta name="viewport" content="width=device-width, initial-scale=1">'
             b'<title>HUB - Status Dashboard</title><style>',
             max_chunk=512,
         )
 
-        await send_chunk_raw(sock, DASHBOARD_CSS, max_chunk=512)
+        await send_chunk_raw(writer, DASHBOARD_CSS, max_chunk=512)
 
         await send_chunk_raw(
-            sock,
+            writer,
             b'</style></head><body>',
             max_chunk=512,
         )
@@ -131,7 +133,7 @@ async def send_control_web_page_raw(server_inst, sock):
         rx_process_active = getattr(server_inst.hub, "rx_process_active", False)
 
         await send_chunk_str(
-            sock,
+            writer,
             '<div class="card"><h2>Current HUB Status</h2><table>'
             "<tr><th>Discovery Timed Out</th><td>%s</td></tr>"
             "<tr><th>AFE Manage Active</th><td>%s</td></tr>"
@@ -161,7 +163,7 @@ async def send_control_web_page_raw(server_inst, sock):
                 is_config_started = getattr(afe, "is_configuration_started", False)
 
                 await send_chunk_str(
-                    sock,
+                    writer,
                     '<div class="card"><h2>AFE Device: %s</h2><table>'
                     "<tr><th>Online Status</th><td>%s</td></tr>"
                     "<tr><th>Firmware Version</th><td><strong>%s</strong></td></tr>"
@@ -180,42 +182,40 @@ async def send_control_web_page_raw(server_inst, sock):
                     max_chunk=512,
                 )
 
-                # Stream Configuration JSON Key-by-Key
                 if isinstance(config, (dict, list)):
-                    await stream_json_key_by_key(sock, config, is_async_writer=False)
+                    await stream_json_key_by_key(writer, config, is_async_writer=True)
                 else:
-                    await send_chunk_str(sock, str(config), max_chunk=512)
+                    await send_chunk_str(writer, str(config), max_chunk=512)
 
-                await send_chunk_str(sock, "</pre></div></td></tr>", max_chunk=512)
-                # Stream Latest Data JSON Key-by-Key
+                await send_chunk_str(writer, "</pre></div></td></tr>", max_chunk=512)
+                
                 raw_status = getattr(afe, "latest_status", {})
                 await send_chunk_str(
-                    sock,
+                    writer,
                     '<tr><th>Latest Data (JSON)</th><td><div class="scroll-box"><pre>',
                     max_chunk=512,
                 )
 
                 if isinstance(raw_status, (dict, list)):
-                    await stream_json_key_by_key(sock, raw_status, is_async_writer=False)
+                    await stream_json_key_by_key(writer, raw_status, is_async_writer=True)
                 else:
-                    await send_chunk_str(sock, str(raw_status), max_chunk=512)
+                    await send_chunk_str(writer, str(raw_status), max_chunk=512)
 
-                await send_chunk_str(sock, "</pre></div></td></tr>", max_chunk=512)
+                await send_chunk_str(writer, "</pre></div></td></tr>", max_chunk=512)
 
-                # Stream Visual Telemetry Card directly to socket
                 if isinstance(raw_status, dict) and "last_data" in raw_status:
                     await send_chunk_str(
-                        sock,
+                        writer,
                         "<tr><th>Telemetry Visual</th><td>",
                         max_chunk=512,
                     )
-                    await stream_afe_status_html(sock, raw_status)
-                    await send_chunk_str(sock, "</td></tr>", max_chunk=512)
+                    await stream_afe_status_html(writer, raw_status)
+                    await send_chunk_str(writer, "</td></tr>", max_chunk=512)
 
-                await send_chunk_str(sock, "</table></div>", max_chunk=512)
+                await send_chunk_str(writer, "</table></div>", max_chunk=512)
         else:
             await send_chunk_str(
-                sock,
+                writer,
                 '<div class="card"><h2>AFE Devices</h2><p>No AFE devices detected.</p></div>',
                 max_chunk=512,
             )
@@ -227,7 +227,7 @@ async def send_control_web_page_raw(server_inst, sock):
         active_clients = len(getattr(server_inst, "client_sockets", []))
 
         await send_chunk_str(
-            sock,
+            writer,
             '<div class="card"><h2>Server Metrics</h2><table>'
             "<tr><th>Free RAM</th><td>%d bytes</td></tr>"
             "<tr><th>Active Sockets</th><td>%d / %d</td></tr>"
@@ -259,7 +259,7 @@ async def send_control_web_page_raw(server_inst, sock):
 
         if sd_mounted:
             await send_chunk_str(
-                sock,
+                writer,
                 '<div class="card"><h2>SD Card Storage Metrics</h2><table>'
                 '<tr><th>Status</th><td><span class="badge-on">MOUNTED</span></td></tr>'
                 '<tr><th>Total Space</th><td>%.2f MB</td></tr>'
@@ -281,7 +281,7 @@ async def send_control_web_page_raw(server_inst, sock):
             )
         else:
             await send_chunk_str(
-                sock,
+                writer,
                 '<div class="card"><h2>SD Card Storage Metrics</h2>'
                 '<p><span class="badge-off">UNMOUNTED / NOT FOUND</span></p></div>',
                 max_chunk=512,
@@ -291,15 +291,16 @@ async def send_control_web_page_raw(server_inst, sock):
         gc.collect()
         try:
             raw_files = uos.listdir("/sd/logs")
-            log_files = server_inst.sort_log_files(raw_files)
+            sort_func = getattr(server_inst, "sort_log_files", sorted)
+            log_files = sort_func(raw_files)
         except OSError:
             log_files = []
 
-        await send_chunk_str(sock, '<div class="card"><h2>SD Card Log Files</h2>', max_chunk=512)
+        await send_chunk_str(writer, '<div class="card"><h2>SD Card Log Files</h2>', max_chunk=512)
 
         if log_files:
             await send_chunk_str(
-                sock,
+                writer,
                 "<table><tr><th>Filename</th><th>Size</th><th>Action</th></tr>",
                 max_chunk=512,
             )
@@ -317,35 +318,31 @@ async def send_control_web_page_raw(server_inst, sock):
                     size_str = "N/A"
 
                 await send_chunk_str(
-                    sock,
+                    writer,
                     '<tr><td><strong>%s</strong></td><td>%s</td>'
                     '<td><a class="btn-dl" href="/download_log?file=%s">Download</a></td></tr>'
                     % (file_name, size_str, file_name),
                     max_chunk=512,
                 )
-            # await send_chunk_str(sock, "close_table_and_card", max_chunk=512)
-            # await send_chunk_str(sock, "</table></div>", max_chunk=512)
-            await send_chunk_str(sock, "</table></div>", max_chunk=512)
+            await send_chunk_str(writer, "</table></div>", max_chunk=512)
         else:
             await send_chunk_str(
-                sock,
+                writer,
                 "<p>No log files found in <code>/sd/logs</code>.</p></div>",
                 max_chunk=512,
             )
 
         # 8. Close Document Tags Properly
-        await send_chunk_str(sock, "</body></html>", max_chunk=512)
+        await send_chunk_str(writer, "</body></html>", max_chunk=512)
 
-        # Zero-length HTTP chunk to signal end of stream
-        sock.send(b"0\r\n\r\n")
+        # Terminate chunked HTTP response safely
+        await finish_chunked_stream(writer)
 
     except OSError:
         pass
-    finally:
-        await server_inst._close_stream_or_socket(sock)
-        
-        
-async def handle_log_download(server_inst, request_path, sock):
+
+
+async def handle_log_download(server_inst, request_path, writer):
     file_name = None
 
     if "?" in request_path:
@@ -357,7 +354,8 @@ async def handle_log_download(server_inst, request_path, sock):
 
     # Security check for directory traversal
     if not file_name or "/" in file_name or "\\" in file_name or ".." in file_name:
-        await send_raw(sock, b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nInvalid Parameter")
+        writer.write(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nInvalid Parameter")
+        await writer.drain()
         return
 
     filepath = "/sd/logs/" + file_name
@@ -366,11 +364,11 @@ async def handle_log_download(server_inst, request_path, sock):
         file_stat = uos.stat(filepath)
         file_size = file_stat[6]
     except OSError:
-        await send_raw(sock, b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nFile Not Found")
+        writer.write(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nFile Not Found")
+        await writer.drain()
         return
 
     try:
-        # Pre-allocate header as bytes to prevent mid-stream encoding allocations
         header = (
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/octet-stream\r\n"
@@ -379,38 +377,25 @@ async def handle_log_download(server_inst, request_path, sock):
             "Connection: close\r\n\r\n" % (file_name, file_size)
         ).encode("ascii")
         
-        await send_raw(sock, header)
+        writer.write(header)
+        await writer.drain()
 
-        # 1. Increased buffer size (4KB is generally optimal for SD card read alignment)
         buf = bytearray(4096)
         mv = memoryview(buf)
         
-        # Cache local variables to speed up the loop execution inside MicroPython
-        readinto = open(filepath, "rb").__enter__().readinto
-        send_raw_func = send_raw
-        sleep_ms = server_inst.log_download_sleep_ms
+        sleep_ms = getattr(server_inst, "log_download_sleep_ms", 0)
 
-        try:
+        with open(filepath, "rb") as f:
             while True:
-                # 2. Read directly into the pre-allocated buffer
-                nread = readinto(buf)
+                nread = f.readinto(buf)
                 if not nread:
                     break
 
-                # 3. Stream chunk using the pre-sliced view
-                await send_raw_func(sock, mv[:nread])
+                writer.write(mv[:nread])
+                await writer.drain()
                 
-                # 4. Only yield to asyncio if a sleep value is explicitly configured
                 if sleep_ms > 0:
                     await asyncio.sleep_ms(sleep_ms)
-        finally:
-            # Explicit cleanup since we extracted __enter__ manual binding
-            try:
-                # Accessing internal file reference via the readinto bound method self reference
-                readinto.__self__.close()
-            except:
-                pass
 
     except OSError:
-        # Network connection closed prematurely by the client browser
         pass
