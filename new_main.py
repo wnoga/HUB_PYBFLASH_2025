@@ -138,6 +138,7 @@ class AsyncPrinter:
         self.queue = Queue(maxsize)
 
     async def print(self, *args, **kwargs):
+        """Asynchronous print method with backpressure (waits if queue is full)."""
         msg = " ".join(str(arg) for arg in args)
         if self.queue.full():
             try:
@@ -145,6 +146,22 @@ class AsyncPrinter:
             except IndexError:
                 pass
         await self.queue.put(msg)
+
+    def print_nowait(self, *args, **kwargs):
+        """Synchronous, non-blocking print method for sync contexts or quick logging."""
+        msg = " ".join(str(arg) for arg in args)
+        try:
+            if self.queue.full():
+                try:
+                    self.queue.get_nowait()
+                except Exception:
+                    pass
+            self.queue.put_nowait(msg)
+        except Exception:
+            try:
+                sys.stdout.write(msg + "\n")
+            except Exception:
+                pass
 
     async def worker(self):
         while True:
@@ -156,7 +173,6 @@ class AsyncPrinter:
                 raise
             except Exception:
                 await asyncio.sleep_ms(10)
-
 
 # Global printer instance
 p = AsyncPrinter()
@@ -1412,26 +1428,75 @@ def _build_log_filepath(mount_point, sequence_num, time_synced, datetime_str):
 
 
 class SDLogger:
-    MAX_FILE_SIZE = 1024 * 1024 * 1024
+    MAX_FILE_SIZE = 1024 * 1024 * 1024  # 1 GB limit
     MAX_LINES = 10000
 
     def __init__(self, mount_point="/sd"):
         self.mount_point = mount_point
+        self.logs_dir = mount_point + "/logs"
         self.queue = Queue(maxsize=64)
-        self.sequence_num = _scan_highest_sequence_number(self.mount_point)
+        
+        # Ensure log directory exists on initialization
+        self._ensure_log_directory()
+
+        self.sequence_num = 0
         self.time_synced = False
-        self.current_datetime_str = None
+        self.last_timestamp_str = None
 
         self.current_filepath = None
         self.current_file_lines = 0
         self.current_file_size = 0
         self._update_filepath(rename_existing=False)
 
+    def _ensure_log_directory(self):
+        try:
+            parts = self.logs_dir.split("/")
+            current = ""
+            for part in parts:
+                if not part:
+                    continue
+                current += "/" + part
+                try:
+                    uos.mkdir(current)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+
+    def _generate_filename(self):
+        """Generates YYYYmmdd_HHMMSS filename with same-second sequence handling."""
+        t_epoch = time.time()
+        
+        # If time is not synced yet, approximate real-world or use uptime-based reference
+        # (Assuming time.time() returns epoch or machine uptime ticks depending on sync state)
+        try:
+            lt = time.localtime(t_epoch)
+            # Check if year looks valid (e.g., >= 2024), otherwise fallback or use machine-derived estimation
+            if lt[0] < 2024 and not self.time_synced:
+                # Fallback format for unsynced machine time / standard name
+                base_name = "log_seq_{}".format(self.sequence_num)
+            else:
+                base_name = "{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}".format(
+                    lt[0], lt[1], lt[2], lt[3], lt[4], lt[5]
+                )
+        except Exception:
+            base_name = "log_{}".format(self.sequence_num)
+
+        # Handle same-second collision checking
+        filename_base = base_name
+        if filename_base == self.last_timestamp_str:
+            self.sequence_num += 1
+            filename_base = "{}_{}".format(base_name, self.sequence_num)
+        else:
+            self.sequence_num = 0
+            self.last_timestamp_str = base_name
+
+        return "{}/{}.jsonl".format(self.logs_dir, filename_base)
+
     @micropython.native
     def _update_filepath(self, rename_existing=False, old_file_to_rename=None):
-        new_path = _build_log_filepath(
-            self.mount_point, self.sequence_num, self.time_synced, self.current_datetime_str
-        )
+        self._ensure_log_directory()
+        new_path = self._generate_filename()
 
         if rename_existing and old_file_to_rename and old_file_to_rename != new_path:
             try:
@@ -1442,17 +1507,15 @@ class SDLogger:
         self.current_filepath = new_path
         self.current_file_lines = 0
         self.current_file_size = 0
+        p.print_nowait("File rotated/renamed -> {}".format(new_path))
 
     @micropython.native
     def notify_time_synced(self):
-        self.current_datetime_str = rtc_datetime_pretty()
-        old_path = self.current_filepath
-        was_default_name = "log_{}.jsonl".format(self.sequence_num) in old_path
         self.time_synced = True
-
-        if was_default_name:
-            self._update_filepath(rename_existing=True,
-                                  old_file_to_rename=old_path)
+        old_path = self.current_filepath
+        # If previous name was a standard/unsynced fallback name, rename it to real RTC datetime format
+        if old_path and ("log_seq_" in old_path or "log_" in old_path):
+            self._update_filepath(rename_existing=True, old_file_to_rename=old_path)
 
     async def log(self, level, message):
         timestamp = time.time()
@@ -1460,7 +1523,10 @@ class SDLogger:
             timestamp, level, message
         )
         await p.print(entry, end="")
-        await self.queue.put(entry)
+        try:
+            await self.queue.put(entry)
+        except Exception:
+            pass
 
     async def writer_loop(self):
         global sdlogger_sleep_ms
@@ -1470,7 +1536,6 @@ class SDLogger:
                 entry_len = len(entry.encode('utf-8'))
 
                 if self.current_file_lines >= self.MAX_LINES or self.current_file_size + entry_len > self.MAX_FILE_SIZE:
-                    self.sequence_num += 1
                     self._update_filepath(rename_existing=False)
 
                 with open(self.current_filepath, "a") as file_obj:
@@ -1484,7 +1549,6 @@ class SDLogger:
 
                         if self.current_file_lines >= self.MAX_LINES or self.current_file_size + next_entry_len > self.MAX_FILE_SIZE:
                             file_obj.close()
-                            self.sequence_num += 1
                             self._update_filepath(rename_existing=False)
                             file_obj = open(self.current_filepath, "a")
 
@@ -1498,11 +1562,15 @@ class SDLogger:
                     except AttributeError:
                         pass
 
+            except OSError as exc:
+                await p.print("SD Write OSError: {}".format(exc))
+                self._ensure_log_directory()
+                await asyncio.sleep_ms(500)
             except Exception as exc:
                 await p.print("SD Write Error: {}".format(exc))
 
             await asyncio.sleep_ms(sdlogger_sleep_ms)
-
+                       
 # -----------------------------------------------------------------------------
 # HTTP server helpers & WebServer class.
 # -----------------------------------------------------------------------------
