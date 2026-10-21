@@ -876,7 +876,7 @@ class AFEDevice:
         self.adc_run = False
 
         self.debug_request_average_ms = 0
-        self.debug_request_average_ms_period = 1500
+        self.debug_request_average_ms_period = 10_000
         
         # Track active configuration background task reference
         self._config_task = None
@@ -1769,9 +1769,10 @@ class SDLogger:
         from stream_utilities import stream_json_key_by_key
         timestamp = time.time()
         
-        self.write(f'{{"timestamp": {timestamp}, "level": "{level}", "data": ')
+        header_str = "{{\"timestamp\": {}, \"level\": \"{}\", \"data\": ".format(timestamp, level)
+        self.write(header_str)
         await stream_json_key_by_key(self, obj, is_async_writer=True)
-        self.write('}\n')
+        self.write("}\n")
         await self.drain()
 
     async def writer_loop(self):
