@@ -343,7 +343,9 @@ def unmask_channel(masked_channel):
 def get_subdevice_ch_id(group):
     if group == "M":
         return AFECommandSubdevice.AFECommandSubdevice_master
-    return AFECommandSubdevice.AFECommandSubdevice_slave
+    elif group == "S":
+        return AFECommandSubdevice.AFECommandSubdevice_slave
+    return AFECommandSubdevice.AFECommandSubdevice_both
 
 
 @micropython.native
@@ -479,40 +481,28 @@ class CommandStatus:
     ERROR = -1
 
 
-CONFIG_COMMAND_MAP = {
-    AFECommand.setAveragingAlpha_byMask: ("float", "alpha"),
-    AFECommand.setChannel_a_byMask: ("float", "a"),
-    AFECommand.setChannel_b_byMask: ("float", "b"),
-    AFECommand.setChannel_dt_ms_byMask: ("u32", "time_interval_ms"),
-    AFECommand.setChannel_period_ms_byMask: ("u32", "period_ms"),
-    AFECommand.setAveraging_max_dt_ms_byMask: ("u32", "averaging_max_dt_ms"),
-    AFECommand.setTemperatureLoop_loop_every_ms: ("u32", "temperatreloop_every_ms"),
-}
+# Format: AFECommand: (data_type, attribute_key, target_type)
+# target_type can be "channel" or "regulator"
+AFE_COMMAND_REGISTRY = {
+    # Channel Configs
+    AFECommand.setAveragingAlpha_byMask: ("float", "alpha", "channel"),
+    AFECommand.setChannel_a_byMask: ("float", "a", "channel"),
+    AFECommand.setChannel_b_byMask: ("float", "b", "channel"),
+    AFECommand.setChannel_dt_ms_byMask: ("u32", "time_interval_ms", "channel"),
+    AFECommand.setChannel_period_ms_byMask: ("u32", "period_ms", "channel"),
+    AFECommand.setAveraging_max_dt_ms_byMask: ("u32", "averaging_max_dt_ms", "channel"),
+    AFECommand.setTemperatureLoop_loop_every_ms: ("u32", "temperatreloop_every_ms", "channel"),
 
-REGULATOR_COMMAND_MAP = {
-    AFECommand.setRegulator_ramp_enabled_byMask: ("u8", "ramp_enabled"),
-    AFECommand.setRegulator_T_opt_byMask: ("float", "T_opt"),
-    AFECommand.setRegulator_dT_byMask: ("float", "dT"),
-    AFECommand.setRegulator_a_dac_byMask: ("float", "a_dac"),
-    AFECommand.setRegulator_b_dac_byMask: ("float", "b_dac"),
-    AFECommand.setRegulator_dV_dT_byMask: ("float", "dV_dT"),
-    AFECommand.setRegulator_V_opt_byMask: ("float", "V_opt"),
-    AFECommand.setRegulator_V_offset_byMask: ("float", "V_offset"),
+    # Regulator Configs
+    AFECommand.setRegulator_ramp_enabled_byMask: ("u8", "ramp_enabled", "regulator"),
+    AFECommand.setRegulator_T_opt_byMask: ("float", "T_opt", "regulator"),
+    AFECommand.setRegulator_dT_byMask: ("float", "dT", "regulator"),
+    AFECommand.setRegulator_a_dac_byMask: ("float", "a_dac", "regulator"),
+    AFECommand.setRegulator_b_dac_byMask: ("float", "b_dac", "regulator"),
+    AFECommand.setRegulator_dV_dT_byMask: ("float", "dV_dT", "regulator"),
+    AFECommand.setRegulator_V_opt_byMask: ("float", "V_opt", "regulator"),
+    AFECommand.setRegulator_V_offset_byMask: ("float", "V_offset", "regulator"),
 }
-
-FLOAT_COMMANDS = {
-    AFECommand.setChannel_a_byMask,
-    AFECommand.setChannel_b_byMask,
-    AFECommand.setRegulator_a_dac_byMask,
-    AFECommand.setRegulator_b_dac_byMask,
-    AFECommand.setRegulator_V_opt_byMask,
-    AFECommand.setRegulator_dV_dT_byMask,
-    AFECommand.setRegulator_T_opt_byMask,
-    AFECommand.setAveragingAlpha_byMask,
-    AFECommand.setRegulator_dT_byMask,
-    AFECommand.setRegulator_V_offset_byMask,
-}
-
 
 async def _apply_setting(instance, group: str, setting: str, value):
     command_kwargs = {
@@ -612,17 +602,14 @@ async def _process_command_payload(instance, command, full_payload, device_id):
             full_payload[0], full_payload[1:], "avg_mode", "averaging_mode")
         return None
 
-    if command in CONFIG_COMMAND_MAP:
-        val_type, config_key = CONFIG_COMMAND_MAP[command]
-        instance._apply_channel_config(
-            full_payload[0], full_payload[1:], val_type, config_key)
-        return None
-
-    if command in REGULATOR_COMMAND_MAP:
-        val_type, config_key = REGULATOR_COMMAND_MAP[command]
-        instance._apply_regulator_config(
-            full_payload[0], full_payload[1:], val_type, config_key
-        )
+    if command in AFE_COMMAND_REGISTRY:
+        val_type, config_key, target_type = AFE_COMMAND_REGISTRY[command]
+        if target_type == "regulator":
+            instance._apply_regulator_config(
+                full_payload[0], full_payload[1:], val_type, config_key)
+        else:
+            instance._apply_channel_config(
+                full_payload[0], full_payload[1:], val_type, config_key)
         return None
 
     if command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
@@ -654,7 +641,10 @@ def _pack_command_payload(command, data, args):
     base_payload = list(data) if is_sequence else [data]
     value = args[0]
 
-    if command in FLOAT_COMMANDS:
+    reg_entry = AFE_COMMAND_REGISTRY.get(command)
+    is_float_cmd = reg_entry is not None and reg_entry[0] == "float"
+
+    if is_float_cmd:
         base_payload.extend(struct.pack("<f", value))
     elif command == AFECommand.setAD8402Value_byte_byMask:
         base_payload.append(int(value) & 0xFF)
@@ -1830,7 +1820,7 @@ class WebServer:
                     writer,
                     "400 Bad Request",
                     json.dumps(
-                        {"status": "error", "message": "Missing required parameters (id, type, value)"}),
+                        {"status": "error", "message": "Missing required parameters (id, type, value)", "id":afe_id_raw, "type":group,"value":value_raw}),
                     is_http=is_http_request
                 )
                 return
