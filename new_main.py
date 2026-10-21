@@ -1913,6 +1913,7 @@ class WebServer:
             await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
 
         # 2. Command handlers matching C firmware mappings
+        # 2. Command handlers matching C firmware mappings
         elif procedure in [
             "get_serial_number", "get_version", "reset_all", "start_adc", 
             "get_timestamp", "get_sync_timestamp", "get_subdevice_status",
@@ -1941,26 +1942,31 @@ class WebServer:
 
             afe = afes[afe_id]
             
-            # Map procedures to corresponding AFECommands and payload generators
             try:
                 if procedure == "get_serial_number":
-                    retval = await afe.send_command_and_wait(AFECommand.getSerialNumber, 0, timeout_ms=3000)
+                    retval = await afe.send_command_and_wait(AFECommand.getSerialNumber, 0, timeout_ms=5000)
+                    if isinstance(retval, bytes):
+                        retval = retval.decode('utf-8', 'ignore')
                 elif procedure == "get_version":
-                    retval = await afe.send_command_and_wait(AFECommand.getVersion, 0, timeout_ms=3000)
+                    retval = await afe.send_command_and_wait(AFECommand.getVersion, 0, timeout_ms=5000)
+                    if isinstance(retval, bytes):
+                        retval = retval.decode('utf-8', 'ignore')
                 elif procedure == "reset_all":
-                    retval = await afe.send_command_and_wait(AFECommand.resetAll, 0, timeout_ms=3000)
+                    retval = await afe.send_command_and_wait(AFECommand.resetAll, 0, timeout_ms=5000)
                 elif procedure == "start_adc":
-                    retval = await afe.send_command_and_wait(AFECommand.startADC, 0, timeout_ms=3000)
+                    mask = int(data.get("mask", 0xFF))
+                    retval = await afe.send_command_and_wait(AFECommand.startADC, mask, timeout_ms=5000)
                 elif procedure == "get_timestamp":
-                    retval = await afe.send_command_and_wait(AFECommand.getTimestamp, 0, timeout_ms=3000)
+                    retval = await afe.send_command_and_wait(AFECommand.getTimestamp, 0, timeout_ms=5000)
                 elif procedure == "get_subdevice_status":
-                    retval = await afe.send_command_and_wait(AFECommand.getSubdeviceStatus, 0, timeout_ms=5000)
+                    mask = int(data.get("mask", 0x03))
+                    retval = await afe.send_command_and_wait(AFECommand.getSubdeviceStatus, mask, timeout_ms=6000)
                 elif procedure == "get_sensor_data_last":
                     mask = int(data.get("mask", 0xFF))
-                    retval = await afe.send_command_and_wait(AFECommand.getSensorDataSi_last_byMask, mask, timeout_ms=3000)
+                    retval = await afe.send_command_and_wait(AFECommand.getSensorDataSi_last_byMask, mask, timeout_ms=5000)
                 elif procedure == "get_sensor_data_average":
                     mask = int(data.get("mask", 0xFF))
-                    retval = await afe.send_command_and_wait(AFECommand.getSensorDataSi_average_byMask, mask, timeout_ms=3000)
+                    retval = await afe.send_command_and_wait(AFECommand.getSensorDataSi_average_byMask, mask, timeout_ms=5000)
                 elif procedure == "shift_voltage":
                     group = data.get('type', 'M')
                     val = float(data.get('value', 0.0))
@@ -1970,8 +1976,31 @@ class WebServer:
                         val,
                         timeout_ms=10220
                     )
+                elif procedure == "set_regulator_t_opt":
+                    val = float(data.get('value', 25.0))
+                    retval = await afe.send_command_and_wait(
+                        AFECommand.setRegulator_T_opt_byMask,
+                        AFECommandSubdevice.AFECommandSubdevice_both,
+                        val,
+                        timeout_ms=5000
+                    )
+                elif procedure == "set_regulator_dt":
+                    val = float(data.get('value', 0.5))
+                    retval = await afe.send_command_and_wait(
+                        AFECommand.setRegulator_dT_byMask,
+                        AFECommandSubdevice.AFECommandSubdevice_both,
+                        val,
+                        timeout_ms=5000
+                    )
+                elif procedure == "set_averaging_alpha":
+                    val = float(data.get('value', 0.1))
+                    retval = await afe.send_command_and_wait(
+                        AFECommand.setAveragingAlpha_byMask,
+                        0xFF,
+                        val,
+                        timeout_ms=5000
+                    )
                 else:
-                    # Generic handler fallback for other configured commands
                     retval = {"status": "ok", "message": "Procedure executed"}
 
                 response_body = json.dumps({"status": "ok", "procedure": procedure, "result": str(retval)})
