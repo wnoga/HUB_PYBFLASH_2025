@@ -12,7 +12,7 @@ from reportlab.platypus import HRFlowable, Image, Paragraph, SimpleDocTemplate, 
 # Configuration
 HUB_IP = "192.168.1.223"
 HUB_PORT = 5555
-N_ITERATIONS = 2
+N_ITERATIONS = 1
 SOCKET_TIMEOUT = 12.0
 
 # ---------------------------------------------------------------------------

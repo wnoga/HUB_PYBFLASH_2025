@@ -164,11 +164,32 @@ class AsyncPrinter:
             except Exception:
                 pass
 
+    def write(self, data):
+        """Compatible writer interface for stream_utilities.py (e.g., stream_json_key_by_key)."""
+        if isinstance(data, bytes):
+            try:
+                data = data.decode("utf-8", "ignore")
+            except Exception:
+                data = str(data)
+        self.print_nowait(data)
+
+    async def drain(self):
+        """Compatible async drain interface for stream_utilities.py."""
+        await asyncio.sleep_ms(1)
+
+    async def print_json(self, obj):
+        """Streams any complex object / dict key-by-key directly to the printer queue."""
+        from stream_utilities import stream_json_key_by_key
+        await stream_json_key_by_key(self, obj, is_async_writer=True)
+        await self.queue.put("\n")
+
     async def worker(self):
         while True:
             try:
                 msg = await self.queue.get()
-                sys.stdout.write(msg + "\n")
+                sys.stdout.write(msg)
+                if not msg.endswith("\n"):
+                    sys.stdout.write("\n")
                 await asyncio.sleep_ms(2)
             except asyncio.CancelledError:
                 raise
@@ -179,6 +200,21 @@ class AsyncPrinter:
 # Global printer instance
 p = AsyncPrinter()
 
+class DualWriter:
+    def __init__(self, socket_writer, printer):
+        self.writer = socket_writer
+        self.printer = printer
+
+    def write(self, data):
+        if hasattr(self.writer, "write"):
+            self.writer.write(data)
+        self.printer.write(data)
+
+    async def drain(self):
+        if hasattr(self.writer, "drain"):
+            await self.writer.drain()
+        await self.printer.drain()
+        
 
 def robust_worker(error_delay_ms=100):
     """Decorator to make individual class worker methods resilient."""
@@ -673,6 +709,13 @@ async def _process_command_payload(instance, command, full_payload, device_id):
         # 0xA2 writeGPIO handler matching your firmware structure
         return None
     
+    if command == AFECommand.setCanMsgBurstDelay_ms:
+        # Parse the 4-byte u32 burst delay value from the payload and store it on the AFE instance
+        delay_ms = instance._parse_payload_value(full_payload, "u32")
+        if delay_ms is not None:
+            instance.can_msg_burst_delay_ms = delay_ms
+        return None
+    
     await p.print("Not handled function 0x{:02X}: {}".format(command, full_payload))
     return None
 
@@ -768,6 +811,8 @@ class AFEDevice:
         self.can = can_controller
         self.hub = hub
         self.stale_buffer_ttl_ms = stale_buffer_ttl_ms
+        
+        self.can_msg_burst_delay_ms = 100
 
         self.channels = {
             i: {
@@ -1056,69 +1101,92 @@ class AFEDevice:
             )
 
     async def configure(self):
-        self.configuration = await get_configuration_from_files(self.afe_id)
-        self.request_configuration = False
-        self.is_configured = False
-
+        start_ms = millis()
+        await p.print("AFE-{} configuration started at {} ms".format(self.afe_id, start_ms))
+        
         command_kwargs = {
             "timeout_ms": 10220,
             "preserve": False,
             "callback_error": self.callback_afe_error,
         }
 
-        for group in ("M", "S"):
-            avg_number = 256
-            time_sample_ms = 1000
+        try:
+            # Set CAN message burst delay to 25 ms at the beginning using fire-and-forget enqueue_command
+            delay_payload = _pack_command_payload(AFECommand.setCanMsgBurstDelay_ms, 0, (25,))
+            await self.enqueue_command(AFECommand.setCanMsgBurstDelay_ms, delay_payload)
+            await asyncio.sleep_ms(20)
 
-            group_config = self.configuration.get(group, {})
-            for key, value in group_config.items():
-                parts = key.split(" ")
-                setting = parts[0]
-                unit = None
-                if len(parts) > 1:
-                    unit_parts = extract_bracketed(parts[1])
-                    if unit_parts:
-                        unit = unit_parts[0]
+            self.configuration = await get_configuration_from_files(self.afe_id)
+            self.request_configuration = False
+            self.is_configured = False
 
-                if unit:
-                    value = convert_to_si(value, unit)
+            for group in ("M", "S"):
+                avg_number = 256
+                time_sample_ms = 1000
 
-                result = await _apply_setting(self, group, setting, value)
+                group_config = self.configuration.get(group, {})
+                for key, value in group_config.items():
+                    parts = key.split(" ")
+                    setting = parts[0]
+                    unit = None
+                    if len(parts) > 1:
+                        unit_parts = extract_bracketed(parts[1])
+                        if unit_parts:
+                            unit = unit_parts[0]
 
-                if setting == "avg_number" and result is not None:
-                    avg_number = result
-                elif setting == "time_sample" and result is not None:
-                    time_sample_ms = result
+                    if unit:
+                        value = convert_to_si(value, unit)
+
+                    result = await _apply_setting(self, group, setting, value)
+
+                    if setting == "avg_number" and result is not None:
+                        avg_number = result
+                    elif setting == "time_sample" and result is not None:
+                        time_sample_ms = result
+
+                await self.send_command_and_wait(
+                    AFECommand.setAveraging_max_dt_ms_byMask,
+                    get_general_ch_id_mask(group),
+                    int(round(time_sample_ms * avg_number)),
+                    **command_kwargs
+                )
+                await self.send_command_and_wait(
+                    AFECommand.setTemperatureLoop_loop_every_ms,
+                    get_general_ch_id_mask(group),
+                    100,
+                    **command_kwargs
+                )
 
             await self.send_command_and_wait(
-                AFECommand.setAveraging_max_dt_ms_byMask,
-                get_general_ch_id_mask(group),
-                int(round(time_sample_ms * avg_number)),
+                AFECommand.startADC,
+                0xFF,
+                250,
                 **command_kwargs
             )
+
+            await self.default_set_dac()
             await self.send_command_and_wait(
-                AFECommand.setTemperatureLoop_loop_every_ms,
-                get_general_ch_id_mask(group),
-                100,
+                AFECommand.setTemperatureLoopForChannelState_byMask_asStatus,
+                [0x03, 1],
+                250,
                 **command_kwargs
             )
-
-        await self.send_command_and_wait(
-            AFECommand.startADC,
-            0xFF,
-            250,
-            **command_kwargs
-        )
-
-        await self.default_set_dac()
-        await self.send_command_and_wait(
-            AFECommand.setTemperatureLoopForChannelState_byMask_asStatus,
-            [0x03, 1],
-            250,
-            **command_kwargs
-        )
-        await p.print("Configured", self.afe_id)
-
+            
+            elapsed_ms = millis() - start_ms
+            await p.print("Configured AFE-{} successfully in {} ms".format(self.afe_id, elapsed_ms))
+        except Exception as exc:
+            elapsed_ms = millis() - start_ms
+            await p.print("Configuration failed for AFE-{} after {} ms: {}".format(self.afe_id, elapsed_ms, exc))
+            raise
+        finally:
+            try:
+                # Reset CAN message burst delay back to 100 ms on exit using fire-and-forget enqueue_command
+                delay_payload_reset = _pack_command_payload(AFECommand.setCanMsgBurstDelay_ms, 0, (self.can_msg_burst_delay_ms,))
+                await self.enqueue_command(AFECommand.setCanMsgBurstDelay_ms, delay_payload_reset)
+                await asyncio.sleep_ms(20)
+            except Exception as e:
+                await p.print("Failed to reset CAN burst delay in finally block: {}".format(e))
+                   
     async def default_set_dac(self, dac_master=3000, dac_slave=3000):
         AFEGPIO_EN_HV0 = AFECommandGPIO(port="PORTB", pin=10)
         AFEGPIO_EN_HV1 = AFECommandGPIO(port="PORTB", pin=11)
@@ -1693,11 +1761,21 @@ async def _handle_get_all_latest_status_stream(writer, afes, is_http_request):
         if not first:
             await send_raw(writer, b',')
         first = False
+        
+        # Stream the AFE ID key safely
         k_json = json.dumps(str(afe.afe_id))
+        await send_raw(writer, k_json.encode("utf-8") + b':')
+
+        # Retrieve dictionary structure
         afe_data = afe.periodic_data.to_dict() if hasattr(
             afe.periodic_data, "to_dict") else afe.periodic_data
-        v_json = json.dumps(afe_data)
-        await send_raw(writer, (k_json + ":" + v_json).encode("utf-8"))
+
+        # Stream dictionary key-by-key instead of full json.dumps() allocation
+        if isinstance(afe_data, (dict, list)):
+            await stream_json_key_by_key(writer, afe_data, is_async_writer=True)
+        else:
+            await send_raw(writer, json.dumps(afe_data).encode("utf-8"))
+
         gc.collect()
 
     await send_raw(writer, b'}')
@@ -1879,19 +1957,36 @@ class WebServer:
             afes = getattr(self.hub, "afes", None)
             if afes and afe_id in afes:
                 afe_device = afes[afe_id]
-                res_data = {
-                    "status": "ok",
-                    "afe_id": afe_id,
-                    "periodic_data": getattr(afe_device, "periodic_data", {}),
-                    "channels": getattr(afe_device, "channels", {}),
-                    "regulators": getattr(afe_device, "regulators", {})
-                }
-                response_body = json.dumps(res_data)
+                p_data = getattr(afe_device, "periodic_data", None)
+                p_dict = p_data.to_dict() if p_data and hasattr(p_data, "to_dict") else {}
+                
+                if is_http_request:
+                    await send_raw(writer, b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
+                
+                # Setup DualWriter to stream to both HTTP writer and the AsyncPrinter (p) simultaneously
+                # dual_writer = DualWriter(writer, p)
+                dual_writer = writer
+
+                # Use stream_json_value with send_raw to output pure, unchunked JSON
+                await send_raw(dual_writer, b'{"status":"ok","procedure":"get_afe_data","result":{"afe_id":')
+                await send_raw(dual_writer, str(afe_id).encode("utf-8"))
+                await send_raw(dual_writer, b',"periodic_data":')
+                
+                await stream_json_value(dual_writer, p_dict, chunk_builder=send_raw)
+                await send_raw(dual_writer, b',"channels":')
+                await stream_json_value(dual_writer, getattr(afe_device, "channels", {}), chunk_builder=send_raw)
+                await send_raw(dual_writer, b',"regulators":')
+                await stream_json_value(dual_writer, getattr(afe_device, "regulators", {}), chunk_builder=send_raw)
+                
+                await send_raw(dual_writer, b'}}')
+                if not is_http_request:
+                    await send_raw(writer, b'\r\n')
+                return
             else:
                 status_code = "404 Not Found"
                 response_body = json.dumps({"status": "error", "message": "AFE device {} not found".format(afe_id)})
-            await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
-
+                await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
+                
         elif procedure == "get_all_latest_status":
             afes = getattr(self.hub, "afes", {})
             await _handle_get_all_latest_status_stream(writer, afes, is_http_request)
@@ -1912,7 +2007,6 @@ class WebServer:
                 response_body = json.dumps({"status": "error", "message": "Missing epoch parameter"})
             await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
 
-        # 2. Command handlers matching C firmware mappings
         # 2. Command handlers matching C firmware mappings
         elif procedure in [
             "get_serial_number", "get_version", "reset_all", "start_adc", 
@@ -1967,6 +2061,12 @@ class WebServer:
                 elif procedure == "get_sensor_data_average":
                     mask = int(data.get("mask", 0xFF))
                     retval = await afe.send_command_and_wait(AFECommand.getSensorDataSi_average_byMask, mask, timeout_ms=5000)
+                elif procedure == "set_can_burst_delay":
+                    delay_ms = int(data.get('delay', data.get('value', 100)))
+                    delay_payload = _pack_command_payload(AFECommand.setCanMsgBurstDelay_ms, 0, (delay_ms,))
+                    await afe.enqueue_command(AFECommand.setCanMsgBurstDelay_ms, delay_payload)
+                    afe.can_msg_burst_delay_ms = delay_ms
+                    retval = "CAN message burst delay set to {} ms".format(delay_ms)
                 elif procedure == "shift_voltage":
                     group = data.get('type', 'M')
                     val = float(data.get('value', 0.0))
@@ -2003,19 +2103,31 @@ class WebServer:
                 else:
                     retval = {"status": "ok", "message": "Procedure executed"}
 
-                response_body = json.dumps({"status": "ok", "procedure": procedure, "result": str(retval)})
+                # Stream large dictionaries key-by-key instead of json.dumps()
+                if isinstance(retval, (dict, list)) and procedure in ("get_subdevice_status", "get_sensor_data_last", "get_sensor_data_average"):
+                    if is_http_request:
+                        await send_raw(writer, b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
+                    await send_raw(writer, b'{"status":"ok","procedure":"' + procedure.encode("utf-8") + b'","result":')
+                    await stream_json_key_by_key(writer, retval, is_async_writer=True)
+                    await send_raw(writer, b'}')
+                    if not is_http_request:
+                        await send_raw(writer, b'\r\n')
+                    return
+                else:
+                    response_body = json.dumps({"status": "ok", "procedure": procedure, "result": str(retval)})
+                    await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
+
             except Exception as e:
                 status_code = "500 Internal Server Error"
                 response_body = json.dumps({"status": "error", "message": str(e)})
-
-            await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
+                await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
 
         else:
             status_code = "400 Bad Request"
             response_body = json.dumps(
                 {"status": "error", "message": "Unknown procedure: {}".format(procedure)})
             await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
-            
+                                
 # -----------------------------------------------------------------------------
 # Ethernet and NTP.
 # -----------------------------------------------------------------------------

@@ -52,10 +52,16 @@ async def stream_afe_status_html(writer, status_data):
     if not last:
         return
 
-    u0 = last.get("U_SIPM_MEAS0", {}).get("value", 0.0) if isinstance(last.get("U_SIPM_MEAS0"), dict) else getattr(last.get("U_SIPM_MEAS0"), "value", 0.0)
-    u1 = last.get("U_SIPM_MEAS1", {}).get("value", 0.0) if isinstance(last.get("U_SIPM_MEAS1"), dict) else getattr(last.get("U_SIPM_MEAS1"), "value", 0.0)
-    temp_ext = last.get("TEMP_EXT", {}).get("value", 0.0) if isinstance(last.get("TEMP_EXT"), dict) else getattr(last.get("TEMP_EXT"), "value", 0.0)
-    temp_loc = last.get("TEMP_LOCAL", {}).get("value", 0.0) if isinstance(last.get("TEMP_LOCAL"), dict) else getattr(last.get("TEMP_LOCAL"), "value", 0.0)
+    def get_val(key_name, int_idx):
+        item = last.get(key_name, last.get(int_idx, last.get(str(int_idx), {})))
+        if isinstance(item, dict):
+            return item.get("value", 0.0)
+        return getattr(item, "value", 0.0)
+
+    u0 = get_val("U_SIPM_MEAS0", 2)
+    u1 = get_val("U_SIPM_MEAS1", 3)
+    temp_loc = get_val("TEMP_LOCAL", 7)
+    temp_ext = get_val("TEMP_EXT", 6)
 
     await send_chunk_str(
         writer,
@@ -109,6 +115,10 @@ async def send_control_web_page_raw(server_inst, writer):
             b'  const val = parseFloat(document.getElementById("offset_val_" + afeId).value);'
             b'  const target = document.getElementById("offset_target_" + afeId).value;'
             b'  sendProcedure("shift_voltage", {id: afeId, type: target, value: val});'
+            b'}'
+            b'function setCanBurstDelay(afeId) {'
+            b'  const delayVal = parseInt(document.getElementById("burst_delay_" + afeId).value);'
+            b'  sendProcedure("set_can_burst_delay", {afe_id: afeId, delay: delayVal});'
             b'}'
             b'function testCommand(afeId, procName, valInputId, extraInputId = null) {'
             b'  let data = {afe_id: afeId};'
@@ -166,6 +176,7 @@ async def send_control_web_page_raw(server_inst, writer):
 
                 is_configured = getattr(afe, "is_configured", False)
                 request_config = getattr(afe, "request_configuration", False)
+                burst_delay = getattr(afe, "can_msg_burst_delay_ms", 100)
 
                 # 1. Card Header & Basic Flags
                 await send_chunk_str(
@@ -173,10 +184,12 @@ async def send_control_web_page_raw(server_inst, writer):
                     '<div class="card"><h2>AFE Device: %s</h2><table>'
                     "<tr><th>Configured</th><td>%s</td></tr>"
                     "<tr><th>Config Requested</th><td>%s</td></tr>"
+                    "<tr><th>CAN Burst Delay</th><td>%d ms</td></tr>"
                     % (
                         str(afe_id),
                         '<span class="badge-on">YES</span>' if is_configured else '<span class="badge-off">NO</span>',
                         '<span class="badge-on">YES</span>' if request_config else '<span class="badge-off">NO</span>',
+                        burst_delay,
                     ),
                     max_chunk=512,
                 )
@@ -185,37 +198,43 @@ async def send_control_web_page_raw(server_inst, writer):
                 await send_chunk_str(
                     writer,
                     '<tr><th>Actions</th><td>'
-                    '<button class="btn-action" onclick="sendProcedure(\'get_afe_sensor_data\', {afe_id: %s})">Get Sensors</button>'
+                    '<button class="btn-action" onclick="sendProcedure(\'get_afe_data\', {afe_id: %s})">Get AFE Data</button>'
                     '<button class="btn-action" onclick="sendProcedure(\'shift_voltage\', {id: %s, type: \'M\', value: 1.0})">Shift +1.0V</button>'
                     '</td></tr>'
                     % (str(afe_id), str(afe_id)),
                     max_chunk=512,
                 )
 
-                # 3. Voltage Offset Control
+                # 3. Voltage Offset & CAN Burst Delay Controls
                 await send_chunk_str(
                     writer,
-                    '<tr><th>Set Voltage Offset</th><td>'
+                    '<tr><th>Voltage Offset Control</th><td>'
                     '<div class="control-group">'
                     '<select id="offset_target_%s"><option value="M">Master</option><option value="S">Slave</option><option value="Both">Both</option></select>'
                     '<input type="number" id="offset_val_%s" value="0.0" step="0.1">'
                     '<button class="btn-action" onclick="setVoltageOffset(%s)">Apply Offset</button>'
                     '</div></td></tr>'
-                    % (str(afe_id), str(afe_id), str(afe_id)),
+                    '<tr><th>CAN Burst Delay Control</th><td>'
+                    '<div class="control-group">'
+                    '<input type="number" id="burst_delay_%s" value="%d" min="0" max="5000" style="width:80px;"> ms'
+                    '<button class="btn-action" onclick="setCanBurstDelay(%s)">Set Burst Delay</button>'
+                    '</div></td></tr>'
+                    % (str(afe_id), str(afe_id), str(afe_id), str(afe_id), burst_delay, str(afe_id)),
                     max_chunk=512,
                 )
 
-                # 4. Command Testing Panel (Basic Getters & State Controls)
+                # 4. Command Testing Panel (Basic Getters including get_afe_data)
                 await send_chunk_str(
                     writer,
                     '<tr><th>Command Test Panel</th><td>'
                     '<div class="control-group">'
+                    '<button class="btn-action" onclick="testCommand(%s, \'get_afe_data\', null)">Get AFE Data</button>'
                     '<button class="btn-action" onclick="testCommand(%s, \'get_serial_number\', null)">Get Serial</button>'
                     '<button class="btn-action" onclick="testCommand(%s, \'get_version\', null)">Get Version</button>'
                     '<button class="btn-action" onclick="testCommand(%s, \'start_adc\', null)">Start ADC</button>'
                     '<button class="btn-action" onclick="testCommand(%s, \'get_subdevice_status\', null)">Get Status</button>'
                     '</div>'
-                    % (str(afe_id), str(afe_id), str(afe_id), str(afe_id)),
+                    % (str(afe_id), str(afe_id), str(afe_id), str(afe_id), str(afe_id)),
                     max_chunk=512,
                 )
 
