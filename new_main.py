@@ -1165,10 +1165,12 @@ class AFEDevice:
 
             for key in stale_buffers:
                 del self._assembly_buffers[key]
+                # Fixed string format: Avoid '=' specifier, use safe standard formatting
+                cmd_val = key[0] if isinstance(key, tuple) else key
                 await self.hub.logger.log(
                     "WARN",
                     "AFE-{} purged stale buffer for cmd 0x{:02X}".format(
-                        self.afe_id, key
+                        self.afe_id, cmd_val
                     ),
                 )
 
@@ -1330,7 +1332,13 @@ class AFEDevice:
             ) = parsed
             now = millis()
 
-            buffer_key = command
+            # Differentiate assembly buffer key for subdevice-multiplexed commands
+            subdev_hint = 0
+            if command == AFECommand.getSubdeviceStatus and len(chunk_payload) > 0:
+                mask_byte = chunk_payload[0]
+                subdev_hint = 0 if (mask_byte & 0x01) else (1 if (mask_byte & 0x02) else 0)
+
+            buffer_key = (command, subdev_hint) if command == AFECommand.getSubdeviceStatus else command
             buffer_info = self._assembly_buffers.get(buffer_key)
 
             if buffer_info is None:
@@ -1946,7 +1954,7 @@ class WebServer:
                 elif procedure == "get_timestamp":
                     retval = await afe.send_command_and_wait(AFECommand.getTimestamp, 0, timeout_ms=3000)
                 elif procedure == "get_subdevice_status":
-                    retval = await afe.send_command_and_wait(AFECommand.getSubdeviceStatus, 0, timeout_ms=3000)
+                    retval = await afe.send_command_and_wait(AFECommand.getSubdeviceStatus, 0, timeout_ms=5000)
                 elif procedure == "get_sensor_data_last":
                     mask = int(data.get("mask", 0xFF))
                     retval = await afe.send_command_and_wait(AFECommand.getSensorDataSi_last_byMask, mask, timeout_ms=3000)
