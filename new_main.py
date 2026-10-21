@@ -188,7 +188,7 @@ def robust_worker(error_delay_ms=100):
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    print("[{0}] Unhandled exception: {1}".format(
+                    p.print_nowait("[{0}] Unhandled exception: {1}".format(
                         func.__name__, exc))
                     await asyncio.sleep_ms(error_delay_ms)
         return wrapper
@@ -418,11 +418,11 @@ class WatchdogManager:
             from machine import WDT
             self.wdt = WDT(timeout=timeout_ms)
             self.enabled = True
-            print("Hardware watchdog enabled: {} ms".format(timeout_ms))
+            p.print_nowait("Hardware watchdog enabled: {} ms".format(timeout_ms))
         except (ImportError, AttributeError):
-            print("Hardware watchdog unavailable")
+            p.print_nowait("Hardware watchdog unavailable")
         except Exception as exc:
-            print("Hardware watchdog init failed: {}".format(exc))
+            p.print_nowait("Hardware watchdog init failed: {}".format(exc))
 
     @robust_worker(error_delay_ms=1000)
     async def run(self):
@@ -811,7 +811,7 @@ class AFEDevice:
                 if subdev_id not in self.regulators:
                     self.regulators[subdev_id] = {}
                 self.regulators[subdev_id][config_key] = val
-                p.print("Aplly regulator {}[{}] = {}".format(subdev_id, config_key, val))
+                p.print_nowait("Aplly regulator {}[{}] = {}".format(subdev_id, config_key, val))
 
     @micropython.native
     def _handle_full_sensor_data_block(self, full_payload, target_key):
@@ -1502,7 +1502,7 @@ class SDLogger:
             try:
                 uos.rename(old_file_to_rename, new_path)
             except Exception as exc:
-                print("SD Rename Error: {}".format(exc))
+                p.print_nowait("SD Rename Error: {}".format(exc))
 
         self.current_filepath = new_path
         self.current_file_lines = 0
