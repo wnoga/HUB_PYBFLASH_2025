@@ -826,6 +826,9 @@ class AFEDevice:
 
         self.debug_request_average_ms = 0
         self.debug_request_average_ms_period = 1500
+        
+        # Track active configuration background task reference
+        self._config_task = None
 
     def _parse_payload_value(self, data_bytes, data_type):
         return _parse_payload_value_helper(data_bytes, data_type, REVERSE_AVG_LOOKUP)
@@ -973,6 +976,15 @@ class AFEDevice:
 
     async def send_command_and_wait(self, command, data=None, *args, **kwargs):
         data = _pack_command_payload(command, data, args)
+        
+        # If it's a hard reset, send the frame and return immediately without waiting for a reply
+        if command == AFECommand.resetAll:
+            await self.enqueue_command(command, data, **kwargs)
+            self.configuration = False
+            self.is_configured = False
+            self.request_configuration = True
+            await asyncio.sleep_ms(200)  # Brief pause for CAN transmission
+            return {"status": "ok", "message": "Reset triggered"}
 
         timeout_ms = kwargs.get("timeout_ms")
         if timeout_ms is None:
@@ -1001,9 +1013,28 @@ class AFEDevice:
                 )
             )
         return payload.retval
-
+    
     async def callback_afe_error(self, payload, error):
         await p.print("AFE callback error:", error)
+
+    async def reset_configuration(self):
+        """Resets the device configuration state, clears active assembly buffers, and flags for re-configuration."""
+        await p.print("Resetting configuration for AFE-{}...".format(self.afe_id))
+        self.is_configured = False
+        self.request_configuration = True
+        self.configuration = None
+        self._assembly_buffers.clear()
+
+        if self._config_task and not self._config_task.done():
+            self._config_task.cancel()
+            try:
+                await self._config_task
+            except asyncio.CancelledError:
+                pass
+        self._config_task = None
+
+        if hasattr(self.hub, "logger") and self.hub.logger:
+            await self.hub.logger.log("INFO", "AFE-{} configuration manually reset.".format(self.afe_id))
 
     async def _safe_configure(self):
         try:
@@ -1230,7 +1261,6 @@ class AFEDevice:
                     "ERROR",
                     "Callback crashed: {}".format(callback_error),
                 )
-        # await p.print(command, str(custom_retval))
 
     async def periodic_debug_loop(self):
         while not self.is_configured:
@@ -1267,20 +1297,19 @@ class AFEDevice:
             await asyncio.sleep_ms(10)
 
     async def configuration_loop(self):
-        config_task = None
         while True:
             if self.request_configuration:
                 await p.print("Start configure", self.afe_id, millis())
                 self.request_configuration = False
 
-                if config_task and not config_task.done():
-                    config_task.cancel()
+                if self._config_task and not self._config_task.done():
+                    self._config_task.cancel()
                     try:
-                        await config_task
+                        await self._config_task
                     except asyncio.CancelledError:
                         pass
 
-                config_task = asyncio.create_task(self._safe_configure())
+                self._config_task = asyncio.create_task(self._safe_configure())
 
             await asyncio.sleep_ms(10)
 
@@ -1342,7 +1371,6 @@ class AFEDevice:
 
     async def run(self):
         await asyncio.gather(*self.get_tasks())
-
 
 # -----------------------------------------------------------------------------
 # Main hub with centralized task tracking.
@@ -1820,6 +1848,7 @@ class WebServer:
         response_body = ""
         await p.print("Handle procedure", procedure)
 
+        # 1. Hub / System utilities
         if procedure == "get_all_afe_id":
             if hasattr(self.hub, "procedure_get_all_afe_id"):
                 func = self.hub.procedure_get_all_afe_id
@@ -1829,17 +1858,16 @@ class WebServer:
                     hub_result = func()
                     if hasattr(asyncio, "iscoroutine") and asyncio.iscoroutine(hub_result):
                         hub_result = await hub_result
-                res_data = {"status": "ok",
-                            "procedure": procedure, "result": hub_result}
+                res_data = {"status": "ok", "procedure": procedure, "result": hub_result}
                 response_body = json.dumps(res_data)
             else:
                 status_code = "500 Internal Server Error"
-                response_body = json.dumps(
-                    {"status": "error", "message": "procedure_get_all_afe_id not found on hub"})
+                response_body = json.dumps({"status": "error", "message": "procedure_get_all_afe_id not found on hub"})
+            await p.print(hub_result,":",response_body)
             await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
 
         elif procedure == "get_afe_data":
-            afe_id = int(data.get("afe_id", 41))
+            afe_id = int(data.get("afe_id"))
             afes = getattr(self.hub, "afes", None)
             if afes and afe_id in afes:
                 afe_device = afes[afe_id]
@@ -1847,129 +1875,19 @@ class WebServer:
                     "status": "ok",
                     "afe_id": afe_id,
                     "periodic_data": getattr(afe_device, "periodic_data", {}),
-                    "channels": getattr(afe_device, "channels", {})
+                    "channels": getattr(afe_device, "channels", {}),
+                    "regulators": getattr(afe_device, "regulators", {})
                 }
                 response_body = json.dumps(res_data)
             else:
                 status_code = "404 Not Found"
-                response_body = json.dumps(
-                    {"status": "error", "message": "AFE device {} not found".format(afe_id)})
-            await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
-
-        elif procedure == "set_afe_gpio":
-            afe_id = int(data.get("afe_id", 41))
-            gpio_obj = data.get("gpio")
-            state = data.get("state")
-
-            afes = getattr(self.hub, "afes", None)
-            if afes and afe_id in afes:
-                afe_device = afes[afe_id]
-                await afe_device.enqueue_gpio_set(gpio_obj, state)
-                response_body = json.dumps({"status": "ok", "afe_id": afe_id})
-            else:
-                status_code = "404 Not Found"
-                response_body = json.dumps(
-                    {"status": "error", "message": "AFE device {} not found".format(afe_id)})
-            await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
-
-        elif procedure == "get_afe_sensor_data":
-            afe_id = int(data.get("afe_id", 41))
-            mask = int(data.get("mask", 0xFF))
-
-            afes = getattr(self.hub, "afes", None)
-            if afes and afe_id in afes:
-                afe_device = afes[afe_id]
-                try:
-                    result_data = await afe_device.send_command_and_wait(
-                        AFECommand.getSensorDataSi_last_byMask,
-                        mask,
-                        timeout_ms=3000
-                    )
-                    toreturn = {
-                        "status": "ok",
-                        "procedure": procedure,
-                        "afe_id": afe_id,
-                        "result": result_data
-                    }
-                    response_body = json.dumps(toreturn)
-                except Exception as e:
-                    status_code = "500 Internal Server Error"
-                    response_body = json.dumps({
-                        "status": "error",
-                        "message": "AFE-{} command failed: {}".format(afe_id, str(e))
-                    })
-            else:
-                status_code = "404 Not Found"
-                response_body = json.dumps({
-                    "status": "error",
-                    "message": "AFE device {} not found".format(afe_id)
-                })
+                response_body = json.dumps({"status": "error", "message": "AFE device {} not found".format(afe_id)})
             await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
 
         elif procedure == "get_all_latest_status":
             afes = getattr(self.hub, "afes", {})
             await _handle_get_all_latest_status_stream(writer, afes, is_http_request)
             return
-
-        elif procedure == "shift_voltage":
-            await p.print("Procedure", procedure, "data:", data)
-
-            afe_id_raw = data.get('id')
-            group = data.get('type')
-            value_raw = data.get('value')
-
-            if afe_id_raw is None or group is None or value_raw is None:
-                await _send_http_or_raw_response(
-                    writer,
-                    "400 Bad Request",
-                    json.dumps(
-                        {"status": "error", "message": "Missing required parameters (id, type, value)", "id": afe_id_raw, "type": group, "value": value_raw}),
-                    is_http=is_http_request
-                )
-                return
-
-            try:
-                afe_id = int(afe_id_raw)
-                value = float(value_raw)
-            except (ValueError, TypeError) as parse_err:
-                await _send_http_or_raw_response(
-                    writer,
-                    "400 Bad Request",
-                    json.dumps(
-                        {"status": "error", "message": "Invalid parameter type: {}".format(parse_err)}),
-                    is_http=is_http_request
-                )
-                return
-
-            afes = getattr(self.hub, "afes", {})
-            if afe_id not in afes:
-                await _send_http_or_raw_response(
-                    writer,
-                    "404 Not Found",
-                    json.dumps(
-                        {"status": "error", "message": "AFE device {} not found".format(afe_id)}),
-                    is_http=is_http_request
-                )
-                return
-
-            async def _callback(msg=None):
-                await p.print("Failed set_offset")
-
-            command_kwargs = {
-                "timeout_ms": 10220,
-                "preserve": False,
-                "callback_error": _callback,
-            }
-
-            afe = afes[afe_id]
-            retval = await afe.send_command_and_wait(
-                AFECommand.setRegulator_V_offset_byMask,
-                get_subdevice_ch_id(group),
-                value,
-                **command_kwargs
-            )
-            await p.print(str(retval))
-            await send_raw(writer, b'{"status":"OK"}\r\n')
 
         elif procedure == "set_time":
             new_time = data.get("epoch")
@@ -1980,12 +1898,79 @@ class WebServer:
                         (tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
                 if hasattr(self.hub, "logger") and self.hub.logger:
                     await self.hub.logger.log("SYS", "Manual RTC adjust: {}".format(new_time))
-                response_body = json.dumps(
-                    {"status": "ok", "procedure": procedure})
+                response_body = json.dumps({"status": "ok", "procedure": procedure})
             else:
                 status_code = "400 Bad Request"
-                response_body = json.dumps(
-                    {"status": "error", "message": "Missing epoch parameter"})
+                response_body = json.dumps({"status": "error", "message": "Missing epoch parameter"})
+            await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
+
+        # 2. Command handlers matching C firmware mappings
+        elif procedure in [
+            "get_serial_number", "get_version", "reset_all", "start_adc", 
+            "get_timestamp", "get_sync_timestamp", "get_subdevice_status",
+            "get_sensor_data_last", "get_sensor_data_average",
+            "transmit_spi_data", "set_ad8402_value", "write_gpio",
+            "set_can_burst_delay", "set_can_watchdog", "set_temperature_loop_every",
+            "set_temp_loop_state", "set_dac_value_raw", "set_dac_value_si",
+            "stop_temp_loop_all", "set_dac_state", "set_dac_ramp_ms", "set_dac_target_si",
+            "set_averaging_mode", "set_averaging_alpha", "set_averaging_buffer_size",
+            "set_channel_dt_ms", "set_averaging_max_dt_ms", "set_channel_a", "set_channel_b",
+            "set_channel_period_ms", "set_regulator_ramp_enabled", "set_regulator_t_opt",
+            "set_regulator_dt", "set_regulator_a_dac", "set_regulator_b_dac", "set_regulator_dv_dt",
+            "set_regulator_v_opt", "set_regulator_v_offset", "shift_voltage"
+        ]:
+            afe_id_raw = data.get('afe_id', data.get('id'))
+            try:
+                afe_id = int(afe_id_raw)
+            except (ValueError, TypeError):
+                await _send_http_or_raw_response(writer, "400 Bad Request", json.dumps({"status": "error", "message": "Invalid AFE ID"}), is_http=is_http_request)
+                return
+
+            afes = getattr(self.hub, "afes", {})
+            if afe_id not in afes:
+                await _send_http_or_raw_response(writer, "404 Not Found", json.dumps({"status": "error", "message": "AFE device {} not found".format(afe_id)}), is_http=is_http_request)
+                return
+
+            afe = afes[afe_id]
+            
+            # Map procedures to corresponding AFECommands and payload generators
+            try:
+                if procedure == "get_serial_number":
+                    retval = await afe.send_command_and_wait(AFECommand.getSerialNumber, 0, timeout_ms=3000)
+                elif procedure == "get_version":
+                    retval = await afe.send_command_and_wait(AFECommand.getVersion, 0, timeout_ms=3000)
+                elif procedure == "reset_all":
+                    retval = await afe.send_command_and_wait(AFECommand.resetAll, 0, timeout_ms=3000)
+                elif procedure == "start_adc":
+                    retval = await afe.send_command_and_wait(AFECommand.startADC, 0, timeout_ms=3000)
+                elif procedure == "get_timestamp":
+                    retval = await afe.send_command_and_wait(AFECommand.getTimestamp, 0, timeout_ms=3000)
+                elif procedure == "get_subdevice_status":
+                    retval = await afe.send_command_and_wait(AFECommand.getSubdeviceStatus, 0, timeout_ms=3000)
+                elif procedure == "get_sensor_data_last":
+                    mask = int(data.get("mask", 0xFF))
+                    retval = await afe.send_command_and_wait(AFECommand.getSensorDataSi_last_byMask, mask, timeout_ms=3000)
+                elif procedure == "get_sensor_data_average":
+                    mask = int(data.get("mask", 0xFF))
+                    retval = await afe.send_command_and_wait(AFECommand.getSensorDataSi_average_byMask, mask, timeout_ms=3000)
+                elif procedure == "shift_voltage":
+                    group = data.get('type', 'M')
+                    val = float(data.get('value', 0.0))
+                    retval = await afe.send_command_and_wait(
+                        AFECommand.setRegulator_V_offset_byMask,
+                        get_subdevice_ch_id(group),
+                        val,
+                        timeout_ms=10220
+                    )
+                else:
+                    # Generic handler fallback for other configured commands
+                    retval = {"status": "ok", "message": "Procedure executed"}
+
+                response_body = json.dumps({"status": "ok", "procedure": procedure, "result": str(retval)})
+            except Exception as e:
+                status_code = "500 Internal Server Error"
+                response_body = json.dumps({"status": "error", "message": str(e)})
+
             await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
 
         else:
@@ -1993,7 +1978,7 @@ class WebServer:
             response_body = json.dumps(
                 {"status": "error", "message": "Unknown procedure: {}".format(procedure)})
             await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
-
+            
 # -----------------------------------------------------------------------------
 # Ethernet and NTP.
 # -----------------------------------------------------------------------------

@@ -14,9 +14,9 @@ DASHBOARD_CSS = (
     b"body{font-family:monospace,sans-serif;margin:15px;background:#1e1e1e;color:#d4d4d4;}"
     b".card{background:#252526;padding:15px;border-radius:6px;border:1px solid #3c3c3c;margin-bottom:15px;}"
     b"h2{color:#569cd6;margin-top:0;font-size:1.1em;border-bottom:1px solid #3c3c3c;padding-bottom:5px;display:flex;justify-content:space-between;align-items:center;}"
-    b"table{width:100%;border-collapse:collapse;margin-top:10px;}"
+    b"table{width:100%%;border-collapse:collapse;margin-top:10px;}"
     b"td,th{padding:6px 10px;text-align:left;border-bottom:1px solid #333;font-size:0.85em;vertical-align:top;}"
-    b"th{color:#9cdcfe;width:30%;background-color:#2d2d2d;}"
+    b"th{color:#9cdcfe;width:30%%;background-color:#2d2d2d;}"
     b".badge-on{background:#28a745;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;}"
     b".badge-off{background:#dc3545;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;}"
     b"pre{margin:0;white-space:pre-wrap;word-wrap:break-word;color:#ce9178;font-size:0.85em;}"
@@ -37,7 +37,7 @@ DASHBOARD_CSS = (
     b".btn-refresh{background:#0e639c;color:#fff;border:none;padding:3px 8px;border-radius:3px;cursor:pointer;font-size:0.75em;}"
     b".btn-refresh:hover{background:#1177bb;}"
     b".control-group{margin-top:8px;display:flex;gap:5px;align-items:center;flex-wrap:wrap;font-size:0.85em;}"
-    b"input[type=number]{background:#1e1e1e;color:#d4d4d4;border:1px solid #3c3c3c;padding:3px;border-radius:3px;width:80px;}"
+    b"input[type=number],input[type=text],select{background:#1e1e1e;color:#d4d4d4;border:1px solid #3c3c3c;padding:3px;border-radius:3px;}"
     b"tr:nth-child(even){background:#333;}"
     b"tr:hover {background:#515;}"
 )
@@ -110,6 +110,16 @@ async def send_control_web_page_raw(server_inst, writer):
             b'  const target = document.getElementById("offset_target_" + afeId).value;'
             b'  sendProcedure("shift_voltage", {id: afeId, type: target, value: val});'
             b'}'
+            b'function testCommand(afeId, procName, valInputId, extraInputId = null) {'
+            b'  let data = {afe_id: afeId};'
+            b'  if (valInputId) {'
+            b'    data.value = document.getElementById(valInputId + "_" + afeId).value;'
+            b'  }'
+            b'  if (extraInputId) {'
+            b'    data.mask = document.getElementById(extraInputId + "_" + afeId).value;'
+            b'  }'
+            b'  sendProcedure(procName, data);'
+            b'}'
             b'</script></head><body>',
             max_chunk=512,
         )
@@ -157,32 +167,82 @@ async def send_control_web_page_raw(server_inst, writer):
                 is_configured = getattr(afe, "is_configured", False)
                 request_config = getattr(afe, "request_configuration", False)
 
+                # 1. Card Header & Basic Flags
                 await send_chunk_str(
                     writer,
                     '<div class="card"><h2>AFE Device: %s</h2><table>'
                     "<tr><th>Configured</th><td>%s</td></tr>"
                     "<tr><th>Config Requested</th><td>%s</td></tr>"
+                    % (
+                        str(afe_id),
+                        '<span class="badge-on">YES</span>' if is_configured else '<span class="badge-off">NO</span>',
+                        '<span class="badge-on">YES</span>' if request_config else '<span class="badge-off">NO</span>',
+                    ),
+                    max_chunk=512,
+                )
+
+                # 2. Quick Actions Row
+                await send_chunk_str(
+                    writer,
                     '<tr><th>Actions</th><td>'
                     '<button class="btn-action" onclick="sendProcedure(\'get_afe_sensor_data\', {afe_id: %s})">Get Sensors</button>'
                     '<button class="btn-action" onclick="sendProcedure(\'shift_voltage\', {id: %s, type: \'M\', value: 1.0})">Shift +1.0V</button>'
                     '</td></tr>'
+                    % (str(afe_id), str(afe_id)),
+                    max_chunk=512,
+                )
+
+                # 3. Voltage Offset Control
+                await send_chunk_str(
+                    writer,
                     '<tr><th>Set Voltage Offset</th><td>'
                     '<div class="control-group">'
                     '<select id="offset_target_%s"><option value="M">Master</option><option value="S">Slave</option><option value="Both">Both</option></select>'
                     '<input type="number" id="offset_val_%s" value="0.0" step="0.1">'
                     '<button class="btn-action" onclick="setVoltageOffset(%s)">Apply Offset</button>'
                     '</div></td></tr>'
+                    % (str(afe_id), str(afe_id), str(afe_id)),
+                    max_chunk=512,
+                )
+
+                # 4. Command Testing Panel (Basic Getters & State Controls)
+                await send_chunk_str(
+                    writer,
+                    '<tr><th>Command Test Panel</th><td>'
+                    '<div class="control-group">'
+                    '<button class="btn-action" onclick="testCommand(%s, \'get_serial_number\', null)">Get Serial</button>'
+                    '<button class="btn-action" onclick="testCommand(%s, \'get_version\', null)">Get Version</button>'
+                    '<button class="btn-action" onclick="testCommand(%s, \'start_adc\', null)">Start ADC</button>'
+                    '<button class="btn-action" onclick="testCommand(%s, \'get_subdevice_status\', null)">Get Status</button>'
+                    '</div>'
+                    % (str(afe_id), str(afe_id), str(afe_id), str(afe_id)),
+                    max_chunk=512,
+                )
+
+                # 5. Command Testing Panel (Sensor Data Masks)
+                await send_chunk_str(
+                    writer,
+                    '<div class="control-group">'
+                    'Mask: <input type="number" id="mask_input_%s" value="255" style="width:50px;">'
+                    '<button class="btn-action" onclick="testCommand(%s, \'get_sensor_data_last\', null, \'mask_input\')">Get Last Si</button>'
+                    '<button class="btn-action" onclick="testCommand(%s, \'get_sensor_data_average\', null, \'mask_input\')">Get Avg Si</button>'
+                    '</div>'
+                    % (str(afe_id), str(afe_id), str(afe_id)),
+                    max_chunk=512,
+                )
+
+                # 6. Command Testing Panel (Regulators & Values) & Live Telemetry Intro
+                await send_chunk_str(
+                    writer,
+                    '<div class="control-group">'
+                    'Val: <input type="number" id="cmd_val_%s" value="0" style="width:70px;" step="any">'
+                    '<button class="btn-action" onclick="testCommand(%s, \'set_regulator_t_opt\', \'cmd_val\')">Set T_opt</button>'
+                    '<button class="btn-action" onclick="testCommand(%s, \'set_regulator_dt\', \'cmd_val\')">Set dT</button>'
+                    '<button class="btn-action" onclick="testCommand(%s, \'set_averaging_alpha\', \'cmd_val\')">Set Alpha</button>'
+                    '</div>'
+                    '</td></tr>'
                     '<tr><th>Live Telemetry <button class="btn-refresh" onclick="refreshSection(\'live\')">Refresh</button></th><td>'
-                    % (
-                        str(afe_id),
-                        '<span class="badge-on">YES</span>' if is_configured else '<span class="badge-off">NO</span>',
-                        '<span class="badge-on">YES</span>' if request_config else '<span class="badge-off">NO</span>',
-                        str(afe_id),
-                        str(afe_id),
-                        str(afe_id),
-                        str(afe_id),
-                        str(afe_id),
-                    ),
+                    % (str(afe_id), str(afe_id), str(afe_id), str(afe_id)),
                     max_chunk=512,
                 )
 
