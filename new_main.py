@@ -671,6 +671,23 @@ async def _process_command_payload(instance, command, full_payload, device_id):
             instance._apply_channel_config(
                 full_payload[0], full_payload[1:], val_type, config_key)
         return None
+    
+    if command == AFECommand.getSyncTimestamp:
+        # Expects two chunks/blocks: [AFE_Tick (4 bytes)] + [Hub_Sent_Tick (4 bytes)]
+        if len(full_payload) >= 8:
+            afe_tick = struct.unpack("<I", full_payload[0:4])[0]
+            hub_echo = struct.unpack("<I", full_payload[4:8])[0]
+            current_hub_tick = millis()
+            rtt = current_hub_tick - hub_echo
+            instance.time_offset_ms = afe_tick - (hub_echo + (rtt // 2))
+            instance.last_rtt_ms = rtt
+            return {
+                "afe_tick": afe_tick,
+                "hub_echo": hub_echo,
+                "rtt_ms": rtt,
+                "time_offset_ms": instance.time_offset_ms
+            }
+        return None
 
     if command == AFECommand.setTemperatureLoopForChannelState_byMask_asStatus:
         mask_byte = full_payload[0]
@@ -811,7 +828,7 @@ class AFEDevice:
         self.hub = hub
         self.stale_buffer_ttl_ms = stale_buffer_ttl_ms
         
-        self.can_msg_burst_delay_ms = 50
+        self.can_msg_burst_delay_ms = 20
 
         self.channels = {
             i: {
@@ -1122,7 +1139,7 @@ class AFEDevice:
 
         try:
             # Set CAN message burst delay to 25 ms at the beginning using fire-and-forget enqueue_command
-            delay_payload = _pack_command_payload(AFECommand.setCanMsgBurstDelay_ms, 0, (25,))
+            delay_payload = _pack_command_payload(AFECommand.setCanMsgBurstDelay_ms, 0, (0,))
             await self.enqueue_command(AFECommand.setCanMsgBurstDelay_ms, delay_payload)
             await asyncio.sleep_ms(20)
 
@@ -1270,6 +1287,20 @@ class AFEDevice:
                     exception=error,
                     specific_payload=payload,
                 )
+                
+    async def sync_time(self):
+        """Triggers get_sync_timestamp to evaluate clock drift and round-trip delay."""
+        try:
+            current_tick = millis()
+            # Pack current hub millis() as 4-byte payload argument for echo
+            payload_data = struct.pack("<I", current_tick)
+            await self.send_command_and_wait(
+                AFECommand.getSyncTimestamp,
+                payload_data,
+                timeout_ms=3000
+            )
+        except Exception as e:
+            await p.print("Time sync failed for AFE-{}: {}".format(self.afe_id, e))
 
     async def _handle_complete_message(
         self,
@@ -1306,6 +1337,20 @@ class AFEDevice:
             payload.retval = payload_bytes
             payload.status = CommandStatus.ERROR
             payload.completion_event.set()
+            
+            # Log command failure stream with multi-timestamps
+            if hasattr(self.hub, "logger") and self.hub.logger:
+                error_data = {
+                    "afe_id": self.afe_id,
+                    "command_id": cmd_id,
+                    "status": "error",
+                    "exception": str(exception)
+                }
+                try:
+                    await self.hub.logger.log_json_stream("ERROR", error_data)
+                except Exception:
+                    pass
+
             if payload.callback_error is not None:
                 try:
                     await call_callback(
@@ -1331,6 +1376,20 @@ class AFEDevice:
 
         payload.status = CommandStatus.SUCCESS
         payload.completion_event.set()
+
+        # Stream complete command result/payload key-by-key to SD logger with multi-timestamps
+        if hasattr(self.hub, "logger") and self.hub.logger:
+            log_payload = {
+                "afe_id": self.afe_id,
+                "command_id": command,
+                "hub_unix_timestamp": rtc_unix_timestamp(),
+                "hub_millis": millis(),
+                "retval": payload.retval if isinstance(payload.retval, (dict, list, str, int, float)) else str(payload.retval)
+            }
+            try:
+                await self.hub.logger.log_json_stream("MEASUREMENT", log_payload)
+            except Exception as log_err:
+                await p.print("Failed to stream complete message to SD: {}".format(log_err))
 
         if payload.callback is not None:
             try:
@@ -1599,6 +1658,7 @@ class SDLogger:
         self.mount_point = mount_point
         self.logs_dir = mount_point + "/logs"
         self.queue = Queue(maxsize=64)
+        self._write_buffer = []
 
         # Ensure log directory exists on initialization
         self._ensure_log_directory()
@@ -1630,14 +1690,9 @@ class SDLogger:
     def _generate_filename(self):
         """Generates YYYYmmdd_HHMMSS filename with same-second sequence handling."""
         t_epoch = time.time()
-
-        # If time is not synced yet, approximate real-world or use uptime-based reference
-        # (Assuming time.time() returns epoch or machine uptime ticks depending on sync state)
         try:
             lt = time.localtime(t_epoch)
-            # Check if year looks valid (e.g., >= 2024), otherwise fallback or use machine-derived estimation
             if lt[0] < 2024 and not self.time_synced:
-                # Fallback format for unsynced machine time / standard name
                 base_name = "log_seq_{}".format(self.sequence_num)
             else:
                 base_name = "{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}".format(
@@ -1646,7 +1701,6 @@ class SDLogger:
         except Exception:
             base_name = "log_{}".format(self.sequence_num)
 
-        # Handle same-second collision checking
         filename_base = base_name
         if filename_base == self.last_timestamp_str:
             self.sequence_num += 1
@@ -1677,10 +1731,27 @@ class SDLogger:
     def notify_time_synced(self):
         self.time_synced = True
         old_path = self.current_filepath
-        # If previous name was a standard/unsynced fallback name, rename it to real RTC datetime format
         if old_path and ("log_seq_" in old_path or "log_" in old_path):
-            self._update_filepath(rename_existing=True,
-                                  old_file_to_rename=old_path)
+            self._update_filepath(rename_existing=True, old_file_to_rename=old_path)
+
+    def write(self, data):
+        """Writer interface compatibility for chunk-based streaming (e.g. stream_json_key_by_key)."""
+        if isinstance(data, bytes):
+            try:
+                data = data.decode("utf-8", "ignore")
+            except Exception:
+                data = str(data)
+        self._write_buffer.append(data)
+
+    async def drain(self):
+        """Async drain interface to flush accumulated chunks into the log queue."""
+        if self._write_buffer:
+            chunk_str = "".join(self._write_buffer)
+            self._write_buffer.clear()
+            try:
+                await self.queue.put(chunk_str)
+            except Exception:
+                pass
 
     async def log(self, level, message):
         timestamp = time.time()
@@ -1692,6 +1763,16 @@ class SDLogger:
             await self.queue.put(entry)
         except Exception:
             pass
+
+    async def log_json_stream(self, level, obj):
+        """Helper to stream large complex dictionaries/objects directly to SD card key-by-key without high allocations."""
+        from stream_utilities import stream_json_key_by_key
+        timestamp = time.time()
+        
+        self.write(f'{{"timestamp": {timestamp}, "level": "{level}", "data": ')
+        await stream_json_key_by_key(self, obj, is_async_writer=True)
+        self.write('}\n')
+        await self.drain()
 
     async def writer_loop(self):
         global sdlogger_sleep_ms

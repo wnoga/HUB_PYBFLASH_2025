@@ -1,10 +1,9 @@
-# my_utilities.py
-import json
-import os
-import sys
-import time
+# new_my_utilities.py
+import pyb
+import utime as time
+import uasyncio as asyncio
 
-rtc_synced = False
+rtc = pyb.RTC()
 
 VerbosityLevel = {
     "DEBUG": 4,
@@ -14,62 +13,6 @@ VerbosityLevel = {
     "CRITICAL": 0,
     "MEASUREMENT": -1
 }
-
-# --- Hardware and Platform Compatibility Fallbacks ---
-try:
-    import machine
-    rtc = machine.RTC()
-except (ImportError, AttributeError):
-    class DummyRTC:
-        def datetime(self):
-            return (2000, 1, 1, 1, 0, 0, 0, 0)
-    rtc = DummyRTC()
-
-# try:
-#     from machine import WDT
-#     wdt = WDT(timeout=20000)
-#     wdt.feed()
-# except (ImportError, AttributeError):
-#     class DummyWDT:
-#         def feed(self):
-#             pass
-#     wdt = DummyWDT()
-
-try:
-    import uasyncio
-except ImportError:
-    import asyncio
-
-    class UasyncioShim:
-        def __init__(self):
-            self._loop = None
-
-        def get_event_loop(self):
-            if self._loop is None:
-                try:
-                    self._loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    self._loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(self._loop)
-            return self
-
-        def create_task(self, coro):
-            return self.get_event_loop().create_task(coro)
-
-        async def sleep(self, t_s):
-            await asyncio.sleep(t_s)
-
-        async def sleep_ms(self, t_ms):
-            await asyncio.sleep(t_ms / 1000.0)
-
-        async def gather(self, *aws, return_exceptions=False):
-            return await asyncio.gather(*aws, return_exceptions=return_exceptions)
-
-        def run(self, coro):
-            return asyncio.run(coro)
-
-    uasyncio = UasyncioShim()
-
 
 # --- Timing Helpers ---
 @micropython.native
@@ -120,95 +63,6 @@ def rtc_datetime_pretty():
     return "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
         dt[0], dt[1], dt[2], dt[4], dt[5], dt[6]
     )
-
-
-# --- Non-blocking Async Logger ---
-try:
-    import uasyncio
-except ImportError:
-    import asyncio as uasyncio
-
-class PrintButLouder:
-    """
-    Non-blocking, queue-backed logger optimized for MicroPython.
-    Uses a pre-allocated ring buffer to prevent heap allocations during logging.
-    """
-
-    def __init__(self, max_queue_size=32, max_args_per_msg=4):
-        self.max_queue_size = max_queue_size
-        self.max_args = max_args_per_msg
-
-        # Pointers for circular buffer
-        self.head = 0
-        self.tail = 0
-
-        # Pre-allocate fixed slot arrays: [arg0, arg1, arg2, arg3, num_args]
-        # Avoids creating tuple objects on the heap during logging
-        self.buffer = [
-            [None] * (self.max_args + 1) for _ in range(self.max_queue_size)
-        ]
-
-    def _push_sync(self, *args):
-        """Internal helper to populate the next buffer slot without heap allocations."""
-        next_head = (self.head + 1) % self.max_queue_size
-
-        # Overflow handling: if full, advance tail to drop oldest message
-        if next_head == self.tail:
-            self.tail = (self.tail + 1) % self.max_queue_size
-
-        slot = self.buffer[self.head]
-        count = min(len(args), self.max_args)
-
-        # Populate slot contents
-        for i in range(count):
-            slot[i] = args[i]
-
-        # Store count in final index
-        slot[self.max_args] = count
-        self.head = next_head
-
-    async def print(self, *args):
-        """Async entry point for normal task context."""
-        self._push_sync(*args)
-
-    def print_sync(self, *args):
-        """Synchronous entry point safe for IRQs, callbacks, or micropython.schedule context."""
-        self._push_sync(*args)
-
-    async def machine(self):
-        """
-        Flushes one log message per tick to stdout.
-        Runs inside HUBDevice.main_process().
-        """
-        if self.head == self.tail:
-            return  # Buffer empty
-
-        slot = self.buffer[self.tail]
-        count = slot[self.max_args]
-
-        # Unpack pre-allocated slots to print without creating a temporary tuple
-        if count == 1:
-            print(slot[0])
-        elif count == 2:
-            print(slot[0], slot[1])
-        elif count == 3:
-            print(slot[0], slot[1], slot[2])
-        elif count == 4:
-            print(slot[0], slot[1], slot[2], slot[3])
-        else:
-            # Fallback unpack for large argument counts
-            print(*slot[:count])
-
-        # Clean up references so GC can reclaim transient string objects
-        for i in range(count):
-            slot[i] = None
-
-        # Advance tail
-        self.tail = (self.tail + 1) % self.max_queue_size
-        await uasyncio.sleep_ms(0)
-
-p = PrintButLouder()
-
 
 # --- AFE Command Registers & Enums ---
 
@@ -299,6 +153,8 @@ class CommandStatus:
     IDLE = 0x001
     RECIEVED = 0x010
     ERROR = 0x100
+    ERROR = -1
+    SUCCESS = 1
 
 class AFECommandChannel:
     AFECommandChannel_0 = 0x01
@@ -345,17 +201,8 @@ e_ADC_CHANNEL = {
 }
 
 
-class SensorChannel:
-    def __init__(self, channel_id):
-        self.channel_id = channel_id
-        self.config = {}
-        self.name = e_ADC_CHANNEL.get(channel_id, "UNKNOWN")
-        self.last_recieved_data = {"last": {}, "average": {}}
-
-
 # --- Data Parsers & Utility Functions ---
 def convert_to_si(value, unit):
-    """Converts input values to standard SI units (Seconds, Celsius, Volts)."""
     try:
         v = float(value) if value != "" else 1.0
     except (ValueError, TypeError):
@@ -366,13 +213,10 @@ def convert_to_si(value, unit):
 
     unit = unit.strip().lower()
     unit_map = {
-        # Time -> Seconds
         "ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1.0, "min": 60.0, "h": 3600.0, "d": 86400.0,
-        # Temperature -> Celsius
         "c": lambda x: x,
         "k": lambda x: x - 273.15,
         "f": lambda x: (x - 32) * 5 / 9,
-        # Voltage -> Volts
         "mv": 1e-3, "v": 1.0, "kv": 1e3,
     }
 
@@ -384,7 +228,6 @@ def convert_to_si(value, unit):
 
 
 def parse_csv_line(line):
-    """Splits a single CSV line while respecting quoted entries containing commas."""
     fields, current_field, in_quotes = [], [], False
 
     for char in line:
@@ -419,7 +262,6 @@ def _clean_csv_value(key, value):
 
 
 async def read_calibration_csv(csv_file):
-    """Reads calibration CSV files asynchronously and outputs averaged parameters per channel role."""
     callib_data = []
     try:
         with open(csv_file, mode="r", encoding="utf-8") as file:
@@ -460,7 +302,6 @@ async def read_calibration_csv(csv_file):
                     callib_data_mean[group][k] = []
                 callib_data_mean[group][k].append(v)
 
-    # Compute group averages
     for group in ("M", "S"):
         if group in callib_data_mean:
             group_dict = callib_data_mean[group]
@@ -478,8 +319,7 @@ async def get_configuration_from_files(
     temp_loop_file_csv="TempLoop.csv",
     uid=None,
 ):
-    """Aggregates board configuration parameters from calibration CSV assets."""
-    (temp_loop_data, temp_loop_mean), (calib_data, calib_mean) = await uasyncio.gather(
+    (temp_loop_data, temp_loop_mean), (calib_data, calib_mean) = await asyncio.gather(
         read_calibration_csv(temp_loop_file_csv),
         read_calibration_csv(calibration_data_file_csv),
     )
@@ -508,53 +348,3 @@ async def get_configuration_from_files(
                         calibration[group][k] = default_val
 
     return calibration
-
-class PreallocatedRingBuffer:
-    """Fixed-size lock-free ring buffer designed for MicroPython zero-allocation enqueuing."""
-
-    def __init__(self, capacity=128):
-        self.capacity = capacity
-        # Pre-allocate array slots with placeholder mutable lists [level, message]
-        self._buf = [[0, ""] for _ in range(capacity)]
-        self._head = 0  # Write index
-        self._tail = 0  # Read index
-        self._size = 0
-
-    def is_full(self):
-        return self._size == self.capacity
-
-    def is_empty(self):
-        return self._size == 0
-
-    def push(self, level: int, message: str) -> bool:
-        """Overwrites pre-allocated slot without allocating memory."""
-        if self._size == self.capacity:
-            return False  # Buffer Full
-
-        # Mutate existing list elements in-place to avoid heap allocations
-        slot = self._buf[self._head]
-        slot[0] = level
-        slot[1] = message
-
-        self._head = (self._head + 1) % self.capacity
-        self._size += 1
-        return True
-
-    def pop_into(self, out_slot: list) -> bool:
-        """Copies next item into target `out_slot` [level, message] and frees internal slot."""
-        if self._size == 0:
-            return False
-
-        slot = self._buf[self._tail]
-        out_slot[0] = slot[0]
-        out_slot[1] = slot[1]
-
-        # Clear references in buffer slot to allow GC of message string if needed
-        slot[1] = ""
-
-        self._tail = (self._tail + 1) % self.capacity
-        self._size -= 1
-        return True
-
-    def __len__(self):
-        return self._size

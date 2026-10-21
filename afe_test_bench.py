@@ -15,7 +15,7 @@ HUB_IP = "192.168.1.223"
 HUB_PORT = 5555
 N_ITERATIONS = 1
 SOCKET_TIMEOUT = 12.0
-BURST_DELAYS_MS = [0, 1, 20, 25, 50, 100]
+BURST_DELAYS_MS = [x for x in range(0,25)] + [25, 50, 100]
 
 # ---------------------------------------------------------------------------
 # Command Instruction Registry Documentation & Base Structure
