@@ -521,6 +521,10 @@ AFE_COMMAND_REGISTRY = {
     AFECommand.setRegulator_dV_dT_byMask: ("float", "dV_dT", "regulator"),
     AFECommand.setRegulator_V_opt_byMask: ("float", "V_opt", "regulator"),
     AFECommand.setRegulator_V_offset_byMask: ("float", "V_offset", "regulator"),
+    
+    AFECommand.setDACValueRaw_bySubdeviceMask: ("u16", "dac_raw_value", "regulator"),
+    AFECommand.setDAC_bySubdeviceMask: ("u8", "dac_state", "regulator"),
+    AFECommand.writeGPIO: ("u8", "gpio_val", "channel"),
 }
 
 
@@ -645,7 +649,30 @@ async def _process_command_payload(instance, command, full_payload, device_id):
         instance._handle_full_subdevice_status(
             instance.latest_status, full_payload)
         return instance.latest_status
+    if command == AFECommand.setDACValueRaw_bySubdeviceMask:
+        subdev_mask = full_payload[0]
+        raw_val = instance._parse_payload_value(full_payload[1:], "u16")
+        for subdev_id in range(2):
+            if subdev_mask & (1 << subdev_id):
+                if subdev_id not in instance.regulators:
+                    instance.regulators[subdev_id] = {}
+                instance.regulators[subdev_id]["dac_raw_value"] = raw_val
+        return None
 
+    if command == AFECommand.setDAC_bySubdeviceMask:
+        subdev_mask = full_payload[0]
+        dac_state = full_payload[1] if len(full_payload) > 1 else 0
+        for subdev_id in range(2):
+            if subdev_mask & (1 << subdev_id):
+                if subdev_id not in instance.regulators:
+                    instance.regulators[subdev_id] = {}
+                instance.regulators[subdev_id]["dac_enabled"] = bool(dac_state)
+        return None
+
+    if command == AFECommand.writeGPIO:
+        # 0xA2 writeGPIO handler matching your firmware structure
+        return None
+    
     await p.print("Not handled function 0x{:02X}: {}".format(command, full_payload))
     return None
 
