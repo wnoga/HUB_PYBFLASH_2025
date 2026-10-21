@@ -1,3 +1,4 @@
+from new_my_utilities import rtc_datetime_pretty, rtc_unix_timestamp
 import micropython
 from stream_utilities import (
     send_raw,
@@ -10,14 +11,14 @@ from stream_utilities import (
 )
 import pyb
 import uasyncio as asyncio
-import time
+import utime as time
 import network
 import socket
 import struct
 import json
 import io
 import gc
-import uos
+import uos as os
 import sys
 
 from my_webpage import handle_log_download, send_control_web_page_raw
@@ -173,6 +174,7 @@ class AsyncPrinter:
                 raise
             except Exception:
                 await asyncio.sleep_ms(10)
+
 
 # Global printer instance
 p = AsyncPrinter()
@@ -418,7 +420,8 @@ class WatchdogManager:
             from machine import WDT
             self.wdt = WDT(timeout=timeout_ms)
             self.enabled = True
-            p.print_nowait("Hardware watchdog enabled: {} ms".format(timeout_ms))
+            p.print_nowait(
+                "Hardware watchdog enabled: {} ms".format(timeout_ms))
         except (ImportError, AttributeError):
             p.print_nowait("Hardware watchdog unavailable")
         except Exception as exc:
@@ -519,6 +522,7 @@ AFE_COMMAND_REGISTRY = {
     AFECommand.setRegulator_V_opt_byMask: ("float", "V_opt", "regulator"),
     AFECommand.setRegulator_V_offset_byMask: ("float", "V_offset", "regulator"),
 }
+
 
 async def _apply_setting(instance, group: str, setting: str, value):
     command_kwargs = {
@@ -811,7 +815,10 @@ class AFEDevice:
                 if subdev_id not in self.regulators:
                     self.regulators[subdev_id] = {}
                 self.regulators[subdev_id][config_key] = val
-                p.print_nowait("Aplly regulator {}[{}] = {}".format(subdev_id, config_key, val))
+
+                subdev_name = "Master" if subdev_id == 0 else "Slave"
+                p.print_nowait("Apply regulator {}[{}] = {}".format(
+                    subdev_name, config_key, val))
 
     @micropython.native
     def _handle_full_sensor_data_block(self, full_payload, target_key):
@@ -1404,7 +1411,7 @@ class HUBDevice:
 def _scan_highest_sequence_number(mount_point):
     max_seq = 0
     try:
-        files = uos.listdir(mount_point)
+        files = os.listdir(mount_point)
         for f in files:
             if f.startswith("log_") and f.endswith(".jsonl"):
                 parts = f.split("_")
@@ -1435,7 +1442,7 @@ class SDLogger:
         self.mount_point = mount_point
         self.logs_dir = mount_point + "/logs"
         self.queue = Queue(maxsize=64)
-        
+
         # Ensure log directory exists on initialization
         self._ensure_log_directory()
 
@@ -1457,7 +1464,7 @@ class SDLogger:
                     continue
                 current += "/" + part
                 try:
-                    uos.mkdir(current)
+                    os.mkdir(current)
                 except OSError:
                     pass
         except Exception:
@@ -1466,7 +1473,7 @@ class SDLogger:
     def _generate_filename(self):
         """Generates YYYYmmdd_HHMMSS filename with same-second sequence handling."""
         t_epoch = time.time()
-        
+
         # If time is not synced yet, approximate real-world or use uptime-based reference
         # (Assuming time.time() returns epoch or machine uptime ticks depending on sync state)
         try:
@@ -1500,7 +1507,7 @@ class SDLogger:
 
         if rename_existing and old_file_to_rename and old_file_to_rename != new_path:
             try:
-                uos.rename(old_file_to_rename, new_path)
+                os.rename(old_file_to_rename, new_path)
             except Exception as exc:
                 p.print_nowait("SD Rename Error: {}".format(exc))
 
@@ -1515,7 +1522,8 @@ class SDLogger:
         old_path = self.current_filepath
         # If previous name was a standard/unsynced fallback name, rename it to real RTC datetime format
         if old_path and ("log_seq_" in old_path or "log_" in old_path):
-            self._update_filepath(rename_existing=True, old_file_to_rename=old_path)
+            self._update_filepath(rename_existing=True,
+                                  old_file_to_rename=old_path)
 
     async def log(self, level, message):
         timestamp = time.time()
@@ -1558,7 +1566,7 @@ class SDLogger:
 
                     file_obj.flush()
                     try:
-                        uos.sync()
+                        os.sync()
                     except AttributeError:
                         pass
 
@@ -1570,7 +1578,7 @@ class SDLogger:
                 await p.print("SD Write Error: {}".format(exc))
 
             await asyncio.sleep_ms(sdlogger_sleep_ms)
-                       
+
 # -----------------------------------------------------------------------------
 # HTTP server helpers & WebServer class.
 # -----------------------------------------------------------------------------
@@ -1888,7 +1896,7 @@ class WebServer:
                     writer,
                     "400 Bad Request",
                     json.dumps(
-                        {"status": "error", "message": "Missing required parameters (id, type, value)", "id":afe_id_raw, "type":group,"value":value_raw}),
+                        {"status": "error", "message": "Missing required parameters (id, type, value)", "id": afe_id_raw, "type": group, "value": value_raw}),
                     is_http=is_http_request
                 )
                 return
@@ -2046,6 +2054,40 @@ def _fetch_and_apply_ntp_time(server, ntp_epoch_offset):
                 pass
 
 
+def _fetch_and_apply_ntp_time(server, ntp_epoch_offset):
+    """Fetches NTP time, applies it to pyb.RTC(), and returns unix epoch time."""
+    addr = socket.getaddrinfo(server, 123)[0][-1]
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(5.0)
+
+    try:
+        # NTP packet request (LI = 0, VN = 3, Mode = 3 client)
+        data = bytearray(48)
+        data[0] = 0x1B
+        s.sendto(data, addr)
+        msg = s.recv(48)
+    finally:
+        s.close()
+
+    # Unpack transmit timestamp (seconds since 1900-01-01)
+    ntp_time = struct.unpack("!I", msg[40:44])[0]
+    unix_time = ntp_time - ntp_epoch_offset
+
+    # Convert to UTC time tuple
+    t = time.gmtime(unix_time)
+    # Pyboard RTC format: (year, month, day, weekday, hours, minutes, seconds, subseconds)
+    # Note: utime.gmtime returns (year, month, mday, hour, minute, second, weekday, yearday)
+    # pyb.RTC weekday: Monday=1, Sunday=7 (utime weekday: Monday=0, Sunday=6)
+    weekday = t[6] + 1
+    rtc_tuple = (t[0], t[1], t[2], weekday, t[3], t[4], t[5], 0)
+
+    # Apply to hardware RTC
+    rtc = pyb.RTC()
+    rtc.datetime(rtc_tuple)
+
+    return unix_time
+
+
 class TimeSyncManager:
     NTP_EPOCH_OFFSET = 2208988800
 
@@ -2063,7 +2105,7 @@ class TimeSyncManager:
 
     async def sync_loop(self):
         while True:
-            if self.net.is_connected:
+            if getattr(self.net, "is_connected", True):
                 try:
                     unix_time = _fetch_and_apply_ntp_time(
                         self.server, self.NTP_EPOCH_OFFSET)
@@ -2073,7 +2115,7 @@ class TimeSyncManager:
 
                     await self.logger.log(
                         "SYS",
-                        "NTP Synced: {}".format(unix_time),
+                        "NTP Synced via RTC: {}".format(unix_time),
                     )
                     await asyncio.sleep_ms(self.sync_interval_sec * 1000)
                 except Exception as exc:

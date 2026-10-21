@@ -1,6 +1,6 @@
 # new_my_utilities.py
 import pyb
-import time
+import utime as time
 import uasyncio as asyncio
 
 rtc = pyb.RTC()

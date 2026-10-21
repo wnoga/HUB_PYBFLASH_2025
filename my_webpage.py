@@ -1,6 +1,6 @@
 import gc
-import uos
-import utime
+import uos as os
+import utime as time
 import uasyncio as asyncio
 from stream_utilities import (
     send_raw,
@@ -116,12 +116,12 @@ async def send_control_web_page_raw(server_inst, writer):
 
         # 3. System Status
         gc.collect()
-        current_ms = getattr(server_inst, "millis", utime.ticks_ms)()
+        current_ms = getattr(server_inst, "millis", time.ticks_ms)()
         start_time = getattr(server_inst.hub, "discovery_start_time", 0)
         timeout_ms = getattr(server_inst.hub, "discovery_timeout_ms", 0)
 
         try:
-            discovery_timed_out = utime.ticks_diff(current_ms, start_time) >= timeout_ms
+            discovery_timed_out = time.ticks_diff(current_ms, start_time) >= timeout_ms
         except Exception:
             discovery_timed_out = "N/A"
 
@@ -259,7 +259,7 @@ async def send_control_web_page_raw(server_inst, writer):
         # 5. Server Metrics
         gc.collect()
         free_ram = gc.mem_free()
-        uptime_s = int(utime.time())
+        uptime_s = int(time.time())
         active_clients = len(getattr(server_inst, "client_sockets", []))
 
         await send_chunk_str(
@@ -277,7 +277,7 @@ async def send_control_web_page_raw(server_inst, writer):
         gc.collect()
         total_mb, free_mb, used_pct, sd_mounted = 0.0, 0.0, 0.0, False
         try:
-            vfs = uos.statvfs("/sd")
+            vfs = os.statvfs("/sd")
             block_size = vfs[1] if vfs[1] > 0 else vfs[0]
             total_blocks, free_blocks = vfs[2], vfs[3]
 
@@ -326,7 +326,7 @@ async def send_control_web_page_raw(server_inst, writer):
         # 7. SD Card Log Files List with Download Buttons
         gc.collect()
         try:
-            raw_files = uos.listdir("/sd/logs")
+            raw_files = os.listdir("/sd/logs")
             sort_func = getattr(server_inst, "sort_log_files", sorted)
             log_files = sort_func(raw_files)
         except OSError:
@@ -343,7 +343,7 @@ async def send_control_web_page_raw(server_inst, writer):
             for file_name in log_files:
                 filepath = "/sd/logs/" + file_name
                 try:
-                    file_stat = uos.stat(filepath)
+                    file_stat = os.stat(filepath)
                     size_bytes = file_stat[6]
                     size_str = (
                         "%d KB" % (size_bytes // 1024)
@@ -420,7 +420,7 @@ async def handle_log_download(server_inst, request_path, writer):
     filepath = "/sd/logs/" + file_name
 
     try:
-        file_stat = uos.stat(filepath)
+        file_stat = os.stat(filepath)
         file_size = file_stat[6]
     except OSError:
         writer.write(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nFile Not Found")
