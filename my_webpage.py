@@ -109,7 +109,7 @@ async def send_control_web_page_raw(server_inst, writer):
             b'  const val = parseFloat(document.getElementById("offset_val_" + afeId).value);'
             b'  const target = document.getElementById("offset_target_" + afeId).value;'
             b'  let mask = target === "M" ? 1 : (target === "S" ? 2 : 3);'
-            b'  sendProcedure("set_voltage_offset", {afe_id: afeId, mask: mask, value: val});'
+            b'  sendProcedure("shift_voltage", {afe_id: afeId, mask: mask, value: val});'
             b'}'
             b'</script></head><body>',
             max_chunk=512,

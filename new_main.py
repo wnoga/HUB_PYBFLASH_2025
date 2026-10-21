@@ -805,6 +805,7 @@ class AFEDevice:
                 if subdev_id not in self.regulators:
                     self.regulators[subdev_id] = {}
                 self.regulators[subdev_id][config_key] = val
+                p.print("Aplly regulator {}[{}] = {}".format(subdev_id, config_key, val))
 
     @micropython.native
     def _handle_full_sensor_data_block(self, full_payload, target_key):
@@ -1189,7 +1190,7 @@ class AFEDevice:
                     "ERROR",
                     "Callback crashed: {}".format(callback_error),
                 )
-        await p.print(command, str(custom_retval))
+        # await p.print(command, str(custom_retval))
 
     async def periodic_debug_loop(self):
         while not self.is_configured:
