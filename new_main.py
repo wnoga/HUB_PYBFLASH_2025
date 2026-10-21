@@ -685,6 +685,7 @@ async def _process_command_payload(instance, command, full_payload, device_id):
         instance._handle_full_subdevice_status(
             instance.latest_status, full_payload)
         return instance.latest_status
+
     if command == AFECommand.setDACValueRaw_bySubdeviceMask:
         subdev_mask = full_payload[0]
         raw_val = instance._parse_payload_value(full_payload[1:], "u16")
@@ -706,11 +707,9 @@ async def _process_command_payload(instance, command, full_payload, device_id):
         return None
 
     if command == AFECommand.writeGPIO:
-        # 0xA2 writeGPIO handler matching your firmware structure
         return None
     
     if command == AFECommand.setCanMsgBurstDelay_ms:
-        # Parse the 4-byte u32 burst delay value from the payload and store it on the AFE instance
         delay_ms = instance._parse_payload_value(full_payload, "u32")
         if delay_ms is not None:
             instance.can_msg_burst_delay_ms = delay_ms
@@ -812,7 +811,7 @@ class AFEDevice:
         self.hub = hub
         self.stale_buffer_ttl_ms = stale_buffer_ttl_ms
         
-        self.can_msg_burst_delay_ms = 100
+        self.can_msg_burst_delay_ms = 50
 
         self.channels = {
             i: {
@@ -836,20 +835,10 @@ class AFEDevice:
 
         self.latest_status = {}
         self._STATUS_KEYS = [
-            "V",
-            "V_bytes",
-            "V_target",
-            "V_target_bytes",
-            "V_current",
-            "V_current_bytes",
-            "T_avg",
-            "T_bytes",
-            "T_old",
-            "V_offset",
-            "temp_loop",
-            "ramp_target_reached",
-            "timestamp_ms"
-        ]
+                "V", "V_bytes", "V_target", "V_target_bytes", 
+                "V_current", "V_current_bytes", "T_avg", "T_bytes", 
+                "T_old", "V_offset", "enabled", "ramp_target_reached", "timestamp_ms"
+            ]
 
         self.can_address = afe_id << 2
         self.default_command_timeout_ms = 1000
@@ -930,36 +919,57 @@ class AFEDevice:
     def _handle_full_subdevice_status(self, latest_status, full_payload):
         offset = 0
         payload_len = len(full_payload)
+        current_subdev = None
         chunk_counter = 0
-
+        p.print_nowait("#################")
+        
         while offset < payload_len:
-            if offset + 5 > payload_len:
+            if offset + 2 > payload_len:
                 break
-
+                
             mask_byte = full_payload[offset]
-            data_bytes = full_payload[offset + 1: offset + 5]
+            subdev_id = 0 if (mask_byte & AFECommandSubdevice.AFECommandSubdevice_master) else (
+                1 if (mask_byte & AFECommandSubdevice.AFECommandSubdevice_slave) else 0)
 
-            # Map subdevice from mask byte (subdev 1 or 2)
-            subdev_id = 0 if (mask_byte & 0x01) else (
-                1 if (mask_byte & 0x02) else 0)
             if subdev_id not in latest_status:
                 latest_status[subdev_id] = {}
 
+            # Reset chunk counter when switching subdevices or starting fresh
+            if current_subdev != subdev_id:
+                current_subdev = subdev_id
+                chunk_counter = 0
+
             if chunk_counter < len(self._STATUS_KEYS):
                 key = self._STATUS_KEYS[chunk_counter]
-                if key in ("timestamp_ms",):
+
+                # Match C data types: uint8 for flags (1 byte), uint32 for timestamp (4 bytes), float for telemetry (4 bytes)
+                if key in ("enabled", "ramp_target_reached"):
+                    if offset + 2 > payload_len:
+                        break
+                    val = int(full_payload[offset + 1])
+                    offset += 2
+                elif key in ("timestamp_ms",):
+                    if offset + 5 > payload_len:
+                        break
+                    data_bytes = full_payload[offset + 1: offset + 5]
                     val = struct.unpack("<I", data_bytes)[0]
-                elif key in ("temp_loop", "ramp_target_reached"):
-                    val = data_bytes[0]
-                else:
+                    offset += 5
+                else:  # Floats (indices 0 to 9)
+                    if offset + 5 > payload_len:
+                        break
+                    data_bytes = full_payload[offset + 1: offset + 5]
                     val = struct.unpack("<f", data_bytes)[0]
+                    offset += 5
 
                 latest_status[subdev_id][key] = val
                 if subdev_id in self.regulators and key in self.regulators[subdev_id]:
                     self.regulators[subdev_id][key] = val
 
-            offset += 5
-            chunk_counter += 1
+                chunk_counter += 1
+            else:
+                offset += 1
+                
+        p.print_nowait("Latest status:", self.latest_status)
 
     @micropython.native
     def prepare_command(
@@ -1180,7 +1190,6 @@ class AFEDevice:
             raise
         finally:
             try:
-                # Reset CAN message burst delay back to 100 ms on exit using fire-and-forget enqueue_command
                 delay_payload_reset = _pack_command_payload(AFECommand.setCanMsgBurstDelay_ms, 0, (self.can_msg_burst_delay_ms,))
                 await self.enqueue_command(AFECommand.setCanMsgBurstDelay_ms, delay_payload_reset)
                 await asyncio.sleep_ms(20)
@@ -1356,7 +1365,7 @@ class AFEDevice:
                     )
                     await self.send_command_and_wait(
                         AFECommand.getSubdeviceStatus,
-                        0x03,  # Master & Slave mask
+                        AFECommandSubdevice.AFECommandSubdevice_both,  # Master & Slave mask
                         **command_kwargs
                     )
                 except Exception as exc:
@@ -1400,13 +1409,19 @@ class AFEDevice:
             ) = parsed
             now = millis()
 
-            # Differentiate assembly buffer key for subdevice-multiplexed commands
-            subdev_hint = 0
+            # Determine subdevice ID and calculate index offset if subcommand is getSubdeviceStatus
+            subdev_id = 0
+            chunk_offset = 0
+            msg_count_per_subdev = 13
+
             if command == AFECommand.getSubdeviceStatus and len(chunk_payload) > 0:
                 mask_byte = chunk_payload[0]
-                subdev_hint = 0 if (mask_byte & 0x01) else (1 if (mask_byte & 0x02) else 0)
+                subdev_id = 0 if (mask_byte & AFECommandSubdevice.AFECommandSubdevice_master) else (
+                    1 if (mask_byte & AFECommandSubdevice.AFECommandSubdevice_slave) else 0)
+                chunk_offset = msg_count_per_subdev * subdev_id
 
-            buffer_key = (command, subdev_hint) if command == AFECommand.getSubdeviceStatus else command
+            # Use unified command key or isolate as needed; offset allows continuous indexing (0-12 for subdev 0, 13-25 for subdev 1)
+            buffer_key = command
             buffer_info = self._assembly_buffers.get(buffer_key)
 
             if buffer_info is None:
@@ -1417,15 +1432,26 @@ class AFEDevice:
                 }
                 self._assembly_buffers[buffer_key] = buffer_info
 
-            buffer_info["chunks"][chunk_id] = bytes(chunk_payload)
+            # Store chunk at shifted index using chunk_offset
+            adjusted_chunk_id = chunk_id + chunk_offset
+            buffer_info["chunks"][adjusted_chunk_id] = bytes(chunk_payload)
             buffer_info["last_updated"] = now
 
-            if chunk_id > max_chunks:
-                if chunk_id in buffer_info["chunks"]:
-                    del buffer_info["chunks"][chunk_id]
-                continue
+            # Determine completion condition
+            is_complete = False
+            if command == AFECommand.getSubdeviceStatus:
+                # Expecting 26 total chunks (13 for master + 13 for slave)
+                if len(buffer_info["chunks"]) >= 26:
+                    is_complete = True
+            else:
+                if chunk_id > max_chunks:
+                    if adjusted_chunk_id in buffer_info["chunks"]:
+                        del buffer_info["chunks"][adjusted_chunk_id]
+                    continue
+                if chunk_id == max_chunks:
+                    is_complete = True
 
-            if chunk_id == max_chunks:
+            if is_complete:
                 try:
                     sorted_keys = sorted(buffer_info["chunks"].keys())
                     full_payload = b"".join(
@@ -1435,7 +1461,7 @@ class AFEDevice:
                 finally:
                     self._assembly_buffers.pop(buffer_key, None)
                 await self._handle_complete_message(command, full_payload)
-
+                
     def get_tasks(self):
         return [
             self.process_loop(),
@@ -1963,11 +1989,8 @@ class WebServer:
                 if is_http_request:
                     await send_raw(writer, b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
                 
-                # Setup DualWriter to stream to both HTTP writer and the AsyncPrinter (p) simultaneously
-                # dual_writer = DualWriter(writer, p)
                 dual_writer = writer
 
-                # Use stream_json_value with send_raw to output pure, unchunked JSON
                 await send_raw(dual_writer, b'{"status":"ok","procedure":"get_afe_data","result":{"afe_id":')
                 await send_raw(dual_writer, str(afe_id).encode("utf-8"))
                 await send_raw(dual_writer, b',"periodic_data":')
@@ -2062,7 +2085,7 @@ class WebServer:
                     mask = int(data.get("mask", 0xFF))
                     retval = await afe.send_command_and_wait(AFECommand.getSensorDataSi_average_byMask, mask, timeout_ms=5000)
                 elif procedure == "set_can_burst_delay":
-                    delay_ms = int(data.get('delay', data.get('value', 100)))
+                    delay_ms = int(data.get('delay', data.get('value', afe.can_msg_burst_delay_ms)))
                     delay_payload = _pack_command_payload(AFECommand.setCanMsgBurstDelay_ms, 0, (delay_ms,))
                     await afe.enqueue_command(AFECommand.setCanMsgBurstDelay_ms, delay_payload)
                     afe.can_msg_burst_delay_ms = delay_ms
@@ -2127,7 +2150,7 @@ class WebServer:
             response_body = json.dumps(
                 {"status": "error", "message": "Unknown procedure: {}".format(procedure)})
             await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
-                                
+                                          
 # -----------------------------------------------------------------------------
 # Ethernet and NTP.
 # -----------------------------------------------------------------------------
