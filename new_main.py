@@ -1363,11 +1363,11 @@ class AFEDevice:
                         0xFF,
                         **command_kwargs
                     )
-                    await self.send_command_and_wait(
-                        AFECommand.getSubdeviceStatus,
-                        AFECommandSubdevice.AFECommandSubdevice_both,  # Master & Slave mask
-                        **command_kwargs
-                    )
+                    # await self.send_command_and_wait(
+                    #     AFECommand.getSubdeviceStatus,
+                    #     AFECommandSubdevice.AFECommandSubdevice_both,  # Master & Slave mask
+                    #     **command_kwargs
+                    # )
                 except Exception as exc:
                     await p.print("Periodic average request failed:", exc)
 
@@ -1987,23 +1987,23 @@ class WebServer:
                 p_dict = p_data.to_dict() if p_data and hasattr(p_data, "to_dict") else {}
                 
                 if is_http_request:
-                    await send_raw(writer, b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
+                    await send_raw(writer, b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
                 
                 dual_writer = writer
 
-                await send_raw(dual_writer, b'{"status":"ok","procedure":"get_afe_data","result":{"afe_id":')
-                await send_raw(dual_writer, str(afe_id).encode("utf-8"))
-                await send_raw(dual_writer, b',"periodic_data":')
+                await stream_json_key_by_key(dual_writer, {
+                    "status": "ok",
+                    "procedure": "get_afe_data",
+                    "result": {
+                        "afe_id": afe_id,
+                        "periodic_data": p_dict,
+                        "channels": getattr(afe_device, "channels", {}),
+                        "regulators": getattr(afe_device, "regulators", {})
+                    }
+                }, is_async_writer=True)
                 
-                await stream_json_value(dual_writer, p_dict, chunk_builder=send_raw)
-                await send_raw(dual_writer, b',"channels":')
-                await stream_json_value(dual_writer, getattr(afe_device, "channels", {}), chunk_builder=send_raw)
-                await send_raw(dual_writer, b',"regulators":')
-                await stream_json_value(dual_writer, getattr(afe_device, "regulators", {}), chunk_builder=send_raw)
-                
-                await send_raw(dual_writer, b'}}')
-                if not is_http_request:
-                    await send_raw(writer, b'\r\n')
+                # Terminate chunked transfer
+                await send_raw(dual_writer, b"0\r\n\r\n")
                 return
             else:
                 status_code = "404 Not Found"
@@ -2064,32 +2064,43 @@ class WebServer:
                     retval = await afe.send_command_and_wait(AFECommand.getSerialNumber, 0, timeout_ms=5000)
                     if isinstance(retval, bytes):
                         retval = retval.decode('utf-8', 'ignore')
+                    retval = {"serial_number": retval}
                 elif procedure == "get_version":
                     retval = await afe.send_command_and_wait(AFECommand.getVersion, 0, timeout_ms=5000)
                     if isinstance(retval, bytes):
                         retval = retval.decode('utf-8', 'ignore')
+                    retval = {"version": retval}
                 elif procedure == "reset_all":
                     retval = await afe.send_command_and_wait(AFECommand.resetAll, 0, timeout_ms=5000)
+                    retval = {"message": str(retval) if retval is not None else "Reset triggered"}
                 elif procedure == "start_adc":
                     mask = int(data.get("mask", 0xFF))
                     retval = await afe.send_command_and_wait(AFECommand.startADC, mask, timeout_ms=5000)
+                    retval = {"message": "ADC started", "mask": mask}
                 elif procedure == "get_timestamp":
                     retval = await afe.send_command_and_wait(AFECommand.getTimestamp, 0, timeout_ms=5000)
+                    retval = {"timestamp_ms": retval}
                 elif procedure == "get_subdevice_status":
                     mask = int(data.get("mask", 0x03))
                     retval = await afe.send_command_and_wait(AFECommand.getSubdeviceStatus, mask, timeout_ms=6000)
+                    if not isinstance(retval, (dict, list)):
+                        retval = {"status_result": retval}
                 elif procedure == "get_sensor_data_last":
                     mask = int(data.get("mask", 0xFF))
                     retval = await afe.send_command_and_wait(AFECommand.getSensorDataSi_last_byMask, mask, timeout_ms=5000)
+                    if not isinstance(retval, (dict, list)):
+                        retval = {"sensor_data": retval}
                 elif procedure == "get_sensor_data_average":
                     mask = int(data.get("mask", 0xFF))
                     retval = await afe.send_command_and_wait(AFECommand.getSensorDataSi_average_byMask, mask, timeout_ms=5000)
+                    if not isinstance(retval, (dict, list)):
+                        retval = {"sensor_data_average": retval}
                 elif procedure == "set_can_burst_delay":
                     delay_ms = int(data.get('delay', data.get('value', afe.can_msg_burst_delay_ms)))
                     delay_payload = _pack_command_payload(AFECommand.setCanMsgBurstDelay_ms, 0, (delay_ms,))
                     await afe.enqueue_command(AFECommand.setCanMsgBurstDelay_ms, delay_payload)
                     afe.can_msg_burst_delay_ms = delay_ms
-                    retval = "CAN message burst delay set to {} ms".format(delay_ms)
+                    retval = {"message": "CAN message burst delay set to {} ms".format(delay_ms), "delay_ms": delay_ms}
                 elif procedure == "shift_voltage":
                     group = data.get('type', 'M')
                     val = float(data.get('value', 0.0))
@@ -2099,6 +2110,7 @@ class WebServer:
                         val,
                         timeout_ms=10220
                     )
+                    retval = {"message": "Voltage shifted", "type": group, "value": val, "result": str(retval)}
                 elif procedure == "set_regulator_t_opt":
                     val = float(data.get('value', 25.0))
                     retval = await afe.send_command_and_wait(
@@ -2107,6 +2119,7 @@ class WebServer:
                         val,
                         timeout_ms=5000
                     )
+                    retval = {"message": "T_opt set", "value": val}
                 elif procedure == "set_regulator_dt":
                     val = float(data.get('value', 0.5))
                     retval = await afe.send_command_and_wait(
@@ -2115,6 +2128,7 @@ class WebServer:
                         val,
                         timeout_ms=5000
                     )
+                    retval = {"message": "dT set", "value": val}
                 elif procedure == "set_averaging_alpha":
                     val = float(data.get('value', 0.1))
                     retval = await afe.send_command_and_wait(
@@ -2123,22 +2137,26 @@ class WebServer:
                         val,
                         timeout_ms=5000
                     )
+                    retval = {"message": "Alpha set", "value": val}
                 else:
                     retval = {"status": "ok", "message": "Procedure executed"}
 
-                # Stream large dictionaries key-by-key instead of json.dumps()
-                if isinstance(retval, (dict, list)) and procedure in ("get_subdevice_status", "get_sensor_data_last", "get_sensor_data_average"):
-                    if is_http_request:
-                        await send_raw(writer, b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
-                    await send_raw(writer, b'{"status":"ok","procedure":"' + procedure.encode("utf-8") + b'","result":')
-                    await stream_json_key_by_key(writer, retval, is_async_writer=True)
-                    await send_raw(writer, b'}')
-                    if not is_http_request:
-                        await send_raw(writer, b'\r\n')
-                    return
-                else:
-                    response_body = json.dumps({"status": "ok", "procedure": procedure, "result": str(retval)})
-                    await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
+                if not isinstance(retval, (dict, list)):
+                    retval = {"result": str(retval)}
+
+                # Universally stream all command responses using chunked encoding
+                if is_http_request:
+                    await send_raw(writer, b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+                
+                await stream_json_key_by_key(writer, {
+                    "status": "ok",
+                    "procedure": procedure,
+                    "result": retval
+                }, is_async_writer=True)
+                
+                # Terminate chunked transfer encoding stream
+                await send_raw(writer, b"0\r\n\r\n")
+                return
 
             except Exception as e:
                 status_code = "500 Internal Server Error"
@@ -2150,7 +2168,7 @@ class WebServer:
             response_body = json.dumps(
                 {"status": "error", "message": "Unknown procedure: {}".format(procedure)})
             await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
-                                          
+                                                       
 # -----------------------------------------------------------------------------
 # Ethernet and NTP.
 # -----------------------------------------------------------------------------

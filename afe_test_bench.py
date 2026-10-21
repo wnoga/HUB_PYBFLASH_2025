@@ -15,7 +15,7 @@ HUB_IP = "192.168.1.223"
 HUB_PORT = 5555
 N_ITERATIONS = 1
 SOCKET_TIMEOUT = 12.0
-BURST_DELAYS_MS = [0, 20, 25, 50, 100]
+BURST_DELAYS_MS = [0, 1, 20, 25, 50, 100]
 
 # ---------------------------------------------------------------------------
 # Command Instruction Registry Documentation & Base Structure
@@ -64,10 +64,10 @@ COMMAND_REGISTRY = {
         "request": {"procedure": "get_timestamp", "afe_id": 41}
     },
     "get_subdevice_status": {
-        "params": "afe_id: int (Cmd 0x08)",
+        "params": "afe_id: int, mask: int (Cmd 0x08)",
         "description": "Fetches 13-item status structure per Master/Slave subdevice.",
         "action": "Aggregates voltages, temperatures, loop states, and RAM telemetry blocks for Master (0) and Slave (1).",
-        "request": {"procedure": "get_subdevice_status", "afe_id": 41}
+        "request": {"procedure": "get_subdevice_status", "afe_id": 41, "mask": 3}
     },
     "get_sensor_data_last": {
         "params": "afe_id: int, mask: int (Cmd 0x30)",
@@ -129,34 +129,78 @@ class AFEHubClient:
 
             response_bytes = b""
             while True:
-                chunk = s.recv(1024)
+                chunk = s.recv(4096)
                 if not chunk:
                     break
                 response_bytes += chunk
-                if b"\n" in chunk or b"}" in chunk:
-                    break
+                # Check for chunked stream termination or standard closing braces
+                if b"0\r\n\r\n" in response_bytes or (b"}" in response_bytes and response_bytes.strip().endswith(b"}")):
+                    # Give it a tiny fraction to catch the final trailing bytes if chunked
+                    if b"0\r\n\r\n" in response_bytes:
+                        break
 
             end_t = time.time() * 1000.0
             elapsed_ms = end_t - start_t
-            res_text = response_bytes.decode('utf-8').strip()
-            if not res_text:
+            
+            if not response_bytes:
                 return False, {"error": "Empty response"}, elapsed_ms
 
-            if res_text.startswith("HTTP/1."):
-                body = res_text.split("\r\n\r\n")[-1]
-                res_dict = json.loads(body)
+            # Split HTTP headers from body if present
+            if b"HTTP/1." in response_bytes:
+                parts = response_bytes.split(b"\r\n\r\n", 1)
+                header_bytes = parts[0]
+                body_bytes = parts[1] if len(parts) > 1 else b""
+                is_chunked = b"Transfer-Encoding: chunked" in header_bytes
             else:
-                res_dict = json.loads(res_text)
+                body_bytes = response_bytes
+                is_chunked = False
 
+            # If chunked transfer encoding is active, parse and un-chunk the body bytes
+            cleaned_body_chunks = []
+            if is_chunked or b"\r\n" in body_bytes:
+                i = 0
+                while i < len(body_bytes):
+                    # Find the next CRLF marking the chunk size line
+                    crlf_idx = body_bytes.find(b"\r\n", i)
+                    if crlf_idx == -1:
+                        break
+                    size_line = body_bytes[i:crlf_idx].strip()
+                    if not size_line:
+                        i = crlf_idx + 2
+                        continue
+                    try:
+                        chunk_size = int(size_line, 16)
+                    except ValueError:
+                        # Not a hex chunk size line, treat whole body as raw text
+                        cleaned_body_chunks = [body_bytes]
+                        break
+                    
+                    if chunk_size == 0:
+                        break  
+                    
+                    start_data = crlf_idx + 2
+                    end_data = start_data + chunk_size
+                    cleaned_body_chunks.append(body_bytes[start_data:end_data])
+                    i = end_data + 2  # Skip trailing CRLF after chunk data
+                
+                body_extracted = b"".join(cleaned_body_chunks)
+            else:
+                body_extracted = body_bytes
+
+            res_text = body_extracted.decode('utf-8', errors='ignore').strip()
+            if not res_text:
+                return False, {"error": "Empty un-chunked response"}, elapsed_ms
+
+            res_dict = json.loads(res_text)
             is_ok = res_dict.get("status") in ["ok", "OK"]
             return is_ok, res_dict, elapsed_ms
+
         except Exception as exc:
             end_t = time.time() * 1000.0
             return False, {"error": str(exc)}, end_t - start_t
         finally:
             s.close()
-
-
+            
 def escape_html(text):
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -176,7 +220,8 @@ def run_can_burst_delay_test(client, target_afe_id, iterations=3):
         times = []
         successes = 0
         for it in range(1, iterations + 1):
-            s_ok, s_res, elapsed = client.send_cmd("get_subdevice_status", afe_id=target_afe_id)
+            s_ok, s_res, elapsed = client.send_cmd("get_subdevice_status", afe_id=target_afe_id, mask=3)
+            print(s_ok, s_res, elapsed)
             times.append(elapsed)
             if s_ok:
                 successes += 1
@@ -308,6 +353,8 @@ def run_benchmark_and_generate_pdf(mode="default", iterations=N_ITERATIONS):
                     kwargs = {"id": target_afe_id, "type": "M", "value": 0.5}
                 elif cmd in ("get_sensor_data_last", "get_sensor_data_average", "start_adc"):
                     kwargs = {"afe_id": target_afe_id, "mask": 255}
+                elif cmd == "get_subdevice_status":
+                    kwargs = {"afe_id": target_afe_id, "mask": 3}
                 elif cmd == "get_all_afe_id":
                     kwargs = {}
 
@@ -374,7 +421,7 @@ def run_benchmark_and_generate_pdf(mode="default", iterations=N_ITERATIONS):
         plt.close(fig)
 
         # 3. Generate Plot 2: Common Setters & Regulators
-        common_cmds = ["shift_voltage", "set_regulator_t_opt", "set_regulator_dt", "set_averaging_alpha", "start_adc"]
+        common_cmds = ["shift_voltage", "set_regulator_t_opt", "set_regulator_dt", "set_averaging_alpha", "start_adc", "get_subdevice_status"]
         c_names = [c for c in common_cmds if c in cmd_names]
         c_means = [stats_summary[c]["mean"] for c in c_names]
         c_stds = [stats_summary[c]["std"] for c in c_names]
