@@ -13,9 +13,10 @@ from reportlab.platypus import HRFlowable, Image, Paragraph, SimpleDocTemplate, 
 # Configuration
 HUB_IP = "192.168.1.223"
 HUB_PORT = 5555
-N_ITERATIONS = 1
+N_ITERATIONS = 3
 SOCKET_TIMEOUT = 12.0
-BURST_DELAYS_MS = [x for x in range(0,25)] + [25, 50, 100]
+BURST_DELAYS_MS = [20] + [x for x in range(0,20)] + [21, 22, 23, 24, 25, 50, 100]
+
 
 # ---------------------------------------------------------------------------
 # Command Instruction Registry Documentation & Base Structure

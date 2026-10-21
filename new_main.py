@@ -200,6 +200,7 @@ class AsyncPrinter:
 # Global printer instance
 p = AsyncPrinter()
 
+
 class DualWriter:
     def __init__(self, socket_writer, printer):
         self.writer = socket_writer
@@ -214,7 +215,7 @@ class DualWriter:
         if hasattr(self.writer, "drain"):
             await self.writer.drain()
         await self.printer.drain()
-        
+
 
 def robust_worker(error_delay_ms=100):
     """Decorator to make individual class worker methods resilient."""
@@ -557,7 +558,7 @@ AFE_COMMAND_REGISTRY = {
     AFECommand.setRegulator_dV_dT_byMask: ("float", "dV_dT", "regulator"),
     AFECommand.setRegulator_V_opt_byMask: ("float", "V_opt", "regulator"),
     AFECommand.setRegulator_V_offset_byMask: ("float", "V_offset", "regulator"),
-    
+
     AFECommand.setDACValueRaw_bySubdeviceMask: ("u16", "dac_raw_value", "regulator"),
     AFECommand.setDAC_bySubdeviceMask: ("u8", "dac_state", "regulator"),
     AFECommand.writeGPIO: ("u8", "gpio_val", "channel"),
@@ -630,7 +631,14 @@ async def _apply_setting(instance, group: str, setting: str, value):
 
 async def _process_command_payload(instance, command, full_payload, device_id):
     if command == AFECommand.getSerialNumber:
-        return None
+        if isinstance(full_payload, bytes) and len(full_payload) >= 12:
+            uid_str = "".join(["{:02X}".format(b) for b in full_payload[:12]])
+            if instance.configuration:
+                instance.configuration["uid"] = uid_str
+            return {
+                "uid": uid_str
+            }
+        return {"uid": "Unknown", "raw_payload": ["0x{:02X}".format(b) for b in full_payload]}
 
     if command == AFECommand.startADC:
         instance.adc_run = True
@@ -671,9 +679,8 @@ async def _process_command_payload(instance, command, full_payload, device_id):
             instance._apply_channel_config(
                 full_payload[0], full_payload[1:], val_type, config_key)
         return None
-    
+
     if command == AFECommand.getSyncTimestamp:
-        # Expects two chunks/blocks: [AFE_Tick (4 bytes)] + [Hub_Sent_Tick (4 bytes)]
         if len(full_payload) >= 8:
             afe_tick = struct.unpack("<I", full_payload[0:4])[0]
             hub_echo = struct.unpack("<I", full_payload[4:8])[0]
@@ -725,16 +732,15 @@ async def _process_command_payload(instance, command, full_payload, device_id):
 
     if command == AFECommand.writeGPIO:
         return None
-    
+
     if command == AFECommand.setCanMsgBurstDelay_ms:
         delay_ms = instance._parse_payload_value(full_payload, "u32")
         if delay_ms is not None:
             instance.can_msg_burst_delay_ms = delay_ms
         return None
-    
+
     await p.print("Not handled function 0x{:02X}: {}".format(command, full_payload))
     return None
-
 
 def _pack_command_payload(command, data, args):
     if not args:
@@ -827,7 +833,7 @@ class AFEDevice:
         self.can = can_controller
         self.hub = hub
         self.stale_buffer_ttl_ms = stale_buffer_ttl_ms
-        
+
         self.can_msg_burst_delay_ms = 20
 
         self.channels = {
@@ -852,10 +858,10 @@ class AFEDevice:
 
         self.latest_status = {}
         self._STATUS_KEYS = [
-                "V", "V_bytes", "V_target", "V_target_bytes", 
-                "V_current", "V_current_bytes", "T_avg", "T_bytes", 
-                "T_old", "V_offset", "enabled", "ramp_target_reached", "timestamp_ms"
-            ]
+            "V", "V_bytes", "V_target", "V_target_bytes",
+            "V_current", "V_current_bytes", "T_avg", "T_bytes",
+            "T_old", "V_offset", "enabled", "ramp_target_reached", "timestamp_ms"
+        ]
 
         self.can_address = afe_id << 2
         self.default_command_timeout_ms = 1000
@@ -877,7 +883,7 @@ class AFEDevice:
 
         self.debug_request_average_ms = 0
         self.debug_request_average_ms_period = 10_000
-        
+
         # Track active configuration background task reference
         self._config_task = None
 
@@ -939,11 +945,11 @@ class AFEDevice:
         current_subdev = None
         chunk_counter = 0
         p.print_nowait("#################")
-        
+
         while offset < payload_len:
             if offset + 2 > payload_len:
                 break
-                
+
             mask_byte = full_payload[offset]
             subdev_id = 0 if (mask_byte & AFECommandSubdevice.AFECommandSubdevice_master) else (
                 1 if (mask_byte & AFECommandSubdevice.AFECommandSubdevice_slave) else 0)
@@ -985,7 +991,7 @@ class AFEDevice:
                 chunk_counter += 1
             else:
                 offset += 1
-                
+
         p.print_nowait("Latest status:", self.latest_status)
 
     @micropython.native
@@ -1048,7 +1054,7 @@ class AFEDevice:
 
     async def send_command_and_wait(self, command, data=None, *args, **kwargs):
         data = _pack_command_payload(command, data, args)
-        
+
         # If it's a hard reset, send the frame and return immediately without waiting for a reply
         if command == AFECommand.resetAll:
             await self.enqueue_command(command, data, **kwargs)
@@ -1085,7 +1091,7 @@ class AFEDevice:
                 )
             )
         return payload.retval
-    
+
     async def callback_afe_error(self, payload, error):
         await p.print("AFE callback error:", error)
 
@@ -1130,7 +1136,7 @@ class AFEDevice:
     async def configure(self):
         start_ms = millis()
         await p.print("AFE-{} configuration started at {} ms".format(self.afe_id, start_ms))
-        
+
         command_kwargs = {
             "timeout_ms": 10220,
             "preserve": False,
@@ -1139,7 +1145,8 @@ class AFEDevice:
 
         try:
             # Set CAN message burst delay to 25 ms at the beginning using fire-and-forget enqueue_command
-            delay_payload = _pack_command_payload(AFECommand.setCanMsgBurstDelay_ms, 0, (0,))
+            delay_payload = _pack_command_payload(
+                AFECommand.setCanMsgBurstDelay_ms, 0, (0,))
             await self.enqueue_command(AFECommand.setCanMsgBurstDelay_ms, delay_payload)
             await asyncio.sleep_ms(20)
 
@@ -1198,7 +1205,7 @@ class AFEDevice:
                 250,
                 **command_kwargs
             )
-            
+
             elapsed_ms = millis() - start_ms
             await p.print("Configured AFE-{} successfully in {} ms".format(self.afe_id, elapsed_ms))
         except Exception as exc:
@@ -1207,12 +1214,13 @@ class AFEDevice:
             raise
         finally:
             try:
-                delay_payload_reset = _pack_command_payload(AFECommand.setCanMsgBurstDelay_ms, 0, (self.can_msg_burst_delay_ms,))
+                delay_payload_reset = _pack_command_payload(
+                    AFECommand.setCanMsgBurstDelay_ms, 0, (self.can_msg_burst_delay_ms,))
                 await self.enqueue_command(AFECommand.setCanMsgBurstDelay_ms, delay_payload_reset)
                 await asyncio.sleep_ms(20)
             except Exception as e:
                 await p.print("Failed to reset CAN burst delay in finally block: {}".format(e))
-                   
+
     async def default_set_dac(self, dac_master=3000, dac_slave=3000):
         AFEGPIO_EN_HV0 = AFECommandGPIO(port="PORTB", pin=10)
         AFEGPIO_EN_HV1 = AFECommandGPIO(port="PORTB", pin=11)
@@ -1287,7 +1295,7 @@ class AFEDevice:
                     exception=error,
                     specific_payload=payload,
                 )
-                
+
     async def sync_time(self):
         """Triggers get_sync_timestamp to evaluate clock drift and round-trip delay."""
         try:
@@ -1337,7 +1345,7 @@ class AFEDevice:
             payload.retval = payload_bytes
             payload.status = CommandStatus.ERROR
             payload.completion_event.set()
-            
+
             # Log command failure stream with multi-timestamps
             if hasattr(self.hub, "logger") and self.hub.logger:
                 error_data = {
@@ -1379,12 +1387,27 @@ class AFEDevice:
 
         # Stream complete command result/payload key-by-key to SD logger with multi-timestamps
         if hasattr(self.hub, "logger") and self.hub.logger:
+            retval_to_log = payload.retval
+            if isinstance(retval_to_log, bytes):
+                if len(retval_to_log) == 1:
+                    retval_to_log = "0x{:02X}".format(retval_to_log[0])
+                elif len(retval_to_log) == 2:
+                    val = struct.unpack("<H", retval_to_log)[0]
+                    retval_to_log = "0x{:04X}".format(val)
+                elif len(retval_to_log) == 4:
+                    val = struct.unpack("<I", retval_to_log)[0]
+                    retval_to_log = "0x{:08X}".format(val)
+                else:
+                    retval_to_log = ["0x{:02X}".format(b) for b in retval_to_log]
+            elif not isinstance(retval_to_log, (dict, list, str, int, float)):
+                retval_to_log = str(retval_to_log)
+
             log_payload = {
                 "afe_id": self.afe_id,
                 "command_id": command,
                 "hub_unix_timestamp": rtc_unix_timestamp(),
                 "hub_millis": millis(),
-                "retval": payload.retval if isinstance(payload.retval, (dict, list, str, int, float)) else str(payload.retval)
+                "retval": retval_to_log
             }
             try:
                 await self.hub.logger.log_json_stream("MEASUREMENT", log_payload)
@@ -1399,7 +1422,7 @@ class AFEDevice:
                     "ERROR",
                     "Callback crashed: {}".format(callback_error),
                 )
-
+                
     async def periodic_debug_loop(self):
         while not self.is_configured:
             await asyncio.sleep_ms(100)
@@ -1520,7 +1543,7 @@ class AFEDevice:
                 finally:
                     self._assembly_buffers.pop(buffer_key, None)
                 await self._handle_complete_message(command, full_payload)
-                
+
     def get_tasks(self):
         return [
             self.process_loop(),
@@ -1536,6 +1559,8 @@ class AFEDevice:
 # -----------------------------------------------------------------------------
 # Main hub with centralized task tracking.
 # -----------------------------------------------------------------------------
+
+
 def _set_power_pins(e12_val, e10_val):
     pyb.Pin.cpu.E12.init(pyb.Pin.OUT_PP, pyb.Pin.PULL_NONE)
     pyb.Pin.cpu.E12.value(e12_val)
@@ -1732,7 +1757,8 @@ class SDLogger:
         self.time_synced = True
         old_path = self.current_filepath
         if old_path and ("log_seq_" in old_path or "log_" in old_path):
-            self._update_filepath(rename_existing=True, old_file_to_rename=old_path)
+            self._update_filepath(rename_existing=True,
+                                  old_file_to_rename=old_path)
 
     def write(self, data):
         """Writer interface compatibility for chunk-based streaming (e.g. stream_json_key_by_key)."""
@@ -1765,13 +1791,12 @@ class SDLogger:
             pass
 
     async def log_json_stream(self, level, obj):
-        """Helper to stream large complex dictionaries/objects directly to SD card key-by-key without high allocations."""
-        from stream_utilities import stream_json_key_by_key
+        """Helper to stream large complex dictionaries/objects directly to SD card key-by-key as clean raw JSON."""
         timestamp = time.time()
-        
-        header_str = "{{\"timestamp\": {}, \"level\": \"{}\", \"data\": ".format(timestamp, level)
+        header_str = "{{\"timestamp\": {}, \"level\": \"{}\", \"data\": ".format(
+            timestamp, level)
         self.write(header_str)
-        await stream_json_key_by_key(self, obj, is_async_writer=True)
+        await stream_json_value(self, obj, chunk_builder=send_raw)
         self.write("}\n")
         await self.drain()
 
@@ -1869,7 +1894,7 @@ async def _handle_get_all_latest_status_stream(writer, afes, is_http_request):
         if not first:
             await send_raw(writer, b',')
         first = False
-        
+
         # Stream the AFE ID key safely
         k_json = json.dumps(str(afe.afe_id))
         await send_raw(writer, k_json.encode("utf-8") + b':')
@@ -2052,12 +2077,14 @@ class WebServer:
                     hub_result = func()
                     if hasattr(asyncio, "iscoroutine") and asyncio.iscoroutine(hub_result):
                         hub_result = await hub_result
-                res_data = {"status": "ok", "procedure": procedure, "result": hub_result}
+                res_data = {"status": "ok",
+                            "procedure": procedure, "result": hub_result}
                 response_body = json.dumps(res_data)
             else:
                 status_code = "500 Internal Server Error"
-                response_body = json.dumps({"status": "error", "message": "procedure_get_all_afe_id not found on hub"})
-            await p.print(hub_result,":",response_body)
+                response_body = json.dumps(
+                    {"status": "error", "message": "procedure_get_all_afe_id not found on hub"})
+            await p.print(hub_result, ":", response_body)
             await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
 
         elif procedure == "get_afe_data":
@@ -2067,10 +2094,10 @@ class WebServer:
                 afe_device = afes[afe_id]
                 p_data = getattr(afe_device, "periodic_data", None)
                 p_dict = p_data.to_dict() if p_data and hasattr(p_data, "to_dict") else {}
-                
+
                 if is_http_request:
                     await send_raw(writer, b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
-                
+
                 dual_writer = writer
 
                 await stream_json_key_by_key(dual_writer, {
@@ -2083,15 +2110,16 @@ class WebServer:
                         "regulators": getattr(afe_device, "regulators", {})
                     }
                 }, is_async_writer=True)
-                
+
                 # Terminate chunked transfer
                 await send_raw(dual_writer, b"0\r\n\r\n")
                 return
             else:
                 status_code = "404 Not Found"
-                response_body = json.dumps({"status": "error", "message": "AFE device {} not found".format(afe_id)})
+                response_body = json.dumps(
+                    {"status": "error", "message": "AFE device {} not found".format(afe_id)})
                 await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
-                
+
         elif procedure == "get_all_latest_status":
             afes = getattr(self.hub, "afes", {})
             await _handle_get_all_latest_status_stream(writer, afes, is_http_request)
@@ -2106,15 +2134,17 @@ class WebServer:
                         (tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
                 if hasattr(self.hub, "logger") and self.hub.logger:
                     await self.hub.logger.log("SYS", "Manual RTC adjust: {}".format(new_time))
-                response_body = json.dumps({"status": "ok", "procedure": procedure})
+                response_body = json.dumps(
+                    {"status": "ok", "procedure": procedure})
             else:
                 status_code = "400 Bad Request"
-                response_body = json.dumps({"status": "error", "message": "Missing epoch parameter"})
+                response_body = json.dumps(
+                    {"status": "error", "message": "Missing epoch parameter"})
             await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
 
         # 2. Command handlers matching C firmware mappings
         elif procedure in [
-            "get_serial_number", "get_version", "reset_all", "start_adc", 
+            "get_serial_number", "get_version", "reset_all", "start_adc",
             "get_timestamp", "get_sync_timestamp", "get_subdevice_status",
             "get_sensor_data_last", "get_sensor_data_average",
             "transmit_spi_data", "set_ad8402_value", "write_gpio",
@@ -2140,7 +2170,7 @@ class WebServer:
                 return
 
             afe = afes[afe_id]
-            
+
             try:
                 if procedure == "get_serial_number":
                     retval = await afe.send_command_and_wait(AFECommand.getSerialNumber, 0, timeout_ms=5000)
@@ -2154,7 +2184,8 @@ class WebServer:
                     retval = {"version": retval}
                 elif procedure == "reset_all":
                     retval = await afe.send_command_and_wait(AFECommand.resetAll, 0, timeout_ms=5000)
-                    retval = {"message": str(retval) if retval is not None else "Reset triggered"}
+                    retval = {"message": str(
+                        retval) if retval is not None else "Reset triggered"}
                 elif procedure == "start_adc":
                     mask = int(data.get("mask", 0xFF))
                     retval = await afe.send_command_and_wait(AFECommand.startADC, mask, timeout_ms=5000)
@@ -2178,11 +2209,14 @@ class WebServer:
                     if not isinstance(retval, (dict, list)):
                         retval = {"sensor_data_average": retval}
                 elif procedure == "set_can_burst_delay":
-                    delay_ms = int(data.get('delay', data.get('value', afe.can_msg_burst_delay_ms)))
-                    delay_payload = _pack_command_payload(AFECommand.setCanMsgBurstDelay_ms, 0, (delay_ms,))
+                    delay_ms = int(data.get('delay', data.get(
+                        'value', afe.can_msg_burst_delay_ms)))
+                    delay_payload = _pack_command_payload(
+                        AFECommand.setCanMsgBurstDelay_ms, 0, (delay_ms,))
                     await afe.enqueue_command(AFECommand.setCanMsgBurstDelay_ms, delay_payload)
                     afe.can_msg_burst_delay_ms = delay_ms
-                    retval = {"message": "CAN message burst delay set to {} ms".format(delay_ms), "delay_ms": delay_ms}
+                    retval = {"message": "CAN message burst delay set to {} ms".format(
+                        delay_ms), "delay_ms": delay_ms}
                 elif procedure == "shift_voltage":
                     group = data.get('type', 'M')
                     val = float(data.get('value', 0.0))
@@ -2192,7 +2226,8 @@ class WebServer:
                         val,
                         timeout_ms=10220
                     )
-                    retval = {"message": "Voltage shifted", "type": group, "value": val, "result": str(retval)}
+                    retval = {"message": "Voltage shifted",
+                              "type": group, "value": val, "result": str(retval)}
                 elif procedure == "set_regulator_t_opt":
                     val = float(data.get('value', 25.0))
                     retval = await afe.send_command_and_wait(
@@ -2229,20 +2264,21 @@ class WebServer:
                 # Universally stream all command responses using chunked encoding
                 if is_http_request:
                     await send_raw(writer, b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
-                
+
                 await stream_json_key_by_key(writer, {
                     "status": "ok",
                     "procedure": procedure,
                     "result": retval
                 }, is_async_writer=True)
-                
+
                 # Terminate chunked transfer encoding stream
                 await send_raw(writer, b"0\r\n\r\n")
                 return
 
             except Exception as e:
                 status_code = "500 Internal Server Error"
-                response_body = json.dumps({"status": "error", "message": str(e)})
+                response_body = json.dumps(
+                    {"status": "error", "message": str(e)})
                 await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
 
         else:
@@ -2250,7 +2286,7 @@ class WebServer:
             response_body = json.dumps(
                 {"status": "error", "message": "Unknown procedure: {}".format(procedure)})
             await _send_http_or_raw_response(writer, status_code, response_body, is_http=is_http_request)
-                                                       
+
 # -----------------------------------------------------------------------------
 # Ethernet and NTP.
 # -----------------------------------------------------------------------------
